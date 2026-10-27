@@ -3,7 +3,7 @@
  * Phase 9 — Certificate import & manager
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { BRAND_NAME } from '../../../lib/brand';
 import {
   calculateByteRange,
@@ -267,7 +267,7 @@ describe('Phase 9 — certificates', () => {
 
     // Rehydrate in a new manager — public cert restored, key not
     const mgr2 = resetCertificateManagerForTests(fakeStorage);
-    await new Promise((r) => setTimeout(r, 30));
+    await vi.waitFor(() => expect(mgr2.list()).toHaveLength(1), { timeout: 2000, interval: 20 });
     const list = mgr2.list();
     expect(list.length).toBe(1);
     expect(list[0].hasPrivateKey).toBe(false);

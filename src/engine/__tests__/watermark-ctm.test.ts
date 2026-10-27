@@ -13,6 +13,7 @@ import {
   buildTextWatermarkContent,
   type TextWatermark,
 } from '../watermark/watermark-engine';
+import { detectAndRemoveAllWatermarks } from '../watermark/watermark-remover';
 
 function makePage(objects: Map<string, PDFObject>, content: string): PDFPageInfo {
   const contentRef = new PDFRef(2, 0);
@@ -59,6 +60,13 @@ function textWm(overrides: Partial<TextWatermark> = {}): TextWatermark {
 }
 
 describe('watermark CTM isolation', () => {
+  it('can run watermark detection and removal on an empty document', () => {
+    const result = detectAndRemoveAllWatermarks({ pages: [], objects: new Map() });
+    expect(result.detections).toEqual([]);
+    expect(result.removal.total).toBe(0);
+    expect(result.removal.removed).toBe(0);
+  });
+
   it('wraps existing content in q/Q so leftover CTM cannot tilt the watermark', async () => {
     const objects = new Map<string, PDFObject>();
     // Unbalanced cm left active — common in buggy / generated PDFs

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { PDFDocument } from 'pdf-lib';
 import { parsePDF } from '../parser/parser';
-import { PDFArray, PDFDict, PDFHexString, PDFNumber, PDFStream, PDFString } from '../types';
+import { PDFArray, PDFDict, PDFHexString, PDFNumber, PDFRef, PDFStream, PDFString } from '../types';
 import { SignedDocumentEditError, saveQuick, saveOptimized } from '../writer/save-pipeline';
 import { serializeDocument } from '../writer/serializer';
 import { saveQuick as saveQuickWorker, saveOptimized as saveOptimizedWorker } from '../worker/client';
@@ -61,5 +61,14 @@ describe('finalized signed document saves', () => {
     stream.rawBytes[0] ^= 1;
     await expect(saveQuick(doc)).rejects.toBeInstanceOf(SignedDocumentEditError);
     await expect(saveOptimized(doc)).rejects.toBeInstanceOf(SignedDocumentEditError);
+  });
+
+  it('ignores detached parser artifacts but rejects an added reachable object', async () => {
+    const doc = await signedFixture();
+    const ref = new PDFRef(999, 0);
+    doc.objects.set(ref.toKey(), new PDFString('Detached object'));
+    expect(await saveQuick(doc)).toEqual(doc.rawBytes);
+    doc.catalog.set('Added', ref);
+    await expect(saveQuick(doc)).rejects.toBeInstanceOf(SignedDocumentEditError);
   });
 });

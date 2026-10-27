@@ -73,6 +73,22 @@ describe('DocumentSession', () => {
     expect(session.revision).toBe(6);
   });
 
+  it('previews history without moving the cursor or exposing stored bytes', async () => {
+    const session = new DocumentSession(bytes(1));
+    await commit(session, 2);
+    const revision = session.revision;
+    const previous = session.preview('undo');
+    expect(previous).toEqual(bytes(1));
+    previous![0] = 9;
+    expect(session.preview('undo')).toEqual(bytes(1));
+    expect(session.preview('current')).toEqual(bytes(2));
+    expect(session.preview('redo')).toBeNull();
+    expect(session.revision).toBe(revision);
+    expect(session.canUndo).toBe(true);
+    expect(session.undo()).toEqual(bytes(1));
+    expect(session.preview('redo')).toEqual(bytes(2));
+  });
+
   it('clears redo only when a new edit commits, not when it rolls back', async () => {
     const session = new DocumentSession(bytes(1));
     await commit(session, 2);

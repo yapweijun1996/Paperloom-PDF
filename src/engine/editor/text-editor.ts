@@ -1224,7 +1224,8 @@ function unsupportedFallbackCodePoints(
 ): number[] {
   // Complex scripts always need shaping, even when an existing font has a Unicode encoder.
   const forced = Array.from(text).filter(ch =>
-    /[\u0900-\u0d7f\u0e00-\u0e7f\u200c\u200d\u25cc\p{Script=Arabic}\p{Script=Hebrew}\p{Extended_Pictographic}\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/u.test(ch));
+    /[\u0900-\u0d7f\u0e00-\u0e7f\u200c\u200d\u25cc\p{Script=Arabic}\p{Script=Hebrew}\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/u.test(ch) ||
+    (/\p{Extended_Pictographic}/u.test(ch) && !(allowBuiltInFallback && getBuiltInFallbackGlyph(ch))));
   if (!isEncodingLossy(text, encoded, fontData)) return forced.map(ch => ch.codePointAt(0)!);
   return Array.from(text).flatMap(ch => {
     const encoding = encodeTextForFont(ch, fontData);

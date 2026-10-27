@@ -27,6 +27,12 @@ export function CertificateImportDialog({
   const [pemPaste, setPemPaste] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // Clear the previous session's error without discarding the entered certificate text.
+  const [previousOpen, setPreviousOpen] = useState(false);
+  if (previousOpen !== open) {
+    setPreviousOpen(open);
+    if (open) setError(null);
+  }
   const fileRef = useRef<HTMLInputElement>(null);
 
   const refresh = useCallback(() => {
@@ -39,7 +45,6 @@ export function CertificateImportDialog({
 
   useEffect(() => {
     if (!open) return;
-    setError(null);
     // Hydrate may be async on first open
     const t = window.setTimeout(refresh, 50);
     return () => window.clearTimeout(t);

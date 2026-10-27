@@ -129,11 +129,11 @@ export function SignatureOverlay(props: SignatureOverlayProps) {
     [scale, sig.locked, toCss],
   );
 
-  const endDrag = useCallback(() => {
+  const endDrag = useCallback(function handlePointerUp() {
     const mode = dragMode.current;
     dragMode.current = null;
     window.removeEventListener('pointermove', onPointerMove);
-    window.removeEventListener('pointerup', endDrag);
+    window.removeEventListener('pointerup', handlePointerUp);
     if (!mode || sig.locked) return;
 
     const cur = liveRef.current;

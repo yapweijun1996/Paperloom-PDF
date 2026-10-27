@@ -1,2 +1,5 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# PDF files contain binary streams that must never undergo newline conversion.
+*.pdf binary

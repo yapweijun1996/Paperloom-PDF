@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef } from 'react';
 import type { PDFDocumentData } from '@/engine/browser-core';
 
 interface WatermarkPreviewProps {
@@ -29,16 +29,18 @@ export function WatermarkPreview({
   watermarkImageDims, watermarkImageFile, watermarkShapeType, watermarkShapeColor,
   watermarkBlendMode,
 }: WatermarkPreviewProps) {
-  const [imgUrl, setImgUrl] = useState<string | null>(null);
+  const previewRef = useRef<HTMLDivElement>(null);
+  const currentPageInfo = doc?.pages[currentPage];
 
   useEffect(() => {
-    if (watermarkType === 'image' && watermarkImageFile) {
-      const url = URL.createObjectURL(watermarkImageFile);
-      setImgUrl(url);
-      return () => URL.revokeObjectURL(url);
-    }
-    setImgUrl(null);
-  }, [watermarkType, watermarkImageFile]);
+    if (watermarkType !== 'image' || !watermarkImageFile || !previewRef.current) return;
+    const url = URL.createObjectURL(watermarkImageFile);
+    previewRef.current.querySelectorAll<HTMLImageElement>('img[data-watermark-preview]').forEach(image => {
+      image.src = url;
+    });
+    return () => URL.revokeObjectURL(url);
+  }, [watermarkType, watermarkImageFile, watermarkMosaic, scale, doc, currentPage,
+    currentPageInfo?.mediaBox.width, currentPageInfo?.mediaBox.height, currentPageInfo?.rotate]);
 
   if (!doc || !doc.pages[currentPage]) return null;
 
@@ -54,8 +56,8 @@ export function WatermarkPreview({
   const imgHeightCss = watermarkImageDims?.height ? (watermarkImageDims.height * (watermarkSize / 100)) * scale : 0;
   const padCss = 30 * scale;
 
-  let textWidthCss = (watermarkText.length * (fontSizeCss / scale) * 0.5 * scale);
-  let textHeightCss = fontSizeCss;
+  const textWidthCss = (watermarkText.length * (fontSizeCss / scale) * 0.5 * scale);
+  const textHeightCss = fontSizeCss;
 
   let wmWidthCss = watermarkType === 'text' ? textWidthCss : watermarkType === 'shape' ? textWidthCss + 40 * scale : imgWidthCss;
   let wmHeightCss = watermarkType === 'text' ? textHeightCss : watermarkType === 'shape' ? textHeightCss + 40 * scale : imgHeightCss;
@@ -95,8 +97,8 @@ export function WatermarkPreview({
         <span style={{ fontSize: fontSizeCss, color: watermarkColor, fontFamily: watermarkFontName, whiteSpace: 'pre', lineHeight: 1 }}>
           {watermarkText}
         </span>
-      ) : watermarkType === 'image' && imgUrl ? (
-        <img src={imgUrl} style={{ width: imgWidthCss, height: imgHeightCss }} alt="watermark" />
+      ) : watermarkType === 'image' && watermarkImageFile ? (
+        <img data-watermark-preview style={{ width: imgWidthCss, height: imgHeightCss }} alt="watermark" />
       ) : watermarkType === 'shape' ? (
         <div style={{
           position: 'relative',
@@ -126,7 +128,7 @@ export function WatermarkPreview({
         tiles.push(renderItem(c * spacing, r * spacing, `tile-${r}-${c}`));
       }
     }
-    return <div className="absolute inset-0 z-40 pointer-events-none overflow-hidden">{tiles}</div>;
+    return <div ref={previewRef} className="absolute inset-0 z-40 pointer-events-none overflow-hidden">{tiles}</div>;
   }
 
   let cx = (pageWidth / 2) * scale;
@@ -144,5 +146,5 @@ export function WatermarkPreview({
     case 'bottom-right': cx = (pageWidth * scale) - padCss - wmWidthCss / 2; cy = (pageHeight * scale) - padCss - wmHeightCss / 2; break;
   }
 
-  return <div className="absolute inset-0 z-40 pointer-events-none overflow-hidden">{renderItem(cx, cy, 'single')}</div>;
+  return <div ref={previewRef} className="absolute inset-0 z-40 pointer-events-none overflow-hidden">{renderItem(cx, cy, 'single')}</div>;
 }

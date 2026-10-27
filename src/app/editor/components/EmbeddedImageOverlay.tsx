@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Replace, X } from 'lucide-react';
 import type { ImageItem } from '@/engine/browser-core';
 import type { PDFObject, PDFPageInfo } from '@/engine/types';
@@ -49,26 +49,32 @@ export function EmbeddedImageOverlay(props: EmbeddedImageOverlayProps) {
     onCommitMove, onCommitResize, onReplace, onDeselect,
   } = props;
 
-  const [live, setLive] = useState({
+  const [liveState, setLiveState] = useState(() => ({
+    item, box: { x: item.x, y: item.y, width: item.width, height: item.height },
+  }));
+  const live = useMemo(() => liveState.item === item ? liveState.box : {
     x: item.x, y: item.y, width: item.width, height: item.height,
-  });
+  }, [liveState, item]);
+  const setLive = useCallback((box: typeof live) => setLiveState({ item, box }), [item]);
   const liveRef = useRef(live);
-  liveRef.current = live;
-  const [layers, setLayers] = useState<ImagePreviewLayers | null>(null);
+  useLayoutEffect(() => { liveRef.current = live; }, [live]);
+  const layersRef = useRef<ImagePreviewLayers | null>(null);
+  const [layerSource, setLayerSource] = useState<{ page: typeof page; objects: typeof objects; item: typeof item; scale: number } | null>(null);
+  const hasLayers = layerSource?.page === page && layerSource.objects === objects &&
+    layerSource.item === item && layerSource.scale === scale;
   const cleanupDragRef = useRef<() => void>(() => {});
   const backgroundRef = useRef<HTMLDivElement>(null);
   const imageRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    setLive({ x: item.x, y: item.y, width: item.width, height: item.height });
-    return () => cleanupDragRef.current();
-  }, [item]);
+  useEffect(() => () => cleanupDragRef.current(), [item]);
 
   useEffect(() => {
     let cancelled = false;
-    setLayers(null);
     void renderImagePreviewLayers(page, objects, item, scale).then(result => {
-      if (!cancelled) setLayers(result);
+      if (!cancelled) {
+        layersRef.current = result;
+        setLayerSource({ page, objects, item, scale });
+      }
     }).catch(error => console.error('[EmbeddedImageOverlay] preview failed', error));
     return () => { cancelled = true; };
   }, [page, objects, item, scale]);
@@ -104,13 +110,14 @@ export function EmbeddedImageOverlay(props: EmbeddedImageOverlayProps) {
       liveRef.current = next;
       setLive(next);
     }
-  }, [scale]);
+  }, [scale, setLive]);
 
   const visibleBox = previewBox ?? live;
   const previewing = visibleBox.x !== item.x || visibleBox.y !== item.y ||
     visibleBox.width !== item.width || visibleBox.height !== item.height;
   useEffect(() => {
-    if (!previewing || !layers) return;
+    const layers = layersRef.current;
+    if (!previewing || !hasLayers || !layers) return;
     const background = backgroundRef.current;
     const image = imageRef.current;
     background?.replaceChildren(layers.background);
@@ -121,7 +128,7 @@ export function EmbeddedImageOverlay(props: EmbeddedImageOverlayProps) {
       background?.replaceChildren();
       image?.replaceChildren();
     };
-  }, [layers, previewing]);
+  }, [hasLayers, layerSource, previewing]);
 
   const endDragStable = useCallback(async () => {
     const mode = dragMode.current;
@@ -151,7 +158,7 @@ export function EmbeddedImageOverlay(props: EmbeddedImageOverlayProps) {
         height: origin.current.height,
       });
     }
-  }, [onCommitMove, onCommitResize, onPointerMove]);
+  }, [onCommitMove, onCommitResize, onPointerMove, setLive]);
 
   const begin = useCallback((mode: 'move' | `resize-${ResizeHandle}`, e: React.PointerEvent) => {
     e.preventDefault();
@@ -182,7 +189,7 @@ export function EmbeddedImageOverlay(props: EmbeddedImageOverlayProps) {
     window.addEventListener('pointermove', onPointerMove);
     window.addEventListener('pointerup', endDragStable);
     window.addEventListener('pointercancel', cancel);
-  }, [onPointerMove, endDragStable, item]);
+  }, [onPointerMove, endDragStable, item, setLive]);
 
   const box = toCss(visibleBox);
 
@@ -226,14 +233,14 @@ export function EmbeddedImageOverlay(props: EmbeddedImageOverlayProps) {
 
   return (
     <>
-    {previewing && layers && (
+    {previewing && hasLayers && (
       <div
         ref={backgroundRef}
         className="absolute inset-0 pointer-events-none"
         style={{ zIndex: EMBEDDED_IMAGE_OVERLAY_LAYERS.overlay }}
       />
     )}
-    {previewing && layers && (
+    {previewing && hasLayers && (
       <div
         ref={imageRef}
         className="absolute pointer-events-none"

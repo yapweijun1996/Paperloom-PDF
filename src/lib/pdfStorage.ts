@@ -74,8 +74,11 @@ export async function clearPdfFromStorage(): Promise<void> {
   });
 }
 
-export async function saveEditorSession(session: EditorSessionRecord): Promise<void> {
+export async function saveEditorSession(session: EditorSessionRecord, isCurrent: () => boolean = () => true): Promise<void> {
   const db = await openDb();
+  // A document may be replaced while IndexedDB is opening. Do not create a
+  // transaction for an obsolete editor session.
+  if (!isCurrent()) return;
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_NAME, 'readwrite');
     const store = tx.objectStore(STORE_NAME);

@@ -14,7 +14,6 @@ import type { PDFDocumentData } from '@/engine/browser-core';
 import {
   estimateDocumentSize,
   formatFileSize,
-  type SizeEstimation,
 } from '../export-formats';
 
 import {
@@ -50,14 +49,8 @@ export function DownloadDropdown({
   const [isOpen, setIsOpen] = useState(false);
   const [selectedDpi, setSelectedDpi] = useState<number | null>(DEFAULT_DOWNLOAD_OPTIONS.dpi);
   const [compressionQuality, setCompressionQuality] = useState<number | null>(DEFAULT_DOWNLOAD_OPTIONS.quality);
-  const [sizeEstimation, setSizeEstimation] = useState<SizeEstimation | null>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (isOpen && doc) {
-      setSizeEstimation(estimateDocumentSize(doc));
-    }
-  }, [isOpen, doc]);
+  const sizeEstimation = isOpen && doc ? estimateDocumentSize(doc) : null;
 
   useEffect(() => {
     if (!isOpen) return;

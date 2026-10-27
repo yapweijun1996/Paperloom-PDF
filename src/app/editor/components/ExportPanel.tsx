@@ -84,18 +84,20 @@ export function ExportPanel({
   const [exportTotal, setExportTotal] = useState(0);
   const [exportDone, setExportDone] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
+  // Reset transient results on open or page-count change while retaining format choices.
+  const [previousPanel, setPreviousPanel] = useState({ isOpen: false, totalPages });
+  if (previousPanel.isOpen !== isOpen || previousPanel.totalPages !== totalPages) {
+    setPreviousPanel({ isOpen, totalPages });
+    if (isOpen) {
+      setExportDone(false);
+      setExportError(null);
+      setExportProgress(0);
+      setCustomTo(totalPages);
+    }
+  }
   const panelRef = useRef<HTMLDivElement>(null);
 
   const formatInfo = EXPORT_FORMATS.find((f) => f.id === selectedFormat)!;
-
-  // Reset panel state when it opens.
-  useEffect(() => {
-    if (!isOpen) return;
-    setExportDone(false);
-    setExportError(null);
-    setExportProgress(0);
-    setCustomTo(totalPages);
-  }, [isOpen, totalPages]);
 
   useEffect(() => {
     if (!isOpen) return;

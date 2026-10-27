@@ -1,6 +1,6 @@
 import type { EditorHistoryEntry } from '../editing/editor-history';
 import type { PDFDocumentData } from '../types';
-import type { SessionDocumentEditor } from './document-edit';
+import { publishHistoryDraft, type PreparedHistoryRestore, type SessionDocumentEditor } from './document-edit';
 
 interface HistoryState {
   entry: EditorHistoryEntry;
@@ -16,17 +16,24 @@ export interface HistoryRestore {
   restoredDocument: boolean;
 }
 
+export interface AtomicHistoryOptions {
+  isCurrent(): boolean;
+  applyLegacy(doc: PDFDocumentData, entry: EditorHistoryEntry): Promise<void>;
+}
+
 /** Orders legacy snapshots and session boundaries without exposing internal checkpoints. */
 export class SessionEditorHistory {
   private states: HistoryState[] = [];
   private cursor = -1;
   private restoring = false;
+  private revision = 0;
 
   constructor(private readonly maxSize = 50) {}
 
   seed(entry: EditorHistoryEntry): void {
     this.states = [{ entry }];
     this.cursor = 0;
+    this.revision++;
   }
 
   push(entry: EditorHistoryEntry, session?: SessionDocumentEditor): void {
@@ -34,6 +41,7 @@ export class SessionEditorHistory {
     this.states.push({ entry, sessions: session ? [session] : undefined });
     if (this.states.length > this.maxSize) this.states.shift();
     this.cursor = this.states.length - 1;
+    this.revision++;
   }
 
   replace(entry: EditorHistoryEntry, preserveRedo = false, session?: SessionDocumentEditor): void {
@@ -49,6 +57,7 @@ export class SessionEditorHistory {
       };
     }
     if (!preserveRedo) this.states.length = this.cursor + 1;
+    this.revision++;
   }
 
   peek(): EditorHistoryEntry | null {
@@ -82,6 +91,7 @@ export class SessionEditorHistory {
         }
       }
       this.cursor--;
+      this.revision++;
       return { entry: target.entry, restoredDocument: restoredDocument && !state.legacyBefore && !target.replaced };
     } finally {
       this.restoring = false;
@@ -95,10 +105,51 @@ export class SessionEditorHistory {
       const state = this.states[this.cursor + 1];
       const restoredDocument = await this.restoreSessions(doc, state, 'redo');
       this.cursor++;
+      this.revision++;
       // Export can replace a snapshot after baking overlays into native content.
       // Restore that legacy content on top of the session's resource revision.
       return { entry: state.entry, restoredDocument: restoredDocument && !state.replaced };
     } finally {
+      this.restoring = false;
+    }
+  }
+
+  /** Stage the full toolbar step, including legacy graph restoration, before publishing it. */
+  async moveAtomic(doc: PDFDocumentData, direction: 'undo' | 'redo', options: AtomicHistoryOptions): Promise<HistoryRestore | null> {
+    if (direction === 'undo' ? !this.canUndo() : !this.canRedo()) return null;
+    if (!options.isCurrent()) throw new Error('Document changed during history restoration');
+    const cursor = this.cursor;
+    const revision = this.revision;
+    const state = this.states[direction === 'undo' ? cursor : cursor + 1];
+    const target = direction === 'undo' ? this.states[cursor - 1] : state;
+    const sessions = state.sessions ?? [];
+    const ordered = direction === 'undo' ? [...sessions].reverse() : sessions;
+    const restoredDocument = sessions.length > 0 &&
+      (direction === 'undo' ? !state.legacyBefore && !target.replaced : !state.replaced);
+    const isCurrent = () => options.isCurrent() && this.cursor === cursor && this.revision === revision;
+    const prepared: PreparedHistoryRestore[] = [];
+    this.restoring = true;
+    try {
+      await publishHistoryDraft(doc, async staged => {
+        for (const session of ordered) {
+          const restore = await session.prepareRestore(staged, direction, isCurrent);
+          if (!restore) throw new Error('Session history boundary is unavailable');
+          prepared.push(restore);
+        }
+        if (direction === 'undo' && target.replaced && target.sessions?.length) {
+          const restore = await target.sessions[target.sessions.length - 1].prepareRestore(staged, 'current', isCurrent);
+          if (!restore) throw new Error('Session history boundary is unavailable');
+          prepared.push(restore);
+        }
+        if (!restoredDocument) await options.applyLegacy(staged, target.entry);
+      }, isCurrent, () => {
+        for (const restore of prepared) restore.commit();
+        this.cursor += direction === 'undo' ? -1 : 1;
+        this.revision++;
+      });
+      return { entry: target.entry, restoredDocument: true };
+    } finally {
+      for (const restore of prepared) restore.cancel();
       this.restoring = false;
     }
   }

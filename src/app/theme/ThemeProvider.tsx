@@ -1,6 +1,6 @@
 'use client';
 
-import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useState, useSyncExternalStore } from 'react';
 import { resolveInitialTheme, STORAGE_KEY } from './initialTheme';
 
 export type ThemeMode = 'dark' | 'light';
@@ -23,28 +23,49 @@ function applyTheme(mode: ThemeMode) {
   document.documentElement.style.colorScheme = mode;
 }
 
+function createThemeStore() {
+  let selected: ThemeMode | null = null;
+  const listeners = new Set<() => void>();
+  return {
+    subscribe(listener: () => void) {
+      listeners.add(listener);
+      return () => { listeners.delete(listener); };
+    },
+    getSnapshot(): ThemeMode {
+      if (selected) return selected;
+      try {
+        return resolveInitialTheme(localStorage.getItem(STORAGE_KEY));
+      } catch {
+        return 'light';
+      }
+    },
+    select(mode: ThemeMode) {
+      selected = mode;
+      try {
+        localStorage.setItem(STORAGE_KEY, mode);
+      } catch {
+        /* Keep the selected theme for this session. */
+      }
+      listeners.forEach(listener => listener());
+    },
+  };
+}
+
+function serverTheme(): ThemeMode { return 'light'; }
+
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
-  const [theme, setThemeState] = useState<ThemeMode>('light');
+  const [store] = useState(createThemeStore);
+  const theme = useSyncExternalStore(store.subscribe, store.getSnapshot, serverTheme);
 
   useEffect(() => {
-    try {
-      const initial = resolveInitialTheme(localStorage.getItem(STORAGE_KEY));
-      setThemeState(initial);
-      applyTheme(initial);
-    } catch {
-      applyTheme('light');
-    }
-  }, []);
+    // During hydration, use the stored value rather than the server snapshot.
+    applyTheme(store.getSnapshot());
+  }, [store, theme]);
 
   const setTheme = useCallback((mode: ThemeMode) => {
-    setThemeState(mode);
+    store.select(mode);
     applyTheme(mode);
-    try {
-      localStorage.setItem(STORAGE_KEY, mode);
-    } catch {
-      /* ignore */
-    }
-  }, []);
+  }, [store]);
 
   const toggleTheme = useCallback(() => {
     setTheme(theme === 'dark' ? 'light' : 'dark');

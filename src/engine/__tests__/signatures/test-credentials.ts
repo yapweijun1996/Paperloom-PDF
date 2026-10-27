@@ -1,5 +1,5 @@
 import { execFileSync } from 'child_process';
-import { mkdtempSync, readFileSync } from 'fs';
+import { mkdtempSync, readFileSync, rmSync, rmdirSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 
@@ -18,19 +18,24 @@ export function getTestCredentials(): TestCredentials {
   const keyPath = join(directory, 'signer.key');
   const certPath = join(directory, 'signer.pem');
   const derPath = join(directory, 'signer.der');
-  execFileSync('openssl', [
-    'req', '-x509', '-newkey', 'rsa:2048', '-nodes',
-    '-keyout', keyPath, '-out', certPath,
-    '-days', '1', '-subj', '/CN=Bloom Test Signer',
-  ], { stdio: 'ignore' });
-  execFileSync('openssl', ['x509', '-in', certPath, '-outform', 'DER', '-out', derPath], {
-    stdio: 'ignore',
-  });
-  const certificatePem = readFileSync(certPath, 'utf8');
-  cached = {
-    pem: `${readFileSync(keyPath, 'utf8')}\n${certificatePem}`,
-    certificatePem,
-    certificateDer: new Uint8Array(readFileSync(derPath)),
-  };
-  return cached;
+  try {
+    execFileSync('openssl', [
+      'req', '-x509', '-newkey', 'rsa:2048', '-nodes',
+      '-keyout', keyPath, '-out', certPath,
+      '-days', '1', '-subj', '/CN=Bloom Test Signer',
+    ], { stdio: 'ignore' });
+    execFileSync('openssl', ['x509', '-in', certPath, '-outform', 'DER', '-out', derPath], {
+      stdio: 'ignore',
+    });
+    const certificatePem = readFileSync(certPath, 'utf8');
+    cached = {
+      pem: `${readFileSync(keyPath, 'utf8')}\n${certificatePem}`,
+      certificatePem,
+      certificateDer: new Uint8Array(readFileSync(derPath)),
+    };
+    return cached;
+  } finally {
+    for (const path of [keyPath, certPath, derPath]) rmSync(path, { force: true });
+    rmdirSync(directory);
+  }
 }

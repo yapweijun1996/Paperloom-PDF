@@ -57,9 +57,15 @@ export async function hasDocumentEdits(doc: PDFDocumentData): Promise<boolean> {
       isOwner: false,
     });
   }
-  if (doc.version !== original.version || doc.objects.size !== original.objects.size) return true;
-  for (const [key, value] of doc.objects) {
-    if (!equalObjects(value, original.objects.get(key))) return true;
+  // Full serialization only writes trailer-reachable objects. Parser-only
+  // object-stream and xref containers can remain in memory after that rewrite.
+  const roots = rootsFromTrailer(doc.xref.trailerDict);
+  const originalRoots = rootsFromTrailer(original.xref.trailerDict);
+  const objects = roots.length ? garbageCollect(doc.objects, roots).objects : doc.objects;
+  const originalObjects = originalRoots.length ? garbageCollect(original.objects, originalRoots).objects : original.objects;
+  if (doc.version !== original.version || objects.size !== originalObjects.size) return true;
+  for (const [key, value] of objects) {
+    if (!equalObjects(value, originalObjects.get(key))) return true;
   }
   for (const key of ['Root', 'Info', 'Encrypt', 'ID']) {
     if (!equalObjects(doc.xref.trailerDict.get(key), original.xref.trailerDict.get(key))) return true;

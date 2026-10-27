@@ -276,9 +276,39 @@ Migrated native call paths in `src/app/editor/page.tsx`:
   one `place-in-field` entry. `/PaperloomSignatureId` associates that appearance
   with its overlay. Removing the visual signature removes its appearance, not
   the field or its cryptographic `/V`.
-- **AcroForm fields:** automatic signature-field creation stages the existing
-  `createSignatureFieldAtPoint` operation before signing; the signing pipeline
-  itself is unchanged. Text, button, and choice values re-detect widgets by
+- **Links:** creation, URL or display-text updates, and removal are staged in
+  the native edit queue with a document lease. Successful operations create one
+  toolbar history boundary; stale or failed drafts do not publish partial link
+  or text changes.
+- **Selected object deletion:** image and drawing removal run in that queue on a
+  detached draft. The selected page and object are reidentified before deletion;
+  stale or ambiguous selections are rejected. Drawing removal also checks that
+  the selected drawing disappeared before publishing. A successful deletion has
+  one undo/redo boundary. Image movement and resizing use the same queue and
+  reidentify the placement before writing. Queued keyboard nudges follow a moved
+  placement; a resize based on an outdated selection is rejected.
+- **Cryptographic signing:** the native edit queue stages field creation and
+  signing together. A successful `digital-sign` history entry restores both
+  the document graph and signed bytes on undo and redo. A failed or conflicting
+  draft does not publish; document replacement is checked before publication.
+  Signing rejects encrypted documents and uncommitted text, image, drawing, or
+  visual-signature overlays. Existing signed documents with pending edits must
+  have those edits undone before another signature. Signed saves compare
+  trailer-reachable objects so detached object-stream and xref containers do not
+  cause false edit detection; reachable changes still block the save. The editor
+  still stores its mutable document graph in React state, and the graph, visual
+  lock, and history publication do not yet share an owner-level atomic boundary.
+- **Document identity:** the editor's identity owner tracks replacements and
+  serializes native edits. Queued edits use generation-bound leases and reject
+  obsolete documents even when two wrappers share an object map. Idle waiters
+  also wait for work queued during the wait. Autosave discards stale results
+  before opening a storage transaction. Staged text edits, highlights, drawing
+  creation and erasure, image replacement, watermark application, and markup
+  clearing also verify their lease before publishing. Undo and redo run in the
+  queue: combined session boundaries and legacy graph restoration are staged
+  together, and history cursors advance only after a guarded publication.
+  Legacy non-queued writes have not yet migrated to this owner.
+- **AcroForm fields:** text, button, and choice values re-detect widgets by
   reference in the draft instead of mutating live widget dictionaries. Each
   successful value edit publishes one `form-value` entry. Existing Flatten Forms
   stages content updates and removal from `/Annots` and the `/Fields` tree,
@@ -351,10 +381,10 @@ on the same toolbar entry, so the 50-entry limit is not a memory-size limit.
   floating image insertion, editing, movement, replacement and deletion;
   non-text/non-drawing/non-signature overlay flattening.
 - Embedded-image movement/resizing/deletion and other selected-object transforms.
-- Links and other annotation types beyond migrated text-markup, Ink, shape
-  creation, and visual signatures.
-- Signature-library management and overlay locking; cryptographic signing,
-  validation/LTV-related mutations, and security-panel changes.
+- Annotation types beyond migrated links, text-markup, Ink, shape creation,
+  and visual signatures.
+- Signature-library management and manual overlay locking; validation/LTV-related
+  mutations and security-panel changes.
 - Watermark removal, initial text normalization,
   export/compression, autosave, recovery, and browser persistence.
 
@@ -408,6 +438,13 @@ surviving siblings and indirect field branches, and failed draft isolation.
 `src/engine/__tests__/session-signature-form-history.test.ts` interleaves those
 boundaries with legacy snapshots, checks repeated exact undo/redo bytes, and
 checks retained redo and toolbar position after failed edits or restores.
+`src/engine/__tests__/session-cryptographic-signing.test.ts` covers signing
+transactions, two independently verified signatures, complete history steps,
+object-stream input, encrypted-input rejection, failures, and conflicting changes.
+`src/engine/__tests__/session-history-atomic.test.ts` covers staged composite
+history, legacy restoration failure, concurrent edits and document replacement.
+`src/engine/__tests__/session-link-history.test.ts` covers staged link creation,
+URL and text changes, removal, failure isolation, and undo/redo.
 `src/engine/__tests__/form-value-appearances.test.ts` adds synthetic exported-PDF
 regressions for stale appearance replacement, inherited fonts and layout,
 choice labels, string escaping, encoding fallback, appearance hints, and exact

@@ -287,7 +287,7 @@ export function EditableLineBox(props: EditableLineBoxProps) {
     }
   }, [onOffsetChange, onSizeChange, width, height, fontSizeCss]);
 
-  const endDrag = useCallback((event?: PointerEvent) => {
+  const endDrag = useCallback(function handlePointerUp(event?: PointerEvent) {
     dragMode.current = null;
     onDragEnd?.();
     if (event && captureTarget.current?.hasPointerCapture?.(event.pointerId)) {
@@ -295,7 +295,7 @@ export function EditableLineBox(props: EditableLineBoxProps) {
     }
     captureTarget.current = null;
     window.removeEventListener('pointermove', onPointerMove);
-    window.removeEventListener('pointerup', endDrag);
+    window.removeEventListener('pointerup', handlePointerUp);
   }, [onPointerMove, onDragEnd]);
 
   const startDrag = useCallback((mode: DragMode, e: React.PointerEvent) => {

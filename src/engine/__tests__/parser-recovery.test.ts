@@ -9,7 +9,7 @@ function classicPdf(startxrefOverride?: number): Uint8Array {
     '3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 10 10] /Contents 4 0 R >>\nendobj\n',
     '4 0 obj\n<< /Length 0 >>\nstream\n\nendstream\nendobj\n',
   ];
-  let offset = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+  const offset = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
   const offsets = [0];
   let running = chunks[0].length;
   for (let i = 1; i < chunks.length; i++) {

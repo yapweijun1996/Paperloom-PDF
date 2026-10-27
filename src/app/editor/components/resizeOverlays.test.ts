@@ -374,4 +374,17 @@ describe('embedded image preview lifecycle', () => {
     await pointer(window, 'pointerup', 440, 420);
     expect(props.onCommitResize).not.toHaveBeenCalled();
   });
+
+  it('cancels an active gesture and displays the newly selected image', async () => {
+    const props = embeddedProps();
+    const overlay = await mount(createElement(EmbeddedImageOverlay, props));
+    await pointer(overlay.querySelector('[data-handle="se"]')!, 'pointerdown', 400, 400);
+    await pointer(window, 'pointermove', 440, 420);
+    const nextItem = { ...props.item, x: 90, width: 120 };
+    await act(async () => root!.render(createElement(EmbeddedImageOverlay, { ...props, item: nextItem })));
+    await pointer(window, 'pointerup', 440, 420);
+    expect(overlay.style.left).toBe('180px');
+    expect(overlay.style.width).toBe('240px');
+    expect(props.onCommitResize).not.toHaveBeenCalled();
+  });
 });

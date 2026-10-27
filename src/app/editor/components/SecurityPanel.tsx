@@ -55,8 +55,17 @@ export function SecurityPanel({ doc, engine, onDocChange, markDirty, onClose, is
   }, [doc, engine]);
 
   useEffect(() => {
-    void refresh();
-  }, [refresh]);
+    if (!doc || !engine) return;
+    let active = true;
+    void engine.securityEngine.inspector.inspectFull(doc).then(full => {
+      if (!active) return;
+      setReport(full);
+      setPolicies(engine.securityEngine.policy.listPolicies());
+    }).catch(e => {
+      if (active) setError(e instanceof Error ? e.message : String(e));
+    });
+    return () => { active = false; };
+  }, [doc, engine]);
 
   const run = useCallback(async (fn: () => Promise<string>) => {
     if (!doc || !engine) return;

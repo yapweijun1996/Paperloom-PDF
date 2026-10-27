@@ -301,7 +301,7 @@ export function buildPatternWatermarkContent(
   for (let row = 0; row < rows; row++) {
     for (let col = 0; col < cols; col++) {
       let x = originX + col * wm.hSpacing;
-      let y = originY + row * wm.vSpacing;
+      const y = originY + row * wm.vSpacing;
 
       // Apply stagger for alternating rows
       if (wm.stagger && row % 2 === 1) {
@@ -343,8 +343,8 @@ export function buildShapeWatermarkContent(
     lines.push(`/${getExtGStateName(wm.id)} gs`);
   }
 
-  let cxs: number[] = [];
-  let cys: number[] = [];
+  const cxs: number[] = [];
+  const cys: number[] = [];
 
   if (wm.tile) {
     const spacing = wm.tileSpacing || 300;
@@ -527,8 +527,8 @@ export async function applyWatermarkToPage(
   originY: number = 0,
 ): Promise<Uint8Array> {
   let watermarkContent: Uint8Array;
-  let needsExtGState = watermark.opacity < 1 || (watermark.blendMode !== undefined && watermark.blendMode !== 'Normal');
-  let needsImageXObject = watermark.type === 'image';
+  const needsExtGState = watermark.opacity < 1 || (watermark.blendMode !== undefined && watermark.blendMode !== 'Normal');
+  const needsImageXObject = watermark.type === 'image';
 
   // Build the watermark content operators (positions relative to MediaBox origin)
   switch (watermark.type) {

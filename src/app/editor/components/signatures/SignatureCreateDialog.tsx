@@ -43,6 +43,16 @@ export function SignatureCreateDialog({ open, onOpenChange, onSave }: SignatureC
   const [uploadDims, setUploadDims] = useState<{ w: number; h: number } | null>(null);
   const [templateId, setTemplateId] = useState('minimal');
   const [error, setError] = useState<string | null>(null);
+  // A new session clears transient upload and error state but retains style choices.
+  const [previousOpen, setPreviousOpen] = useState(false);
+  if (previousOpen !== open) {
+    setPreviousOpen(open);
+    if (open) {
+      setUploadPreview(null);
+      setUploadDims(null);
+      setError(null);
+    }
+  }
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const engineRef = useRef(new SignatureDrawEngine());
@@ -68,9 +78,6 @@ export function SignatureCreateDialog({ open, onOpenChange, onSave }: SignatureC
   useEffect(() => {
     if (!open) return;
     engineRef.current = new SignatureDrawEngine({ color: drawColor, width: drawWidth });
-    setUploadPreview(null);
-    setUploadDims(null);
-    setError(null);
     requestAnimationFrame(redraw);
   }, [open, redraw]);
 

@@ -34,6 +34,13 @@ export class DocumentSession {
     return this.cursor < this.snapshots.length - 1;
   }
 
+  /** Read a history boundary without moving the cursor. */
+  preview(direction: 'undo' | 'redo' | 'current'): Uint8Array | null {
+    if (this.activeTransaction) throw new Error('An edit transaction is already active');
+    const index = this.cursor + (direction === 'undo' ? -1 : direction === 'redo' ? 1 : 0);
+    return index < 0 || index >= this.snapshots.length ? null : new Uint8Array(this.snapshots[index].bytes);
+  }
+
   /** Optional bytes bridge edits that have not yet moved to transactions. */
   snapshot(label: string, bytes?: Uint8Array): void {
     if (this.activeTransaction) throw new Error('An edit transaction is already active');

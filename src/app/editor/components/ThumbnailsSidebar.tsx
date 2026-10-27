@@ -137,7 +137,25 @@ export function ThumbnailsSidebar({
     onReorderPages?.(from, toIndex);
   };
 
-  const InsertBar = ({
+  const onInsertBarDragOver = (e: React.DragEvent<HTMLDivElement>, insertAt: number) => {
+    const from = dragIndexRef.current;
+    if (from == null) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    setDropTarget(insertAt > from ? insertAt - 1 : insertAt);
+  };
+
+  const onInsertBarDrop = (e: React.DragEvent<HTMLDivElement>, insertAt: number) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const from = dragIndexRef.current;
+    if (from == null) return;
+    const to = insertAt > from ? insertAt - 1 : insertAt;
+    clearDrag();
+    if (from !== to) onReorderPages?.(from, to);
+  };
+
+  const renderInsertBar = ({
     insertAt,
     rotatePageIndex,
   }: {
@@ -146,21 +164,8 @@ export function ThumbnailsSidebar({
   }) => (
     <div
       className={`group/bar relative flex justify-center z-[100] ${isExpanded ? 'flex-col px-1 h-auto self-stretch' : 'py-1 w-full'}`}
-      onDragOver={(e) => {
-        if (dragIndexRef.current == null) return;
-        e.preventDefault();
-        e.dataTransfer.dropEffect = 'move';
-        setDropTarget(insertAt > (dragIndexRef.current ?? -1) ? insertAt - 1 : insertAt);
-      }}
-      onDrop={(e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        const from = dragIndexRef.current;
-        if (from == null) return;
-        const to = insertAt > from ? insertAt - 1 : insertAt;
-        clearDrag();
-        if (from !== to) onReorderPages?.(from, to);
-      }}
+      onDragOver={(e) => onInsertBarDragOver(e, insertAt)}
+      onDrop={(e) => onInsertBarDrop(e, insertAt)}
     >
       <div
         className={`rounded transition-colors ${
@@ -319,7 +324,7 @@ export function ThumbnailsSidebar({
           </div>
 
           {!isGeneratingThumbnails && thumbnails.length > 0 && (
-            <InsertBar insertAt={0} rotatePageIndex={0} />
+            renderInsertBar({ insertAt: 0, rotatePageIndex: 0 })
           )}
 
           {isGeneratingThumbnails && thumbnails.length === 0 ? (
@@ -445,7 +450,7 @@ export function ThumbnailsSidebar({
                     </div>
                   </div>
 
-                  <InsertBar insertAt={i + 1} rotatePageIndex={i} />
+                  {renderInsertBar({ insertAt: i + 1, rotatePageIndex: i })}
                 </React.Fragment>
               );
             })

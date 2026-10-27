@@ -11,6 +11,16 @@ npm install
 npm run dev
 ```
 
+The signature tests require `openssl` on `PATH`. On Windows, Git for Windows
+includes it in its `usr/bin` directory; add that directory to the test shell's
+`PATH` if necessary. The encrypted-fixture tests also use `qpdf` for an
+independent validation when it is available.
+
+PDF fixtures contain binary streams and must retain their exact bytes. The
+repository's `.gitattributes` disables newline conversion for PDF files.
+If an existing checkout has already converted one, restore its bytes from Git
+after applying the updated attributes.
+
 ### Available Scripts
 
 | Command | What It Does |

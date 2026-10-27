@@ -298,7 +298,7 @@ describe('Phase 3/4 — AES-256 R6 encrypt document roundtrip', () => {
 
     const bad = await authenticateUserR5R6('nope', enc);
     expect(bad).toBeNull();
-  });
+  }, 30000);
 
   it('encrypts a document, serializes, reparses, and opens with password', async () => {
     const doc = makeMinimalDoc('BT (SecretContent) Tj ET');

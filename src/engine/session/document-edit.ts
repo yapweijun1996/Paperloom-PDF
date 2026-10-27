@@ -5,8 +5,14 @@ import { parsePDF } from '../parser/parser';
 import { PDFArray, PDFDict, PDFRef, PDFStream, type PDFDocumentData, type PDFObject } from '../types';
 import { extractPages } from '../writer/page-operations';
 import { getNextObjNum, serializeDocument } from '../writer/serializer';
+import { dehydrateDocument } from '../worker/codec';
 import { DocumentSession } from './document-session';
 import type { EditTransaction } from './edit-transaction';
+
+export interface PreparedHistoryRestore {
+  commit(): void;
+  cancel(): void;
+}
 
 async function serializeSessionBytes(doc: PDFDocumentData): Promise<Uint8Array> {
   if (!doc.decryptedFromEncrypted) return serializeDocument(doc);
@@ -162,6 +168,78 @@ function publishDraft(doc: PDFDocumentData, staged: PDFDocumentData, clones: Map
   doc.xref.trailerDict = adopt(staged.xref.trailerDict) as PDFDict;
 }
 
+/** Compare private worker snapshots without serializing PDF streams. Decoded
+ * stream data is a cache; only the raw stream bytes are part of the document. */
+function sameSnapshot(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) return true;
+  if (left instanceof Uint8Array || right instanceof Uint8Array) {
+    if (!(left instanceof Uint8Array) || !(right instanceof Uint8Array) || left.length !== right.length) return false;
+    let index = 0;
+    if (left.byteOffset % 4 === 0 && right.byteOffset % 4 === 0) {
+      const words = Math.floor(left.length / 4);
+      const leftWords = new Uint32Array(left.buffer, left.byteOffset, words);
+      const rightWords = new Uint32Array(right.buffer, right.byteOffset, words);
+      for (let i = 0; i < words; i++) if (leftWords[i] !== rightWords[i]) return false;
+      index = words * 4;
+    }
+    for (; index < left.length; index++) if (left[index] !== right[index]) return false;
+    return true;
+  }
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return Array.isArray(left) && Array.isArray(right) && left.length === right.length &&
+      left.every((item, index) => sameSnapshot(item, right[index]));
+  }
+  if (!left || !right || typeof left !== 'object' || typeof right !== 'object') return false;
+  const a = left as Record<string, unknown>, b = right as Record<string, unknown>;
+  const skipCache = a.kind === 'stream' && b.kind === 'stream';
+  const keys = Object.keys(a).filter(key => !skipCache || key !== 'decodedBytes');
+  const otherKeys = Object.keys(b).filter(key => !skipCache || key !== 'decodedBytes');
+  return keys.length === otherKeys.length && keys.every(key =>
+    Object.prototype.hasOwnProperty.call(b, key) && sameSnapshot(a[key], b[key]));
+}
+
+/** Stage an entire history step without creating another byte-history session. */
+export async function publishHistoryDraft(
+  doc: PDFDocumentData,
+  apply: (staged: PDFDocumentData) => Promise<void>,
+  isCurrent: () => boolean,
+  commitHistory: () => void,
+): Promise<void> {
+  if (!isCurrent()) throw new Error('Document changed during history restoration');
+  const baseline = dehydrateDocument(doc);
+  const seen = new Map<object, PDFObject>();
+  const objects = new Map<string, PDFObject>();
+  for (const [key, object] of doc.objects) objects.set(key, clonePDFObject(object, seen));
+  const staged: PDFDocumentData = {
+    ...doc,
+    rawBytes: doc.rawBytes.slice(),
+    encryptionFileKey: doc.encryptionFileKey?.slice(),
+    objects,
+    catalog: clonePDFObject(doc.catalog, seen) as PDFDict,
+    pages: doc.pages.map(page => ({
+      ...page,
+      mediaBox: { ...page.mediaBox },
+      cropBox: { ...page.cropBox },
+      dict: clonePDFObject(page.dict, seen) as PDFDict,
+      resources: clonePDFObject(page.resources, seen) as PDFDict,
+      contentRefs: [...page.contentRefs],
+    })),
+    xref: { entries: new Map(doc.xref.entries), trailerDict: clonePDFObject(doc.xref.trailerDict, seen) as PDFDict },
+    info: { ...doc.info },
+  };
+  for (const page of staged.pages) bindPageContentRefs(page);
+  await apply(staged);
+  if (!isCurrent() || !sameSnapshot(baseline, dehydrateDocument(doc))) {
+    throw new Error('Document changed during history restoration');
+  }
+  publishDraft(doc, staged, seen);
+  doc.version = staged.version;
+  doc.info = { ...staged.info };
+  doc.rawBytes = staged.rawBytes.slice();
+  // The callback only advances already-prepared, exclusively held history cursors.
+  commitHistory();
+}
+
 /** Stages native object-graph edits without reparsing, losing decoded streams,
  * changing upload bytes, or routing edits through the export/save policy.
  * The adapter is deliberately separate from the byte-only session classes.
@@ -169,6 +247,7 @@ function publishDraft(doc: PDFDocumentData, staged: PDFDocumentData, clones: Map
 export class SessionDocumentEditor {
   private session: DocumentSession | null = null;
   private editing = false;
+  private signedBytes: { before: Uint8Array; after: Uint8Array; position: 'before' | 'after' } | null = null;
 
   get canUndo(): boolean {
     return !this.editing && (this.session?.canUndo ?? false);
@@ -178,17 +257,17 @@ export class SessionDocumentEditor {
     return !this.editing && (this.session?.canRedo ?? false);
   }
 
-  async undo(doc: PDFDocumentData): Promise<boolean> {
-    return this.restore(doc, 'undo');
+  async undo(doc: PDFDocumentData, isCurrent?: () => boolean): Promise<boolean> {
+    return this.restore(doc, 'undo', isCurrent);
   }
 
-  async redo(doc: PDFDocumentData): Promise<boolean> {
-    return this.restore(doc, 'redo');
+  async redo(doc: PDFDocumentData, isCurrent?: () => boolean): Promise<boolean> {
+    return this.restore(doc, 'redo', isCurrent);
   }
 
   /** Reapply a baked toolbar state after crossing a neighbouring session boundary. */
-  async restoreCurrent(doc: PDFDocumentData): Promise<boolean> {
-    return this.restore(doc, 'current');
+  async restoreCurrent(doc: PDFDocumentData, isCurrent?: () => boolean): Promise<boolean> {
+    return this.restore(doc, 'current', isCurrent);
   }
 
   /** Split downloads transform private session bytes, not the live graph or
@@ -210,18 +289,28 @@ export class SessionDocumentEditor {
     }
   }
 
-  private async restore(doc: PDFDocumentData, direction: 'undo' | 'redo' | 'current'): Promise<boolean> {
+  private async restore(doc: PDFDocumentData, direction: 'undo' | 'redo' | 'current', isCurrent?: () => boolean): Promise<boolean> {
+    const prepared = await this.prepareRestore(doc, direction, isCurrent);
+    if (!prepared) return false;
+    prepared.commit();
+    return true;
+  }
+
+  /** Apply a preview to a private document; move the session cursor only on commit. */
+  async prepareRestore(doc: PDFDocumentData, direction: 'undo' | 'redo' | 'current', isCurrent?: () => boolean): Promise<PreparedHistoryRestore | null> {
     if (this.editing) throw new Error('An edit transaction is already active');
+    if (isCurrent && !isCurrent()) throw new Error('Document changed during history restoration');
     const session = this.session;
-    if (!session) return false;
+    if (!session) return null;
     this.editing = true;
-    const bytes = direction === 'current' ? session.getBytes() : session[direction]();
+    const bytes = session.preview(direction);
     if (!bytes) {
       this.editing = false;
-      return false;
+      return null;
     }
     try {
       const restored = await parsePDF(bytes);
+      if (isCurrent && !isCurrent()) throw new Error('Document changed during history restoration');
       // Keep upload/save/security provenance on the live document and objects map.
       // Internal snapshots omit /Encrypt; downloads still need the original entry.
       const encryptRef = doc.xref.trailerDict.getRef('Encrypt');
@@ -236,8 +325,10 @@ export class SessionDocumentEditor {
       const orderedObjects = [...restored.objects].sort(([left], [right]) =>
         (restored.xref.entries.get(left)?.offset ?? Number.MAX_SAFE_INTEGER) -
         (restored.xref.entries.get(right)?.offset ?? Number.MAX_SAFE_INTEGER));
-      for (const [key, object] of doc.objects) {
-        if (!restored.objects.has(key)) orderedObjects.push([key, object]);
+      if (!this.signedBytes) {
+        for (const [key, object] of doc.objects) {
+          if (!restored.objects.has(key)) orderedObjects.push([key, object]);
+        }
       }
       doc.objects.clear();
       for (const [key, object] of orderedObjects) doc.objects.set(key, object);
@@ -246,14 +337,28 @@ export class SessionDocumentEditor {
       doc.xref.trailerDict = restored.xref.trailerDict;
       doc.info = restored.info;
       doc.version = restored.version;
-      return true;
+      const nextPosition = direction === 'undo' ? 'before' : direction === 'redo' ? 'after' : this.signedBytes?.position;
+      if (this.signedBytes) {
+        doc.rawBytes = this.signedBytes[nextPosition!].slice();
+      }
+      let settled = false;
+      return {
+        commit: () => {
+          if (settled) return;
+          settled = true;
+          if (direction !== 'current') session[direction]();
+          if (this.signedBytes && nextPosition) this.signedBytes.position = nextPosition;
+          this.editing = false;
+        },
+        cancel: () => {
+          if (settled) return;
+          settled = true;
+          this.editing = false;
+        },
+      };
     } catch (error) {
-      // Failed parsing must not consume a toolbar history step.
-      if (direction === 'undo') session.redo();
-      else if (direction === 'redo') session.undo();
-      throw error;
-    } finally {
       this.editing = false;
+      throw error;
     }
   }
 
@@ -261,11 +366,20 @@ export class SessionDocumentEditor {
     doc: PDFDocumentData,
     label: string,
     apply: (staged: PDFDocumentData) => Promise<void>,
+    options?: { includeRawBytes?: boolean; isCurrent?: () => boolean },
   ): Promise<void> {
     if (this.editing) throw new Error('An edit transaction is already active');
+    if (this.signedBytes || (options?.includeRawBytes && this.session)) {
+      throw new Error('A signed-byte transaction requires a fresh session');
+    }
     this.editing = true;
     let transaction: EditTransaction | undefined;
     try {
+      const originalBytes = options?.includeRawBytes ? doc.rawBytes.slice() : undefined;
+      const originalKey = options?.includeRawBytes ? doc.encryptionFileKey?.slice() : undefined;
+      const originalAlgorithm = doc.encryptionAlgorithm;
+      const originalEncrypted = doc.decryptedFromEncrypted;
+      const originalEncryptRef = doc.xref.trailerDict.getRef('Encrypt')?.toKey();
       const baseline = await serializeSessionBytes(doc);
       if (!this.session) this.session = new DocumentSession(baseline);
       else {
@@ -280,6 +394,8 @@ export class SessionDocumentEditor {
       for (const [key, object] of doc.objects) objects.set(key, clonePDFObject(object, seen));
       const staged: PDFDocumentData = {
         ...doc,
+        rawBytes: originalBytes?.slice() ?? doc.rawBytes,
+        encryptionFileKey: originalKey?.slice() ?? doc.encryptionFileKey,
         objects,
         catalog: clonePDFObject(doc.catalog, seen) as PDFDict,
         pages: doc.pages.map(page => ({
@@ -303,8 +419,24 @@ export class SessionDocumentEditor {
       if (baseline.length !== latest.length || baseline.some((byte, index) => byte !== latest[index])) {
         throw new Error('Document changed during the edit transaction');
       }
+      if (options?.isCurrent && !options.isCurrent()) throw new Error('Document changed during the edit transaction');
+      if (originalBytes) {
+        const sameBytes = (left: Uint8Array | undefined, right: Uint8Array | undefined) =>
+          left === undefined ? right === undefined : right !== undefined &&
+            left.length === right.length && left.every((byte, index) => byte === right[index]);
+        if (!sameBytes(originalBytes, doc.rawBytes) || !sameBytes(originalKey, doc.encryptionFileKey) ||
+            originalAlgorithm !== doc.encryptionAlgorithm || originalEncrypted !== doc.decryptedFromEncrypted ||
+            originalEncryptRef !== doc.xref.trailerDict.getRef('Encrypt')?.toKey()) {
+          throw new Error('Document changed during the edit transaction');
+        }
+      }
       transaction.commit();
       publishDraft(doc, staged, seen);
+      if (originalBytes) {
+        const after = staged.rawBytes.slice();
+        this.signedBytes = { before: originalBytes, after, position: 'after' };
+        doc.rawBytes = after.slice();
+      }
     } catch (error) {
       transaction?.rollback();
       throw error;
