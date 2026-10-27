@@ -1,0 +1,204 @@
+@import "tailwindcss";
+
+:root,
+[data-theme="light"] {
+  /* Paperloom jade palette; legacy token names retained for consumers. */
+  --bloom-50:  #F1FAF7;
+  --bloom-100: #E6F5F1;
+  --bloom-200: #B9EBDF;
+  --bloom-300: #8FE0D1;
+  --bloom-400: #68D5C5;
+  --bloom-500: #176B65;   /* white-label primary */
+  --bloom-600: #125952;   /* white-label hover */
+  --bloom-700: #0E4944;
+  --bloom-800: #123B36;
+  --bloom-900: #0B2926;
+
+  /* Light theme neutrals */
+  --surface: #F1F3F5;
+  --panel: #FFFFFF;
+  --panel-elevated: #F8FAFC;
+  --border: #E2E8F0;
+  --border-strong: #CBD5E1;
+  --text: #0F172A;
+  --text-muted: #64748B;
+  --text-faint: #94A3B8;
+  --accent: #176B65;
+  --canvas-bg: #E6E8EC;
+  --checker-a: #EEF0F4;
+  --checker-b: #E1E4E9;
+  --ring-offset: #FFFFFF;
+  --scrim: rgba(15, 23, 42, 0.45);
+  --contrast: #000000;
+  color-scheme: light;
+}
+
+[data-theme="dark"] {
+  /* Dark theme neutrals */
+  --bloom-100: #123B36;
+  --surface: #030304;
+  --panel: #0A0B0E;
+  --panel-elevated: #12141A;
+  --border: #1C1E26;
+  --border-strong: #2A2D3A;
+  --text: #F8FAFC;
+  --text-muted: #8E95A5;
+  --text-faint: #525866;
+  --accent: #68D5C5;
+  --canvas-bg: #0D0E12;
+  --checker-a: #161820;
+  --checker-b: #0A0B0E;
+  --ring-offset: #0A0B0E;
+  --scrim: rgba(0, 0, 0, 0.85);
+  --contrast: #ffffff;
+  color-scheme: dark;
+}
+
+@theme inline {
+  --color-bloom-50: var(--bloom-50);
+  --color-bloom-100: var(--bloom-100);
+  --color-bloom-200: var(--bloom-200);
+  --color-bloom-300: var(--bloom-300);
+  --color-bloom-400: var(--bloom-400);
+  --color-bloom-500: var(--bloom-500);
+  --color-bloom-600: var(--bloom-600);
+  --color-bloom-700: var(--bloom-700);
+  --color-bloom-800: var(--bloom-800);
+  --color-bloom-900: var(--bloom-900);
+  --color-bloom-brand: var(--bloom-500);
+  --color-canvas-bg: var(--canvas-bg);
+  --color-surface: var(--surface);
+  --color-panel: var(--panel);
+  --color-panel-elevated: var(--panel-elevated);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-app-text: var(--text);
+  --color-app-muted: var(--text-muted);
+  --color-app-faint: var(--text-faint);
+  --color-accent: var(--accent);
+  --color-contrast: var(--contrast);
+}
+
+/* Unlayered so outline-none utilities cannot suppress keyboard focus. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 2px var(--ring-offset);
+}
+
+@layer base {
+  html, body {
+    background-color: var(--surface);
+    color: var(--text);
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+
+  ::selection {
+    background: var(--bloom-100);
+    color: var(--accent);
+  }
+
+  /* ── Scrollbars ─────────────────────────────────────────── */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--border-strong);
+    border-radius: 10px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--bloom-500);
+  }
+}
+
+@layer utilities {
+  /* Executive Studio Canvas Backdrop */
+  .checkerboard {
+    background-color: #EAEFF5;
+    background-image: radial-gradient(#CBD5E1 1.25px, transparent 1.25px);
+    background-size: 24px 24px;
+    background-position: 0 0;
+  }
+
+  [data-theme="dark"] .checkerboard {
+    background-color: #0B0C10;
+    background-image: radial-gradient(#1E2330 1.25px, transparent 1.25px);
+    background-size: 24px 24px;
+    background-position: 0 0;
+  }
+
+  .bg-surface { background-color: var(--surface); }
+  .bg-panel { background-color: var(--panel); }
+  .bg-panel-elevated { background-color: var(--panel-elevated); }
+  .border-app { border-color: var(--border); }
+  .border-app-strong { border-color: var(--border-strong); }
+  .text-app { color: var(--text); }
+  .text-app-muted { color: var(--text-muted); }
+  .text-app-faint { color: var(--text-faint); }
+
+  .bloom-btn-primary {
+    background-image: linear-gradient(to bottom, var(--bloom-500), var(--bloom-600));
+    color: #ffffff;
+    box-shadow: 0 4px 14px 0 color-mix(in srgb, var(--accent) 35%, transparent);
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  .bloom-btn-primary:hover:not(:disabled) {
+    background-image: linear-gradient(to bottom, var(--bloom-600), var(--bloom-700));
+    box-shadow: 0 6px 20px 0 color-mix(in srgb, var(--accent) 45%, transparent);
+  }
+
+  /* ── Mobile Responsive Utilities ────────────────────────── */
+
+  /* Slide-up bottom sheet animation */
+  .mobile-sheet-up {
+    animation: sheetSlideUp 0.3s cubic-bezier(0.32, 0.72, 0, 1) forwards;
+  }
+  @keyframes sheetSlideUp {
+    from { transform: translateY(100%); }
+    to   { transform: translateY(0); }
+  }
+
+  /* Slide-in from right drawer animation */
+  .mobile-drawer-right {
+    animation: drawerSlideRight 0.3s cubic-bezier(0.32, 0.72, 0, 1) forwards;
+  }
+  @keyframes drawerSlideRight {
+    from { transform: translateX(100%); }
+    to   { transform: translateX(0); }
+  }
+
+  /* Semi-transparent backdrop for drawers/sheets */
+  .mobile-backdrop {
+    background-color: rgba(0, 0, 0, 0.5);
+    animation: backdropFadeIn 0.2s ease forwards;
+  }
+  [data-theme="dark"] .mobile-backdrop {
+    background-color: rgba(0, 0, 0, 0.7);
+  }
+  @keyframes backdropFadeIn {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+  }
+
+  /* Hide scrollbar but keep scrolling (mobile tool strip) */
+  .scrollbar-hide {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;
+  }
+
+  /* Drag handle pill for bottom sheets */
+  .sheet-handle {
+    width: 36px;
+    height: 4px;
+    border-radius: 2px;
+    background: var(--border-strong);
+    margin: 8px auto 4px;
+  }
+}

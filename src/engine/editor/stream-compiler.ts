@@ -1,0 +1,290 @@
+/**
+ * Stream Compiler
+ *
+ * Recompiles modified content stream tokens back into valid PDF stream bytes.
+ * Handles:
+ *   - Serialization of all PDF object types
+ *   - FlateDecode compression of output
+ *   - Stream length calculation
+ *   - Multi-stream page handling (Contents as array)
+ */
+
+import {
+  PDFArray,
+  PDFBoolean,
+  PDFDict,
+  PDFHexString,
+  PDFName,
+  PDFNull,
+  PDFNumber,
+  PDFObject,
+  PDFRef,
+  PDFStream,
+  PDFString,
+} from '../types';
+import type { PDFPageInfo } from '../types';
+import { flateEncode } from '../parser/filters';
+
+// Keep the existing refs-based update API while retaining the owner of an empty array.
+const contentOwners = new WeakMap<PDFRef[], PDFPageInfo>();
+const contentStructureChanges = new WeakMap<Map<string, PDFObject>, Set<string>>();
+
+/** Register newly constructed pages so missing /Contents can be attached on first edit. */
+export function bindPageContentRefs<T extends PDFPageInfo>(page: T): T {
+  if (page.contentRefs.length === 0) contentOwners.set(page.contentRefs, page);
+  return page;
+}
+
+/** Page dictionaries and newly allocated streams required by explicit incremental saves. */
+export function pageContentModifiedKeys(objects: Map<string, PDFObject>): Iterable<string> {
+  return contentStructureChanges.get(objects) ?? [];
+}
+
+// ─── Content stream compilation ─────────────────────────────────────────────
+
+/**
+ * Compile a content stream from raw text bytes.
+ * Optionally compresses the output using FlateDecode.
+ */
+export async function compileContentStream(
+  contentBytes: Uint8Array,
+  compress: boolean = true,
+): Promise<PDFStream> {
+  let streamBytes: Uint8Array;
+  const dict = new PDFDict();
+
+  if (compress) {
+    streamBytes = await flateEncode(contentBytes);
+    dict.set('Filter', new PDFName('FlateDecode'));
+  } else {
+    streamBytes = contentBytes;
+  }
+
+  dict.set('Length', new PDFNumber(streamBytes.length));
+
+  return new PDFStream(dict, streamBytes, contentBytes);
+}
+
+/**
+ * Update a page's content stream with new bytes.
+ * Handles single streams, arrays of streams, and registered pages without /Contents.
+ *
+ * @param contentRefs The page's content references, registered when the page is constructed
+ * @param newContentBytes The new decoded content stream bytes
+ * @param objects The document object map (will be mutated)
+ * @param compress Whether to FlateDecode compress the output
+ */
+export async function updatePageContent(
+  contentRefs: PDFRef[],
+  newContentBytes: Uint8Array,
+  objects: Map<string, PDFObject>,
+  compress: boolean = true,
+): Promise<void> {
+  const owner = contentRefs.length === 0 ? contentOwners.get(contentRefs) : undefined;
+  if (contentRefs.length === 0 && !owner) {
+    throw new Error('Cannot attach content to an unregistered page');
+  }
+  const newStream = await compileContentStream(newContentBytes, compress);
+
+  if (owner && contentRefs.length === 0) {
+    let maxObjNum = 0;
+    for (const key of objects.keys()) {
+      maxObjNum = Math.max(maxObjNum, parseInt(key, 10));
+    }
+    const ref = new PDFRef(maxObjNum + 1, 0);
+    objects.set(ref.toKey(), newStream);
+    owner.dict.set('Contents', ref);
+    contentRefs.push(ref);
+    let changes = contentStructureChanges.get(objects);
+    if (!changes) contentStructureChanges.set(objects, changes = new Set());
+    changes.add(ref.toKey());
+    changes.add(owner.ref.toKey());
+    return;
+  }
+
+  if (contentRefs.length === 1) {
+    // Single content stream — replace it
+    objects.set(contentRefs[0].toKey(), newStream);
+  } else {
+    // Multiple content streams — replace the first one with all content,
+    // and make the rest empty
+    objects.set(contentRefs[0].toKey(), newStream);
+
+    // Empty out the remaining streams
+    for (let i = 1; i < contentRefs.length; i++) {
+      const emptyDict = new PDFDict();
+      emptyDict.set('Length', new PDFNumber(0));
+      objects.set(contentRefs[i].toKey(), new PDFStream(emptyDict, new Uint8Array(0), new Uint8Array(0)));
+    }
+  }
+}
+
+// ─── PDF Object serialization ───────────────────────────────────────────────
+
+/**
+ * Serialize a PDF object to its byte representation for writing to a file.
+ * This is used by the PDF writer (serializer.ts) for full document output.
+ */
+export function serializeObject(obj: PDFObject): Uint8Array {
+  const text = serializeToString(obj);
+  return stringToBytes(text);
+}
+
+/**
+ * Serialize a PDF object to its string representation.
+ */
+export function serializeToString(obj: PDFObject): string {
+  if (obj instanceof PDFBoolean) return obj.value ? 'true' : 'false';
+  if (obj instanceof PDFNumber) return formatNumber(obj.value);
+  if (obj instanceof PDFString) return serializeLiteralString(obj.value);
+  if (obj instanceof PDFHexString) return `<${obj.hex}>`;
+  if (obj instanceof PDFName) return serializeName(obj.name);
+  if (obj instanceof PDFNull) return 'null';
+  if (obj instanceof PDFRef) return `${obj.objNum} ${obj.genNum} R`;
+
+  if (obj instanceof PDFArray) {
+    const items: string[] = [];
+    for (let i = 0; i < obj.length; i++) {
+      items.push(serializeToString(obj.get(i)!));
+    }
+    return `[${items.join(' ')}]`;
+  }
+
+  if (obj instanceof PDFDict) {
+    const entries: string[] = [];
+    const dictEntries = Array.from(obj.entries());
+    for (let i = 0; i < dictEntries.length; i++) {
+      const [key, value] = dictEntries[i];
+      entries.push(`${serializeName(key)} ${serializeToString(value)}`);
+    }
+    return `<<${entries.join(' ')}>>`;
+  }
+
+  if (obj instanceof PDFStream) {
+    // Stream = dict + stream keyword + data + endstream
+    const dictStr = serializeToString(obj.dict);
+    // Use raw bytes for the stream data
+    return dictStr; // The caller handles stream data separately
+  }
+
+  return 'null';
+}
+
+/**
+ * Serialize a complete indirect object (objNum genNum obj ... endobj).
+ * Includes stream data if the object is a PDFStream.
+ */
+export function serializeIndirectObject(
+  objNum: number,
+  genNum: number,
+  obj: PDFObject,
+): Uint8Array {
+  const header = `${objNum} ${genNum} obj\n`;
+
+  if (obj instanceof PDFStream) {
+    const dictStr = serializeToString(obj.dict);
+    const streamData = obj.rawBytes;
+
+    // header + dict + \nstream\n + data + \nendstream\nendobj\n
+    const prefix = stringToBytes(`${header}${dictStr}\nstream\n`);
+    const suffix = stringToBytes('\nendstream\nendobj\n');
+
+    const result = new Uint8Array(prefix.length + streamData.length + suffix.length);
+    result.set(prefix, 0);
+    result.set(streamData, prefix.length);
+    result.set(suffix, prefix.length + streamData.length);
+    return result;
+  }
+
+  const body = serializeToString(obj);
+  return stringToBytes(`${header}${body}\nendobj\n`);
+}
+
+// ─── Serialization helpers ──────────────────────────────────────────────────
+
+/**
+ * Format a number, avoiding unnecessary decimals.
+ * PDF spec allows up to 5 decimal places.
+ */
+function formatNumber(value: number): string {
+  if (Number.isInteger(value)) return value.toString();
+
+  // Use up to 5 decimal places, stripping trailing zeros
+  let str = value.toFixed(5);
+  // Remove trailing zeros after decimal point
+  if (str.includes('.')) {
+    str = str.replace(/0+$/, '');
+    str = str.replace(/\.$/, '');
+  }
+  return str;
+}
+
+/**
+ * Serialize a PDF literal string, escaping special characters.
+ */
+function serializeLiteralString(value: string): string {
+  let escaped = '';
+  for (let i = 0; i < value.length; i++) {
+    const ch = value.charCodeAt(i);
+    switch (ch) {
+      case 0x0a: escaped += '\\n'; break;
+      case 0x0d: escaped += '\\r'; break;
+      case 0x09: escaped += '\\t'; break;
+      case 0x08: escaped += '\\b'; break;
+      case 0x0c: escaped += '\\f'; break;
+      case 0x28: escaped += '\\('; break; // (
+      case 0x29: escaped += '\\)'; break; // )
+      case 0x5c: escaped += '\\\\'; break; // \
+      default:
+        if (ch < 0x20 || ch > 0x7e) {
+          // Octal escape for non-printable
+          escaped += '\\' + ch.toString(8).padStart(3, '0');
+        } else {
+          escaped += value[i];
+        }
+    }
+  }
+  return `(${escaped})`;
+}
+
+/**
+ * Serialize a PDF name, escaping characters that need #xx encoding.
+ */
+function serializeName(name: string): string {
+  let escaped = '/';
+  for (let i = 0; i < name.length; i++) {
+    const ch = name.charCodeAt(i);
+    // Characters that need escaping in names
+    if (ch < 0x21 || ch > 0x7e || ch === 0x23 || ch === 0x28 || ch === 0x29 ||
+        ch === 0x3c || ch === 0x3e || ch === 0x5b || ch === 0x5d ||
+        ch === 0x7b || ch === 0x7d || ch === 0x2f || ch === 0x25) {
+      escaped += '#' + ch.toString(16).padStart(2, '0');
+    } else {
+      escaped += name[i];
+    }
+  }
+  return escaped;
+}
+
+// ─── Byte utilities ─────────────────────────────────────────────────────────
+
+function stringToBytes(str: string): Uint8Array {
+  const bytes = new Uint8Array(str.length);
+  for (let i = 0; i < str.length; i++) {
+    bytes[i] = str.charCodeAt(i) & 0xff;
+  }
+  return bytes;
+}
+
+export function concatBytes(...arrays: Uint8Array[]): Uint8Array {
+  let totalLength = 0;
+  for (const arr of arrays) totalLength += arr.length;
+
+  const result = new Uint8Array(totalLength);
+  let offset = 0;
+  for (const arr of arrays) {
+    result.set(arr, offset);
+    offset += arr.length;
+  }
+  return result;
+}

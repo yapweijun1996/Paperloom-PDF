@@ -1,0 +1,98 @@
+<div align="center">
+
+# 🌸 Paperloom PDF
+
+### A Pure-Engine, Open-Source PDF Editor
+
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.9-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+[![Next.js](https://img.shields.io/badge/Next.js-16-000000?logo=next.js&logoColor=white)](https://nextjs.org/)
+
+**Edit PDFs in the browser with a custom TypeScript PDF engine.**
+
+**[Live demo](https://aiagent-sg-2026.github.io/bloom-pdf-editor/)**
+
+All processing happens in your browser; files never leave your device.
+
+[Quick Start](#-quick-start) · [Architecture](#-architecture) · [Contributing](CONTRIBUTING.md)
+
+</div>
+
+## ✨ What is Paperloom PDF?
+
+Paperloom PDF is a full-featured PDF editor built with Next.js and React. Its custom TypeScript engine parses, renders, edits, and serializes PDFs in the browser. The application is a browser-only client and exports as static files to `out/`; it has no server conversion runtime.
+
+The editor supports native PDF content-stream editing, annotations, forms, page operations, signatures, browser-side PNG/JPEG/SVG/TXT export, and PDF save/optimization.
+
+Select an embedded image to edit **X (pt)**, **Y (pt)**, **W (pt)**, and **H (pt)** in the Options panel. Coordinates use the image's bottom-left corner in PDF points. Typing or using the numeric arrows previews the image, selection frame, and all eight handles immediately, without rewriting the PDF or adding history entries. With aspect ratio locked (the default), W and H update together live. Enter or blur commits the last valid preview as one `resize-image` history entry; Escape restores the original inputs and geometry without committing. Empty or invalid input holds the last valid preview. Dimensions must be at least 8 pt, and positions are clamped to retain partial page overlap when page bounds are available. Changing selection/tools or unmounting the panel cancels the preview. Numeric and drag-resize commits keep the image selected, with refreshed Options fields and handles through undo/redo. Position and size for drawings/signatures remain read-only.
+
+Selected embedded images and unlocked signature frames have eight resize handles. Corners preserve aspect ratio by default; hold Shift for free resizing. Edge-midpoint handles (N/S/E/W) resize only one axis, keep the opposite edge fixed, and ignore Shift. Image resizing and signature edge resizing stop at 8 pt; signature corners retain their existing 24 × 16 pt minimums. Every resize commit refreshes the selected frame and handles immediately; embedded-image Options fields use the same refreshed metadata as numeric edits. Undo and redo of a resize keep the resized object selected and restore its geometry.
+
+On desktop, Focus mode hides the Options and Pages panels, and the Pages control can show or hide the page thumbnails. Panel preferences are saved locally and restored on reload; mobile panel use does not overwrite the desktop layout. A selected image's quick actions move to remain visible as the canvas scrolls or changes size.
+
+## 🏗️ Architecture
+
+The browser UI and the client engine communicate directly. PDF bytes remain in the browser and may be persisted through IndexedDB for local document storage.
+
+```
+Browser
+  ├── React UI / Zustand state
+  ├── src/engine/  (parser, renderer, editor, annotations, forms, writer)
+  └── src/lib/pdfStorage.ts  (IndexedDB persistence)
+```
+
+## 🔧 Client Engine
+
+The client engine includes binary parsing, content-stream interpretation, Canvas rendering, text and object editing, annotations, forms, page operations, signatures, OCR layout helpers, image handling, optimization, and incremental/full PDF writing. See [docs/ENGINE.md](docs/ENGINE.md) for the engine overview.
+
+## 🚀 Quick Start
+
+### Prerequisites
+
+- Node.js ≥ 18
+- npm ≥ 9
+
+### Installation
+
+```bash
+git clone https://github.com/stemlen/bloom-pdf-editor.git
+cd bloom-pdf-editor
+npm install
+npm run dev
+```
+
+Open [http://localhost:3000](http://localhost:3000).
+
+### Scripts
+
+```bash
+npm run dev       # Next.js development server
+npm run build     # Next.js production build
+npm run lint      # ESLint
+npm test          # Vitest
+npm run verify:browser-only # Check for server-runtime regressions
+```
+
+`npm run build` produces the static export in `out/`, which can be hosted by any static web server or CDN.
+
+Deploy a demo with GitHub Actions: [GitHub Pages guide](docs/DEPLOY_PAGES.md).
+
+## 📁 Project Structure
+
+```
+bloom-pdf-editor/
+├── src/app/          # Next.js app and editor UI
+├── src/engine/       # Browser-native TypeScript PDF engine
+├── src/lib/          # Browser persistence and utilities
+├── docs/             # Engine documentation
+├── CONTRIBUTING.md
+└── LICENSE           # Apache-2.0
+```
+
+## License
+
+Paperloom PDF is licensed under the Apache License 2.0. See [LICENSE](LICENSE).
+
+## Credits
+
+Paperloom PDF is based on BloomPDF by stemlen, licensed under Apache-2.0.
