@@ -37,6 +37,8 @@ import { addDrawingAnnotations, collectDrawingRemovals, collectMarkupRemovals, p
 import { signDocumentTransaction } from '@/engine/session/signature-transaction';
 import { findVisualSignatureRefs, placeVisualSignature, removeVisualSignature } from '@/engine/session/signature-edit';
 import { PDFDict, PDFString } from '@/engine/types';
+import { annotationSubtype } from '@/engine/content/annotation-subtype';
+import { renderFieldSignaturePreviews } from './field-signature-previews';
 import { findMatchingFlowLine } from './flowLineMatch';
 import { EditorDocumentOwner } from './document-owner';
 import { parseRecoveryOverlay } from './recovery-overlay';
@@ -513,6 +515,24 @@ export default function EditorPage() {
 
   // Editable signature overlays backed by transactional native appearances.
   const [signatures, setSignatures] = useState<VisualSignature[]>([]);
+  const [fieldSignaturePreviews, setFieldSignaturePreviews] = useState<Record<string, string | null>>({});
+  const [fieldSignaturePreviewFailed, setFieldSignaturePreviewFailed] = useState(false);
+  const trackedFieldSignatureIds = useMemo(() => {
+    // Native objects mutate in place; the render revision invalidates this view.
+    void renderKey;
+    if (!doc) return new Set<string>();
+    try {
+      const refs = findVisualSignatureRefs(doc, new Set(signatures.map(sig => sig.id)));
+      return new Set([...refs].filter(([, ref]) => {
+        const object = doc.objects.get(ref.toKey());
+        return object instanceof PDFDict && annotationSubtype(object, doc.objects) === 'Widget';
+      }).map(([id]) => id));
+    } catch {
+      // The page render reports a broken matching annotation; never substitute
+      // the library image while its native appearance cannot be classified.
+      return new Set(signatures.map(sig => sig.id));
+    }
+  }, [doc, signatures, renderKey]);
   const [selectedSignatureId, setSelectedSignatureId] = useState<string | null>(null);
   const { entries: signatureLibraryEntries, refresh: refreshSignatureLibrary } = useSignatureLibrary();
   const [activeLibraryId, setActiveLibraryId] = useState<string | null>(null);
@@ -1483,13 +1503,19 @@ export default function EditorPage() {
         const normalized = await normalizePageContent(doc!, editablePage, engine);
         if (normalized.warning && !cancelled) setError(normalized.warning);
         const hidden = new Map(erasedAnnotationsRef.current);
-        for (const ref of findVisualSignatureRefs(doc!, new Set(signaturesRef.current.map(sig => sig.id))).values()) {
-          hidden.set(ref.toKey(), ref);
-        }
+        const signatures = signaturesRef.current;
+        const tracked = findVisualSignatureRefs(doc!, new Set(signatures.map(sig => sig.id)));
+        for (const ref of tracked.values()) hidden.set(ref.toKey(), ref);
         const renderDoc = previewMarkupRemoval(doc!, currentPage, hidden);
         const dpr = window.devicePixelRatio || 1;
         const result = await engine.renderPage(renderDoc, currentPage, { scale, devicePixelRatio: dpr, renderWidgets: 'supported' });
         if (cancelled) return;
+        const fieldPreviews = await renderFieldSignaturePreviews(
+          doc!, currentPage, signatures, tracked, scale, dpr, engine.renderPage, () => cancelled,
+        );
+        if (!fieldPreviews || cancelled) return;
+        setFieldSignaturePreviews(fieldPreviews.previews);
+        setFieldSignaturePreviewFailed(fieldPreviews.failed);
         setRenderResult(result);
 
         // Extract display items (images, significant paths) for bounding box overlays
@@ -6667,7 +6693,8 @@ export default function EditorPage() {
                 <SignatureOverlay
                   key={sig.id}
                   signature={sig}
-                  imageDataUrl={resolveSignatureImage(sig)}
+                  imageDataUrl={trackedFieldSignatureIds.has(sig.id) ? (fieldSignaturePreviews[sig.id] ?? null) : resolveSignatureImage(sig)}
+                  fieldPreview={trackedFieldSignatureIds.has(sig.id)}
                   scale={scale}
                   selected={selectedSignatureId === sig.id}
                   interactive={!editingLine}
@@ -7428,6 +7455,12 @@ export default function EditorPage() {
           <button onClick={() => setGlyphWarning(null)} aria-label="Dismiss font warning" className="shrink-0">
             <X size={16} />
           </button>
+        </div>
+      )}
+
+      {fieldSignaturePreviewFailed && (
+        <div role="status" aria-live="polite" className="fixed bottom-10 left-1/2 -translate-x-1/2 max-w-[90vw] bg-zinc-900 border border-amber-500/40 text-amber-200 px-4 py-3 rounded-xl text-sm shadow-xl z-[700]">
+          Signature field preview unavailable. Try zooming out; the PDF appearance is unchanged.
         </div>
       )}
 

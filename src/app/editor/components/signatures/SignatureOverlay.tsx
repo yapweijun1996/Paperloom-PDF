@@ -10,6 +10,8 @@ export interface SignatureOverlayProps {
   signature: VisualSignature;
   /** Resolved appearance image (PNG/SVG data URL). */
   imageDataUrl: string | null;
+  /** The image is an optional native field appearance, not a library fallback. */
+  fieldPreview?: boolean;
   scale: number;
   selected: boolean;
   interactive?: boolean;
@@ -37,6 +39,7 @@ export function SignatureOverlay(props: SignatureOverlayProps) {
   const {
     signature: sig,
     imageDataUrl,
+    fieldPreview = false,
     scale,
     selected,
     interactive = true,
@@ -233,6 +236,8 @@ export function SignatureOverlay(props: SignatureOverlayProps) {
           draggable={false}
           className="w-full h-full object-contain pointer-events-none select-none"
         />
+      ) : fieldPreview ? (
+        <div aria-label="Signature field preview unavailable" className="w-full h-full border border-dashed border-zinc-400 pointer-events-none" />
       ) : (
         <div className="w-full h-full border border-dashed border-zinc-400 bg-zinc-100/40 flex items-center justify-center">
           <PenLine size={16} className="text-zinc-400" />

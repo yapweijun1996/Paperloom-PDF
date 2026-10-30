@@ -2553,22 +2553,28 @@ bounded register, not an exhaustive list of defects.
   tests cover inherited types, Hidden, NoView and disabled optional-content layers.
 - **Limit:** Certificate trust, other signature appearance variants and real
   devices were not verified. Missing, stale or unsupported appearances are not
-  synthesized. The existing live-field preview differs from the PDF appearance
-  in the tested typed-signature scenario; see BUG-244.
+  synthesized. The tested typed live-field preview now uses the PDF appearance;
+  see BUG-244 for its scope and remaining geometry limits.
 
 ### BUG-244: Live field-signature preview differs from the PDF appearance
 
-- **Status:** Open.
+- **Status:** Fixed for typed signatures placed in tested unrotated fields with the default CropBox.
 - **Trigger:** Place a typed library signature into a PDF signature field.
-- **Observed:** The live overlay shows the signature image, while the saved PDF
-  appearance and image export also include a border, printed name and date, with
-  different signature scaling. The export follows the existing PDF appearance.
-- **Evidence:** Independently reproduced in Chrome with a generated signature
-  field; `/tmp/paperloom-bug243-review.t9eBVc/surface.png` and `export.png`
-  show the compared states. Other signature sources, fields and real devices
-  were not verified.
-- **Next step:** Align the live field preview with the actual PDF appearance and
-  verify placement, editing, save/reopen and exports without invalidating signed PDFs.
+- **Original behavior:** The live overlay showed only the signature image, while
+  the PDF appearance and image export also contained a border, name and date.
+- **Fix:** The interactive field overlay uses the existing PDF renderer to draw
+  the actual widget appearance in an isolated preview. The underlying tracked
+  appearance remains suppressed on the page to prevent duplicate painting.
+  Preview errors and size budgets affect only the preview: the page remains
+  visible and a warning replaces the unavailable image.
+- **Verification:** Desktop and simulated-mobile Chrome compare live screenshot
+  pixels with PNG export; the mean field-region difference fell from 35.5 to 4.0
+  on the generated fixture. An oversized field and an injected raster failure
+  exercise the warning, page visibility and PDF preservation; cancellation is
+  covered between individual preview renders. Existing PDF appearance and signing operations are unchanged.
+- **Limit:** Rotated/cropped field placement is separately tracked in BUG-248;
+  changing a field signature into a free stamp can lose appearance details (BUG-249).
+  Other signature sources, field variants and real devices remain unverified.
 
 
 ### BUG-245: E2E tests time out when their base path differs from the static build
@@ -2635,3 +2641,35 @@ bounded register, not an exhaustive list of defects.
   refused, the downloaded bytes matched the original, and OpenSSL verified the
   CMS before and after. The independent fixture was not validated by `pdfsig`,
   and certificate trust and real devices were not tested.
+
+### BUG-248: Signature overlay is misplaced on a rotated, cropped page
+
+- **Status:** Open.
+- **Trigger:** Place a library signature in a field on a page with CropBox
+  [50, 75, 350, 325] and Rotate 90.
+- **Observed:** In desktop Chrome with a generated 400×400 PDF, the widget
+  occupies x=75, y=50, width=80, height=200 relative to the displayed page;
+  its interactive signature overlay appears at x=100, y=70, width=200, height=80.
+- **Evidence:** `/private/tmp/paperloom-bug244-rotated-before.log` records the
+  browser bounds. An isolated renderer comparison also found misalignment for
+  rotations 0, 90, 180 and 270 with an offset CropBox; component-level pointer
+  tests show drag direction is not transformed for rotated pages. Browser
+  gestures at those other rotations, partially clipped fields and real devices
+  have not been verified.
+- **Next step:** Correct page geometry for signature overlays and pointer
+  gestures together, including movement, resize, rotation and clipping.
+
+### BUG-249: Moving a field signature loses appearance details
+
+- **Status:** Open.
+- **Trigger:** Move a visual signature placed in an unsigned signature field.
+- **Observed:** The existing edit path removes the widget appearance and creates
+  a free Stamp containing only the signature image. The border, printed name
+  and date are absent from the resulting PDF appearance.
+- **Evidence:** An independent engine test used the editor's transaction path;
+  Poppler renders `/private/tmp/paperloom-signpreview-review.KsricS/evidence-before.pdf`
+  and `evidence-after.pdf` with and without those details respectively. The
+  field-to-Stamp behavior's product intent is unconfirmed; browser dragging was
+  not part of that independent reproduction.
+- **Next step:** Decide the intended field editing semantics, preserve the
+  visible appearance, and test save, undo and signed/read-only protections.

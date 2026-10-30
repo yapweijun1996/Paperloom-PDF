@@ -10,8 +10,15 @@ let directory;
 test.beforeEach(() => { directory = mkdtempSync(join(tmpdir(), 'paperloom-signature-widget-')); });
 test.afterEach(() => { rmSync(directory, { recursive: true, force: true }); });
 
-async function fixture(mode, { rotated = false, transparent = false, withImage = false } = {}) {
+async function fixture(mode, { rotated = false, transparent = false, withImage = false, largeField = false, omitModDate = false } = {}) {
   const pdf = await PDFDocument.create();
+  if (omitModDate) {
+    // The writer updates existing /ModDate on every save, including unchanged PDFs.
+    // Remove only this volatile fixture entry so full byte comparisons stay strict.
+    const info = pdf.context.lookup(pdf.context.trailerInfo.Info);
+    if (!info?.has(PDFName.of('ModDate'))) throw new Error('Fixture has no /ModDate');
+    info.delete(PDFName.of('ModDate'));
+  }
   const page = pdf.addPage([400, 400]);
   if (rotated) {
     page.setCropBox(50, 75, 300, 250);
@@ -24,7 +31,7 @@ async function fixture(mode, { rotated = false, transparent = false, withImage =
   }
   if (mode !== 'stamp') {
     const widget = pdf.context.obj({ Type: 'Annot', Subtype: 'Widget', FT: 'Sig',
-      T: PDFString.of('Signature1'), Rect: [100, 150, 300, 230], F: 4, P: page.ref });
+      T: PDFString.of('Signature1'), Rect: largeField ? [-300, -300, 700, 700] : [100, 150, 300, 230], F: 4, P: page.ref });
     if (mode === 'native') {
       const content = `${transparent ? '/GS1 gs ' : ''}0 0 0 rg 10 10 180 60 re f`;
       const resources = transparent ? { ExtGState: { GS1: { Type: 'ExtGState', ca: 0.5 } } } : {};
@@ -270,4 +277,203 @@ test('signed PDF stays valid and byte-identical after image exports', async ({ p
   const after = await downloadPdf(page, 'signed-after');
   expect(after).toEqual(before);
   expect(execFileSync('pdfsig', [join(directory, 'signed-after.pdf')], { encoding: 'utf8' })).toContain('Signature is Valid');
+});
+
+for (const mobile of [false, true]) test(`live field preview matches PNG appearance ${mobile ? 'mobile' : 'desktop'}`, async ({ browser }, testInfo) => {
+  const context = await browser.newContext(mobile ? { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true } : { viewport: { width: 1280, height: 800 }, hasTouch: true });
+  try {
+    const page = await context.newPage();
+    await openPdf(page, await fixture('field'));
+    await placeVisualSignature(page);
+    const surface = page.locator('[data-page-render-surface]');
+    await page.getByTitle('Export to PNG, JPEG, SVG, or text').click();
+    const panel = page.getByRole('dialog', { name: 'Export Document' });
+    await panel.getByRole('button', { name: /^PNG Image/ }).click();
+    const [download] = await Promise.all([page.waitForEvent('download'), panel.getByRole('button', { name: 'Export as PNG Image' }).click()]);
+    const png = readFileSync(await download.path());
+    const raster = async bytes => {
+      const img = await loadImage(bytes); const canvas = createCanvas(400, 400); const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, 400, 400); return ctx.getImageData(103, 173, 194, 74).data;
+    };
+    const b = await raster(png);
+    await panel.getByRole('button', { name: 'Close export panel' }).click();
+    await expect.poll(async () => {
+      const a = await raster(await surface.screenshot()); let delta = 0;
+      for (let i = 0; i < a.length; i += 4) delta += Math.abs(a[i] - b[i]) + Math.abs(a[i + 1] - b[i + 1]) + Math.abs(a[i + 2] - b[i + 2]);
+      const mean = delta / (a.length / 4 * 3); console.log('FIELD_PREVIEW_MEAN_PIXEL_DELTA', mobile, mean); return mean;
+    }).toBeLessThan(8);
+    const livePath = testInfo.outputPath('live.png');
+    const exportPath = testInfo.outputPath('export.png');
+    await surface.screenshot({ path: livePath });
+    writeFileSync(exportPath, png);
+    await testInfo.attach('live', { path: livePath, contentType: 'image/png' });
+    await testInfo.attach('export', { path: exportPath, contentType: 'image/png' });
+  } finally { await context.close(); }
+});
+
+test('field appearance follows signature editing and undo without changing the PDF field value', async ({ browser }) => {
+  test.setTimeout(30000);
+  const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, hasTouch: true });
+  try {
+  const page = await context.newPage();
+  await openPdf(page, await fixture('field'));
+  await placeVisualSignature(page);
+  const surface = page.locator('[data-page-render-surface]');
+  const image = surface.getByAltText('Signature');
+  await expect.poll(async () => image.evaluate(el => [el.naturalWidth, el.naturalHeight])).toEqual([200, 80]);
+  const initialSource = await image.evaluate(el => el.currentSrc);
+  const initialBox = await image.boundingBox();
+  if (!initialBox) throw new Error('Missing signature overlay');
+  await page.mouse.move(initialBox.x + initialBox.width / 2, initialBox.y + initialBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(initialBox.x + initialBox.width / 2 + 35, initialBox.y + initialBox.height / 2 + 25, { steps: 5 });
+  await page.mouse.up();
+  await expect.poll(async () => (await image.boundingBox())?.x).toBeGreaterThan(initialBox.x + 25);
+  await expect.poll(async () => image.evaluate(el => el.currentSrc)).not.toBe(initialSource);
+  const moved = await PDFDocument.load(await downloadPdf(page, 'moved'));
+  const annots = moved.getPages()[0].node.Annots().asArray().map(ref => moved.context.lookup(ref));
+  expect(annots.filter(a => a.get(PDFName.of('Subtype')) === PDFName.of('Stamp'))).toHaveLength(1);
+  const field = annots.find(a => a.get(PDFName.of('Subtype')) === PDFName.of('Widget'));
+  expect(field.get(PDFName.of('V'))).toBeUndefined();
+  expect(field.get(PDFName.of('AP'))).toBeUndefined();
+  await page.getByTitle('Undo (Ctrl+Z)').click();
+  await expect.poll(async () => (await image.boundingBox())?.x).toBeCloseTo(initialBox.x, 0);
+  await expect.poll(async () => image.evaluate(el => el.currentSrc)).toBe(initialSource);
+  const undone = await PDFDocument.load(await downloadPdf(page, 'undone'));
+  const afterUndo = undone.getPages()[0].node.Annots().asArray().map(ref => undone.context.lookup(ref));
+  expect(afterUndo.filter(a => a.get(PDFName.of('Subtype')) === PDFName.of('Stamp'))).toHaveLength(0);
+  const restored = afterUndo.find(a => a.get(PDFName.of('Subtype')) === PDFName.of('Widget'));
+  expect(restored.get(PDFName.of('AP'))).toBeTruthy();
+  expect(restored.get(PDFName.of('V'))).toBeUndefined();
+  await image.locator('..').click();
+  const handle = surface.locator('[data-handle="se"]');
+  const h = await handle.boundingBox();
+  if (!h) throw new Error('Missing signature resize handle');
+  await page.mouse.move(h.x + h.width / 2, h.y + h.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(h.x + h.width / 2 + 30, h.y + h.height / 2 + 12, { steps: 5 });
+  await page.mouse.up();
+  await expect.poll(async () => (await image.boundingBox())?.width).toBeGreaterThan(initialBox.width + 20);
+  await page.getByTitle('Undo (Ctrl+Z)').click();
+  await expect.poll(async () => image.evaluate(el => el.currentSrc)).toBe(initialSource);
+  await expect.poll(async () => (await image.boundingBox())?.width).toBeCloseTo(initialBox.width, 0);
+  await image.locator('..').click();
+  await page.getByTitle('Delete', { exact: true }).click();
+  await expect(image).toHaveCount(0);
+  const removed = await PDFDocument.load(await downloadPdf(page, 'removed'));
+  const finalField = removed.getPages()[0].node.Annots().asArray().map(ref => removed.context.lookup(ref)).find(a => a.get(PDFName.of('Subtype')) === PDFName.of('Widget'));
+  expect(finalField.get(PDFName.of('AP'))).toBeUndefined();
+  expect(finalField.get(PDFName.of('V'))).toBeUndefined();
+  } finally { await context.close(); }
+});
+
+
+test('field appearance survives local recovery after reload', async ({ browser }) => {
+  test.setTimeout(30000);
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+  try {
+    const page = await context.newPage();
+    await openPdf(page, await fixture('field'));
+    await placeVisualSignature(page);
+    const surface = page.locator('[data-page-render-surface]');
+    const image = surface.getByAltText('Signature');
+    await expect.poll(async () => image.evaluate(el => [el.naturalWidth, el.naturalHeight])).toEqual([200, 80]);
+    const appearance = await image.evaluate(el => el.currentSrc);
+    const recoveredSignatures = () => page.evaluate(() => new Promise((resolve, reject) => {
+      const request = indexedDB.open('pdf-editor-db');
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => {
+        const db = request.result, tx = db.transaction('pdf-files', 'readonly');
+        const get = tx.objectStore('pdf-files').get('editor-session');
+        get.onsuccess = () => resolve(get.result?.overlays?.signaturesJson ?? null);
+        get.onerror = () => reject(get.error);
+        tx.oncomplete = () => db.close();
+      };
+    }));
+    await expect.poll(async () => JSON.parse((await recoveredSignatures()) ?? '[]').length, { timeout: 15000 }).toBe(1);
+    page.on('dialog', dialog => dialog.accept());
+    await page.reload();
+    await expect(image).toHaveCount(1);
+    await expect.poll(async () => image.evaluate(el => el.currentSrc)).toBe(appearance);
+    await expect.poll(() => signatureRegionDark(surface.locator('canvas.pdf-canvas'))).toBe(0);
+    const recovered = await PDFDocument.load(await downloadPdf(page, 'recovered'));
+    const fields = recovered.getPages()[0].node.Annots().asArray().map(ref => recovered.context.lookup(ref));
+    expect(fields.filter(a => a.get(PDFName.of('Subtype')) === PDFName.of('Stamp'))).toHaveLength(0);
+    const field = fields.find(a => a.get(PDFName.of('Subtype')) === PDFName.of('Widget'));
+    expect(field.get(PDFName.of('AP'))).toBeTruthy();
+    expect(field.get(PDFName.of('V'))).toBeUndefined();
+  } finally { await context.close(); }
+});
+
+test('cancelled signature creation leaves the field and saved document unchanged', async ({ page }) => {
+  const original = await fixture('field', { omitModDate: true });
+  expect(original.toString('latin1')).not.toMatch(/\/ModDate\b/);
+  await openPdf(page, original);
+  const before = await downloadPdf(page, 'cancel-before');
+  await page.getByRole('button', { name: 'Sign', exact: true }).click();
+  await page.getByRole('button', { name: 'Create signature' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Create signature' });
+  await dialog.getByRole('button', { name: 'Type', exact: true }).click();
+  await dialog.getByPlaceholder('Type your name').fill('Cancelled');
+  await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.locator('[data-page-render-surface]').getByAltText('Signature')).toHaveCount(0);
+  await page.waitForTimeout(2200);
+  expect(await downloadPdf(page, 'cancelled')).toEqual(before);
+});
+
+
+test('oversized signature field preview does not hide the page or lose the edit', async ({ browser }) => {
+  const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: 2, hasTouch: true });
+  try {
+    const page = await context.newPage();
+    await openPdf(page, await fixture('field', { largeField: true }));
+    await placeVisualSignature(page);
+    for (let i = 0; i < 12; i++) await page.getByRole('button', { name: 'Zoom in' }).click();
+    await expect(page.getByText(/signature field preview unavailable/i)).toBeVisible();
+    const canvas = page.locator('[data-page-render-surface] canvas.pdf-canvas');
+    await expect(canvas).toBeVisible();
+    await expect.poll(() => canvas.evaluate(element => element.width)).toBe(3200);
+    await expect(page.locator('[data-page-render-surface]').getByAltText('Signature')).toHaveCount(0);
+    const saved = await PDFDocument.load(await downloadPdf(page, 'large-signature'));
+    const annotations = saved.getPages()[0].node.Annots().asArray().map(ref => saved.context.lookup(ref));
+    const field = annotations.find(a => a.get(PDFName.of('Subtype')) === PDFName.of('Widget'));
+    expect(field.get(PDFName.of('AP'))).toBeTruthy();
+    expect(field.get(PDFName.of('V'))).toBeUndefined();
+    expect(annotations.filter(a => a.get(PDFName.of('Subtype')) === PDFName.of('Stamp'))).toHaveLength(0);
+    for (let i = 0; i < 12; i++) await page.getByRole('button', { name: 'Zoom out' }).click();
+    await expect(page.getByText(/signature field preview unavailable/i)).toHaveCount(0);
+    await expect(page.locator('[data-page-render-surface]').getByAltText('Signature')).toHaveCount(1);
+  } finally { await context.close(); }
+});
+
+test('a failed field appearance raster does not hide the page or fall back to the library image', async ({ browser }) => {
+  const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, hasTouch: true });
+  try {
+    await context.addInitScript(() => {
+      const original = HTMLCanvasElement.prototype.toDataURL;
+      HTMLCanvasElement.prototype.toDataURL = function (...args) {
+        if (window.failFieldPreview && this.width === 250 && this.height === 100) throw new Error('Injected preview failure');
+        return original.apply(this, args);
+      };
+    });
+    const page = await context.newPage();
+    const original = await fixture('field', { omitModDate: true });
+    expect(original.toString('latin1')).not.toMatch(/\/ModDate\b/);
+    await openPdf(page, original);
+    await placeVisualSignature(page);
+    const surface = page.locator('[data-page-render-surface]');
+    const before = await downloadPdf(page, 'preview-failure-before');
+    await page.evaluate(() => { window.failFieldPreview = true; });
+    await page.getByRole('button', { name: 'Zoom in' }).click();
+    await expect(page.getByText(/signature field preview unavailable/i)).toBeVisible();
+    await expect(surface.locator('canvas.pdf-canvas')).toBeVisible();
+    await expect(surface.getByAltText('Signature')).toHaveCount(0);
+    await page.waitForTimeout(2200);
+    expect(await downloadPdf(page, 'preview-failure-after')).toEqual(before);
+    await page.evaluate(() => { window.failFieldPreview = false; });
+    await page.getByRole('button', { name: 'Zoom out' }).click();
+    await expect(page.getByText(/signature field preview unavailable/i)).toHaveCount(0);
+    await expect(surface.getByAltText('Signature')).toHaveCount(1);
+  } finally { await context.close(); }
 });

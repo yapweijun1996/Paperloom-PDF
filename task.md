@@ -766,8 +766,12 @@ suggested order.
   ([BUG-241](BUG.md#bug-241-checkbox-and-choice-widget-appearances-are-missing-from-the-canvas-and-image-exports)).
   Tested signature-widget appearances render on the canvas and in image exports
   ([BUG-243](BUG.md#bug-243-signature-widget-appearances-are-missing-from-image-exports));
-  the live field-signature preview still differs from the PDF appearance
+  typed live field-signature previews match the tested PDF appearance
   ([BUG-244](BUG.md#bug-244-live-field-signature-preview-differs-from-the-pdf-appearance)).
+  Rotated/cropped field overlays remain misplaced
+  ([BUG-248](BUG.md#bug-248-signature-overlay-is-misplaced-on-a-rotated-cropped-page));
+  moving a field signature can lose appearance details
+  ([BUG-249](BUG.md#bug-249-moving-a-field-signature-loses-appearance-details)).
   Real iOS/Android tests and other mobile tasks remain open. While a
   drawing tool is active, page-area pinch and scrolling are unavailable.
 - **Priority / effort:** P1 / high. **Related:** [BUG-108](BUG.md#bug-108-drawing-highlighting-and-erasing-ignore-touch-drags).
