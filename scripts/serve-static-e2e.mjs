@@ -2,13 +2,11 @@
 import { createServer } from 'node:http';
 import { createReadStream, statSync } from 'node:fs';
 import { extname, join, resolve, sep } from 'node:path';
+import { readE2EConfig, verifyStaticExport } from './e2e-static-preflight.mjs';
 
 const root = resolve('out');
-const prefix = (process.env.NEXT_PUBLIC_BASE_PATH || '').replace(/\/$/, '');
-const port = Number(process.env.PAPERLOOM_E2E_PORT || 4179);
-if (!Number.isInteger(port) || port < 1 || port > 65535 || (prefix && !/^\/[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)*$/.test(prefix))) {
-  throw new Error('Invalid test server port or base path');
-}
+const { basePath: prefix, port } = readE2EConfig();
+verifyStaticExport(root, prefix);
 const types = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.mjs': 'text/javascript',
   '.css': 'text/css', '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png',
   '.ico': 'image/x-icon', '.ttf': 'font/ttf', '.woff2': 'font/woff2', '.wasm': 'application/wasm' };

@@ -915,7 +915,9 @@ suggested order.
   Istanbul reports all production source files with enforced global thresholds;
   the measured baseline and ratchet are in [TEST_COVERAGE.md](docs/TEST_COVERAGE.md).
   A static-build Playwright suite covers the requested journeys and is included
-  in the GitHub Actions workflow; a hosted run remains unverified.
+  in the GitHub Actions workflow; a hosted run remains unverified. E2E startup
+  now rejects a mismatched or incomplete static bootstrap before browser launch
+  ([BUG-245](BUG.md#bug-245-e2e-tests-time-out-when-their-base-path-differs-from-the-static-build)).
 - **Priority / effort:** P1 / medium. **Review points:** #84–#87, #91.
   Related to TASK-08 and TASK-09.
 - **First step:** Report coverage at today's baseline, and add a shared helper

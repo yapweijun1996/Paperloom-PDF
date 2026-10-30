@@ -1,7 +1,9 @@
 import { defineConfig } from '@playwright/test';
+import { resolve } from 'node:path';
+import { readE2EConfig, verifyStaticExport } from './scripts/e2e-static-preflight.mjs';
 
-const port = Number(process.env.PAPERLOOM_E2E_PORT || 4179);
-const basePath = (process.env.NEXT_PUBLIC_BASE_PATH || '').replace(/\/$/, '');
+const { port, basePath } = readE2EConfig();
+verifyStaticExport(resolve('out'), basePath);
 
 export default defineConfig({
   testDir: './tests/e2e',

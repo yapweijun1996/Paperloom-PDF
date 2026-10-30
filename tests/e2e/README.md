@@ -22,9 +22,15 @@ NEXT_PUBLIC_BASE_PATH=/Paperloom-PDF npm run test:e2e
 
 Omit `NEXT_PUBLIC_BASE_PATH` from both commands for a root deployment. The server
 binds to `127.0.0.1:4179`; set `PAPERLOOM_E2E_PORT` to use another available port.
-A mismatch between the build's base path and the test base path causes the tests
-to fail. `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` can point to a locally installed
-Chrome or Chromium when the Playwright-managed browser is unavailable.
+Before starting the server or browser, Playwright checks executable Next script
+paths in the exported home and editor pages and their referenced files. Missing
+or empty referenced files, mixed paths or a build/test base-path mismatch fail
+immediately with a rebuild instruction. The server validates the same settings
+when started directly. The check works with a copied `out/` directory, but it
+does not prove that every required script exists or that the export contains the
+latest source changes. Browser tests remain necessary to verify the application.
+`PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` can point to a locally installed Chrome
+or Chromium when the Playwright-managed browser is unavailable.
 
 The repository CI workflow runs this suite against its static subpath build after
-the release checks. Its first hosted GitHub Actions run has not been verified.
+the release checks.

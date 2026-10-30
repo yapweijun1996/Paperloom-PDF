@@ -2562,3 +2562,27 @@ bounded register, not an exhaustive list of defects.
   were not verified.
 - **Next step:** Align the live field preview with the actual PDF appearance and
   verify placement, editing, save/reopen and exports without invalidating signed PDFs.
+
+
+### BUG-245: E2E tests time out when their base path differs from the static build
+
+- **Status:** Fixed for static export bootstrap-path mismatches and missing or
+  empty referenced bootstrap files.
+- **Trigger:** Run Playwright with a subpath after a root-path build, or with
+  the root path after a subpath build.
+- **Original behavior:** The test server starts, but the browser cannot load
+  the matching application chunks; editor bootstrap tests then time out.
+- **Fix:** Playwright and the test server validate the same base path and port.
+  Before launch they inspect executable Next script references in the exported
+  home and editor pages, reject missing or mixed paths and missing or empty
+  referenced files, and report that the export must be rebuilt. Inert scripts
+  cannot satisfy this check. The check uses only `out/`.
+- **Verification:** Temporary export fixtures exercise root and nested subpaths,
+  mismatch in both directions, mixed pages and scripts, inert scripts, missing
+  and empty files, and invalid settings. Isolated real root and subpath builds are checked with
+  Playwright and targeted Chrome smoke tests.
+- **Limit:** This checks bootstrap configuration and referenced files; it does
+  not prove that all build outputs match the latest source changes or detect
+  every possible stale or mixed build, nor non-empty corrupted scripts. A build
+  retaining only one executable Next chunk can pass even when other required
+  scripts are missing; browser tests remain necessary to establish runtime behavior.

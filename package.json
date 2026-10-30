@@ -14,7 +14,7 @@
     "verify:pdf-worker": "node scripts/verify-pdf-worker.mjs",
     "verify:base-path": "node scripts/verify-base-path.mjs",
     "lint": "eslint",
-    "test": "vitest run",
+    "test": "node --test scripts/e2e-static-preflight.test.mjs && vitest run",
     "test:e2e": "playwright test --config=playwright.config.mjs",
     "test:coverage": "node scripts/verify-test-tools.mjs && vitest run --coverage",
     "test:watch": "vitest",
@@ -63,6 +63,7 @@
     "eslint": "^9",
     "eslint-config-next": "16.2.11",
     "happy-dom": "^20.10.6",
+    "parse5": "^7.3.0",
     "tailwindcss": "^4",
     "typescript": "^5.9.3",
     "vitest": "^3.2.7"
