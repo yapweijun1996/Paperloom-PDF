@@ -346,17 +346,17 @@ export interface IRedactionEngine {
 }
 
 export interface SecureRedactionOptions {
-  /** Remove overlapping text operators (default true). */
+  /** Secure application requires this to be enabled (the default). */
   text?: boolean;
-  /** Remove overlapping image Do operators (default true). */
+  /** Secure application requires this to be enabled (the default). */
   images?: boolean;
-  /** Remove overlapping path/vector painting (default true). */
+  /** Secure application requires this to be enabled (the default). */
   vectors?: boolean;
-  /** Remove annotations intersecting regions (default true). */
+  /** Secure application requires this to be enabled (the default). */
   annotations?: boolean;
-  /** Remove form widgets intersecting regions (default true). */
+  /** Secure application requires this to be enabled (the default). */
   formFields?: boolean;
-  /** Also strip document metadata (default false). */
+  /** Metadata removal through this API is currently unavailable. */
   metadata?: boolean;
   /** Never paint black rectangles (always true for secure engine). */
   paintBlack?: false;
@@ -364,6 +364,8 @@ export interface SecureRedactionOptions {
 
 export interface SecureRedactionResult {
   pagesProcessed: number;
+  /** Complete pages cleared, when supported; individual operator counts are not inferred. */
+  pagesCleared?: number;
   textOperatorsRemoved: number;
   imageOperatorsRemoved: number;
   pathOperatorsRemoved: number;
@@ -373,8 +375,12 @@ export interface SecureRedactionResult {
 }
 
 export interface RedactionVerification {
+  /** True only when absence has been conclusively verified. */
   ok: boolean;
   found: string[];
+  /** The current string scan cannot prove absence in every PDF representation. */
+  complete: false;
+  limitations: string[];
 }
 
 export interface ISanitizationEngine {

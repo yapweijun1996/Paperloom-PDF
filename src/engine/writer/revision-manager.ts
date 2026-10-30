@@ -4,7 +4,7 @@
  */
 
 import { PDFDict, PDFName, PDFNumber } from '../types';
-import { findStartXref, isTraditionalXref, parseXrefTable } from '../parser/xref';
+import { findStartXref, isTraditionalXref, MAX_XREF_REVISIONS, parseXrefTable } from '../parser/xref';
 
 export interface PDFRevision {
   /** 0-based index; 0 is the oldest (original) revision when listed oldest-first. */
@@ -47,7 +47,12 @@ export function listRevisions(pdfBytes: Uint8Array): RevisionChain {
   const visited = new Set<number>();
   let current: number | null = headXrefOffset;
 
-  while (current !== null && !visited.has(current)) {
+  while (current !== null) {
+    if (visited.has(current)) throw new Error('Cyclic xref /Prev chain');
+    if (visited.size >= MAX_XREF_REVISIONS) throw new Error('Xref /Prev chain exceeds the supported revision limit');
+    if (!Number.isSafeInteger(current) || current < 0 || current >= pdfBytes.length) {
+      throw new Error('Invalid xref /Prev offset');
+    }
     visited.add(current);
     let trailer = new PDFDict();
     let prev: number | null = null;
@@ -112,6 +117,16 @@ export class RevisionManager {
 
   get length(): number {
     return this.fileLength;
+  }
+
+  /** Preserve manager state when an incremental append cannot be published. */
+  snapshot(): { revisions: PDFRevision[]; fileLength: number } {
+    return { revisions: this.revisions.map(revision => ({ ...revision })), fileLength: this.fileLength };
+  }
+
+  restore(snapshot: { revisions: PDFRevision[]; fileLength: number }): void {
+    this.revisions = snapshot.revisions.map(revision => ({ ...revision }));
+    this.fileLength = snapshot.fileLength;
   }
 
   list(): PDFRevision[] {

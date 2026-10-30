@@ -142,6 +142,9 @@ export function canAddSignatureWithoutInvalidating(doc: PDFDocumentData): {
   ok: boolean;
   reason?: string;
 } {
+  if (doc.requiresFullRewrite) {
+    return { ok: false, reason: 'Save and reopen the cleaned document before adding a signature.' };
+  }
   if (!doc.rawBytes || doc.rawBytes.length === 0) {
     return {
       ok: false,

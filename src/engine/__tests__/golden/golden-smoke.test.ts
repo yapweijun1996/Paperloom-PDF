@@ -1,5 +1,5 @@
 import { afterEach, describe, it, expect, vi } from 'vitest';
-import { createCanvas } from 'canvas';
+import { createCanvas } from '@napi-rs/canvas/node-canvas';
 import { PDFDocument, rgb } from 'pdf-lib';
 import { parsePDF } from '../../parser/parser';
 import { renderPage } from '../../render/renderer';

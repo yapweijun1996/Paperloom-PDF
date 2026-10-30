@@ -15,9 +15,10 @@ import {
   PDFName,
   PDFNumber,
   PDFRef,
+  PDFString,
 } from '../../types';
 import { serializeDocument } from '../../writer/serializer';
-import { saveQuick, saveOptimized } from '../../writer/save-pipeline';
+import { saveQuick, saveOptimized, SignedDocumentEditError } from '../../writer/save-pipeline';
 import {
   createSignatureField,
   signDocumentCryptographic,
@@ -159,6 +160,11 @@ describe('Phase 10 — validation engine', () => {
     const signed = new Uint8Array(result.bytes);
     expect(await saveQuick(doc)).toEqual(signed);
     expect(await saveOptimized(doc)).toEqual(signed);
+    // A missing page-resource cache must not bypass the signed-edit guard.
+    doc.catalog.set('ModifiedAfterSigning', new PDFString('edited'));
+    await expect(saveQuick(doc)).rejects.toBeInstanceOf(SignedDocumentEditError);
+    await expect(saveOptimized(doc)).rejects.toBeInstanceOf(SignedDocumentEditError);
+    expect(doc.rawBytes).toEqual(signed);
   }, 30000);
 
   it('detects Modified when PDF bytes after Contents are altered', async () => {

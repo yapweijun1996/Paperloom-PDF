@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { PDFDocument } from 'pdf-lib';
 import { parsePDF } from '../parser/parser';
-import { PDFDict, PDFNumber, PDFRef, PDFStream } from '../types';
+import { PDFDict, PDFName, PDFNumber, PDFRef, PDFStream, PDFString } from '../types';
 import { compressDocumentImages } from '../optimize/image-compress';
-import { serializeDocumentCompact } from '../writer/serializer';
+import { serializeDocument, serializeDocumentCompact } from '../writer/serializer';
+import { javaScriptSecurityEngine } from '../security/javascript/javascript-engine';
 
 function tinyFixture(): Uint8Array {
   const objects = [
@@ -69,5 +70,49 @@ describe('compression of the current document', () => {
     const stream = reopened.objects.get(reopened.pages[0].contentRefs[0].toKey());
     expect(stream).toBeInstanceOf(PDFStream);
     expect((stream as PDFStream).getBytes()).toEqual(content);
+  });
+
+  it('never returns original bytes after cleanup even when the caller says they are current', async () => {
+    const source = await parsePDF(tinyFixture());
+    source.catalog.set('OpenAction', new PDFDict([
+      ['S', new PDFName('JavaScript')], ['JS', new PDFString('HISTORICAL_SCRIPT_MARKER')],
+    ]));
+    const doc = await parsePDF(await serializeDocument(source));
+    expect(new TextDecoder().decode(doc.rawBytes)).toContain('HISTORICAL_SCRIPT_MARKER');
+    javaScriptSecurityEngine.removeJavaScript(doc);
+    const { doc: edited, content } = await editedFixture();
+    const contentRef = edited.pages[0].contentRefs[0];
+    doc.objects.set(contentRef.toKey(), edited.objects.get(contentRef.toKey())!);
+    doc.pages[0].dict.set('Contents', contentRef);
+    doc.pages[0].contentRefs = [contentRef];
+    expect((await serializeDocumentCompact(doc)).length).toBeGreaterThan(doc.rawBytes.length);
+
+    const output = await compressDocumentImages(doc, { quality: 0.7, dpi: null, originalIsCurrent: true });
+    expect(new TextDecoder().decode(output.bytes)).not.toContain('HISTORICAL_SCRIPT_MARKER');
+    expect(output.method).not.toBe('unchanged');
+    const reopened = await parsePDF(output.bytes);
+    expect((reopened.objects.get(reopened.pages[0].contentRefs[0].toKey()) as PDFStream).getBytes()).toEqual(content);
+    expect(javaScriptSecurityEngine.analyze(reopened).hasJavaScript).toBe(false);
+  });
+
+  it('preserves a signed source byte-for-byte and refuses compression after edits or cleanup', async () => {
+    const source = tinyFixture();
+    const marker = new TextEncoder().encode('\n% /ByteRange [0 10 20 10] /Contents <01020304>\n');
+    const signedBytes = new Uint8Array(source.length + marker.length);
+    signedBytes.set(source);
+    signedBytes.set(marker, source.length);
+    const doc = await parsePDF(signedBytes);
+    const result = await compressDocumentImages(doc, { quality: 0.7, dpi: 150 });
+    expect(result.bytes).toEqual(signedBytes);
+    expect(result.message).toMatch(/signed.*unchanged/i);
+
+    doc.pages[0].dict.set('Rotate', new PDFNumber(90));
+    await expect(compressDocumentImages(doc, { quality: 0.7, dpi: 150 })).rejects.toMatchObject({
+      name: 'SignedDocumentEditError',
+    });
+    const cleaned = await parsePDF(signedBytes);
+    cleaned.requiresFullRewrite = true;
+    await expect(compressDocumentImages(cleaned, { quality: 0.7, dpi: null, originalIsCurrent: true }))
+      .rejects.toMatchObject({ name: 'SignedDocumentEditError' });
   });
 });

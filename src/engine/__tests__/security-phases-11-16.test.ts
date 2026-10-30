@@ -129,6 +129,21 @@ describe('Phase 13 — Security Inspector', () => {
 });
 
 describe('Phase 14 — Secure Optimizer', () => {
+  it('does not report stream deduplication that it did not perform', async () => {
+    const doc = makeDoc();
+    const first = new PDFRef(120, 0), second = new PDFRef(121, 0);
+    const bytes = new Uint8Array([1, 2, 3]);
+    doc.objects.set(first.toKey(), new PDFStream(new PDFDict([['Length', new PDFNumber(3)]]), bytes));
+    doc.objects.set(second.toKey(), new PDFStream(new PDFDict([['Length', new PDFNumber(3)]]), new Uint8Array(bytes)));
+    doc.catalog.set('First', first);
+    doc.catalog.set('Second', second);
+    const report = await securityEngine.optimizer.optimizeWithReport(doc);
+    expect(report.deduplicatedStreams).toBe(0);
+    expect(report.notes).toContain('Stream deduplication skipped to preserve independent editing');
+    expect(doc.objects.has(first.toKey())).toBe(true);
+    expect(doc.objects.has(second.toKey())).toBe(true);
+  });
+
   it('removes unused objects while preserving structure', async () => {
     const doc = makeDoc();
     expect(doc.objects.has('99_0')).toBe(true);

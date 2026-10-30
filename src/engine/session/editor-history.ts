@@ -132,12 +132,12 @@ export class SessionEditorHistory {
     try {
       await publishHistoryDraft(doc, async staged => {
         for (const session of ordered) {
-          const restore = await session.prepareRestore(staged, direction, isCurrent);
+          const restore = await session.prepareRestore(staged, direction, isCurrent, { discardableDraft: true });
           if (!restore) throw new Error('Session history boundary is unavailable');
           prepared.push(restore);
         }
         if (direction === 'undo' && target.replaced && target.sessions?.length) {
-          const restore = await target.sessions[target.sessions.length - 1].prepareRestore(staged, 'current', isCurrent);
+          const restore = await target.sessions[target.sessions.length - 1].prepareRestore(staged, 'current', isCurrent, { discardableDraft: true });
           if (!restore) throw new Error('Session history boundary is unavailable');
           prepared.push(restore);
         }

@@ -12,6 +12,7 @@
  */
 
 import { PDFLexer, TokenType } from '../parser/lexer';
+import { inlineEncodedLength, InlineImageBoundaryError } from './inline-image-boundary';
 import {
   PDFArray,
   PDFBoolean,
@@ -186,7 +187,6 @@ function parseCSArray(lexer: PDFLexer): PDFArray {
     lexer.skipWhitespaceAndComments();
     if (lexer.isEOF) break;
 
-    const savedPos = lexer.position;
     const token = lexer.nextToken();
     if (!token) break;
 
@@ -215,11 +215,10 @@ function parseCSArray(lexer: PDFLexer): PDFArray {
       case TokenType.Keyword:
         if (token.value === '[') {
           items.push(parseCSArray(lexer));
-        } else {
-          // Unexpected — push as number 0 to avoid losing position
-          lexer.position = savedPos;
-          break;
+        } else if (token.value === '<<') {
+          items.push(parseCSDictionary(lexer));
         }
+        // Other unexpected tokens remain consumed so recovery advances.
         break;
       default:
         break;
@@ -283,7 +282,7 @@ function parseCSDictionary(lexer: PDFLexer): PDFDict {
  * Parse an inline image (BI ... ID <data> EI).
  * Returns the image dictionary with offsets into the original stream.
  */
-function parseInlineImage(lexer: PDFLexer, data: Uint8Array): PDFDict | null {
+export function parseInlineImage(lexer: PDFLexer, data: Uint8Array): PDFDict | null {
   const dict = new PDFDict();
   let foundData = false;
 
@@ -330,26 +329,33 @@ function parseInlineImage(lexer: PDFLexer, data: Uint8Array): PDFDict | null {
   if (!foundData) return null;
 
   const startPos = lexer.position;
-  // Known unfiltered sample lengths keep even whitespace-delimited EI samples
-  // inside the payload. Filtered/resource colour spaces need delimiter scanning.
   const sampleLength = inlineImageSampleLength(dict);
-  let actualEiPos = lexer.searchForward('EI', startPos + (sampleLength ?? 0));
-  while (actualEiPos !== -1) {
-    const after = actualEiPos + 2;
-    if (actualEiPos > startPos && isInlineImageWhitespace(data[actualEiPos - 1])
-      && (after === data.length || isInlineImageWhitespace(data[after]))) {
-      break;
-    }
-    actualEiPos = lexer.searchForward('EI', after);
-  }
-  if (actualEiPos === -1) return null;
+  let exactLength: number;
+  if (sampleLength !== null) exactLength = sampleLength;
+  else if (dict.has('Filter')) exactLength = inlineEncodedLength(dict, data.subarray(startPos));
+  else throw new InlineImageBoundaryError('unfiltered sample size is unknown');
 
+  const dataEnd = startPos + exactLength;
+  if (dataEnd >= data.length || !isInlineImageWhitespace(data[dataEnd])) {
+    throw new InlineImageBoundaryError('missing separator after image data');
+  }
+  let actualEiPos = dataEnd;
+  while (actualEiPos < data.length && isInlineImageWhitespace(data[actualEiPos])) actualEiPos++;
+  if (data[actualEiPos] !== 0x45 || data[actualEiPos + 1] !== 0x49 ||
+      (actualEiPos + 2 < data.length && !isInlineImageDelimiter(data[actualEiPos + 2]))) {
+    throw new InlineImageBoundaryError('missing EI after image data');
+  }
   lexer.position = actualEiPos + 2;
-  // Keep the existing data range, including the separator preceding EI.
   dict.set('__imageDataOffset', new PDFNumber(startPos));
   dict.set('__imageDataLength', new PDFNumber(actualEiPos - startPos));
+  dict.set('__imageDataSampleLength', new PDFNumber(exactLength));
 
   return dict;
+}
+
+/** A PDF keyword may end at whitespace or at any delimiter character. */
+function isInlineImageDelimiter(byte: number): boolean {
+  return isInlineImageWhitespace(byte) || [0x28, 0x29, 0x3c, 0x3e, 0x5b, 0x5d, 0x7b, 0x7d, 0x2f, 0x25].includes(byte);
 }
 
 /** PDF whitespace includes NUL, tab and form feed as well as line endings. */

@@ -44,6 +44,7 @@ export function buildAppearanceStream(
   const h = rect.height;
 
   let body = 'q\n';
+  body += `${rect.x} ${rect.y} ${w} ${h} re W n `;
   body += rgbOperators(opts.textColor);
 
   if (opts.drawBorder && widget.borderWidth > 0) {
@@ -57,6 +58,8 @@ export function buildAppearanceStream(
     body += `${rect.x} ${rect.y} ${w} ${h} re f `;
   }
 
+  body += rgbOperators(opts.textColor);
+
   switch (widget.fieldType) {
     case 'Tx': {
       const text = typeof widget.value === 'string' ? widget.value : '';
@@ -69,7 +72,7 @@ export function buildAppearanceStream(
     }
     case 'Btn': {
       const checked = widget.value === true
-        || widget.value === widget.exportValue
+        || (widget.exportValue !== null && widget.exportValue !== 'Off' && widget.value === widget.exportValue)
         || widget.appearanceState === 'Yes'
         || widget.appearanceState === 'On';
       if (checked) {
@@ -77,11 +80,15 @@ export function buildAppearanceStream(
         const cx = rect.x + w / 2;
         const cy = rect.y + h / 2;
         const r = Math.min(w, h) / 2 - inset;
-        body += `${cx} ${cy} ${r} 0 360 arc S `;
-        body += `${rect.x + inset} ${rect.y + inset} `;
-        body += `${rect.x + w - inset} ${rect.y + h - inset} m S `;
-        body += `${rect.x + inset} ${rect.y + h - inset} `;
-        body += `${rect.x + w - inset} ${rect.y + inset} m S `;
+        const k = r * 0.5522847498;
+        body += `${cx + r} ${cy} m ${cx + r} ${cy + k} ${cx + k} ${cy + r} ${cx} ${cy + r} c `;
+        body += `${cx - k} ${cy + r} ${cx - r} ${cy + k} ${cx - r} ${cy} c `;
+        body += `${cx - r} ${cy - k} ${cx - k} ${cy - r} ${cx} ${cy - r} c `;
+        body += `${cx + k} ${cy - r} ${cx + r} ${cy - k} ${cx + r} ${cy} c S `;
+        body += `${rect.x + inset} ${rect.y + inset} m `;
+        body += `${rect.x + w - inset} ${rect.y + h - inset} l S `;
+        body += `${rect.x + inset} ${rect.y + h - inset} m `;
+        body += `${rect.x + w - inset} ${rect.y + inset} l S `;
       }
       break;
     }
@@ -121,13 +128,14 @@ export function appearanceToPageContent(
   appearance: AppearanceStream,
   widget: AcroFormWidget,
 ): string {
-  const { rect } = widget;
+  if (![widget.rect.x, widget.rect.y, widget.rect.width, widget.rect.height].every(Number.isFinite)) {
+    throw new Error('Widget geometry cannot be flattened safely.');
+  }
   return [
     'q',
     '1 0 0 1 0 0 cm',
     appearance.content.trim(),
     'Q',
-    `% flattened widget ${widget.fieldName} at ${rect.x},${rect.y}`,
   ].join('\n');
 }
 

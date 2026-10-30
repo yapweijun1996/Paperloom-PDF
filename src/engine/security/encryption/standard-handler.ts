@@ -27,6 +27,7 @@ import type {
   PdfPermissions,
 } from '../types';
 import { serializePermissions } from '../permissions/permission-bits';
+import { validateEncryptionPasswords } from './password-validation';
 
 /** PDF password padding string (ISO 32000 Algorithm 2). */
 export const PASSWORD_PADDING = new Uint8Array([
@@ -347,6 +348,7 @@ export function createEncryptionR2R4(
   fileId: FileIdPair,
   encryptMetadata = true,
 ): { O: Uint8Array; U: Uint8Array; P: number; fileKey: Uint8Array; length: number; revision: 2 | 3 | 4; version: 1 | 2 | 4 } {
+  validateEncryptionPasswords({ userPassword, ownerPassword });
   const isAes = algorithm === 'AES-128';
   const length = algorithm === 'RC4-40' ? 40 : 128;
   const keyLen = length / 8;
@@ -354,7 +356,7 @@ export function createEncryptionR2R4(
   const version: 1 | 2 | 4 = algorithm === 'RC4-40' ? 1 : isAes ? 4 : 2;
   const P = serializePermissions(permissions, revision);
 
-  const O = computeOValue(ownerPassword || userPassword, userPassword, revision, keyLen);
+  const O = computeOValue(ownerPassword, userPassword, revision, keyLen);
 
   // Temporary enc dict for file key computation
   const tempEnc: EncryptDictionary = {
@@ -396,10 +398,11 @@ export async function createEncryptionR6(
   P: number;
   fileKey: Uint8Array;
 }> {
+  validateEncryptionPasswords({ userPassword, ownerPassword });
   const fileKey = randomBytes(32);
   const P = serializePermissions(permissions, 6);
   const uPw = utf8Password(userPassword);
-  const oPw = utf8Password(ownerPassword || userPassword);
+  const oPw = utf8Password(ownerPassword);
 
   const uValidationSalt = randomBytes(8);
   const uKeySalt = randomBytes(8);

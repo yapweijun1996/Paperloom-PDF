@@ -14,7 +14,8 @@ import {
   type PDFObject,
 } from '../../types';
 import { getNextObjNum } from '../../writer/serializer';
-import { appendIncrementalUpdate } from '../../writer/incremental-writer';
+import { appendIncrementalUpdate, assertIncrementalOutputAllowed } from '../../writer/incremental-writer';
+import { createDocumentDraft, publishDraft } from '../../session/document-transaction';
 
 export interface DssBuildInput {
   certificates?: Uint8Array[];
@@ -110,12 +111,17 @@ export function embedDssIncremental(
   doc: PDFDocumentData,
   input: DssBuildInput,
 ): DssBuildResult {
+  assertIncrementalOutputAllowed(doc);
   if (!doc.rawBytes || doc.rawBytes.length === 0) {
     throw new Error('Document rawBytes required for DSS incremental embed');
   }
 
-  const { dssRef, modifiedKeys, newObjects } = buildDocumentSecurityStore(doc, input);
-  const result = appendIncrementalUpdate(doc, modifiedKeys, newObjects);
+  // Build and validate on an isolated graph so a failed append cannot leave a
+  // partially attached DSS in the live document.
+  const { staged, seen } = createDocumentDraft(doc);
+  const { dssRef, modifiedKeys, newObjects } = buildDocumentSecurityStore(staged, input);
+  const result = appendIncrementalUpdate(staged, modifiedKeys, newObjects);
+  publishDraft(doc, staged, seen);
   doc.rawBytes = result.bytes;
 
   return {

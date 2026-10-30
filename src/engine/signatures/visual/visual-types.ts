@@ -29,6 +29,8 @@ export interface VisualSignature {
   appearanceType: SignatureAppearanceType;
   /** Id of library entry and/or appearance object. */
   appearanceId: string;
+  /** Copy needed to edit the placed signature if its library entry is unavailable. */
+  appearanceImageDataUrl?: string;
 }
 
 export type SignatureSourceKind = 'draw' | 'upload' | 'typed';
@@ -49,6 +51,8 @@ export interface SignatureLibraryEntry {
   typedFont?: string;
   typedColor?: string;
   typedFontSize?: number;
+  /** Runtime-only library storage indicator; never serialized for session entries. */
+  sessionOnly?: boolean;
 }
 
 /** Point in drawing surface coordinates. */

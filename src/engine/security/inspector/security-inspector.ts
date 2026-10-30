@@ -2,7 +2,7 @@
  * Security Inspector — Phase 13 (Acrobat-style report).
  */
 
-import type { PDFDocumentData } from '../../types';
+import { PDFArray, PDFDict, PDFRef, type PDFDocumentData, type PDFObject } from '../../types';
 import type {
   ISecurityInspector,
   SecurityInspectionReport,
@@ -12,17 +12,18 @@ import { detectAlgorithm } from '../encryption/standard-handler';
 import { permissionEngine } from '../permissions/permission-engine';
 import { metadataEngine } from '../metadata/metadata-engine';
 import { embeddedFileSecurityEngine } from '../embedded-files/embedded-file-engine';
-import { javaScriptSecurityEngine } from '../javascript/javascript-engine';
+import { assertJavaScriptRemovalSupported, javaScriptSecurityEngine } from '../javascript/javascript-engine';
 import { integrityScanner } from '../integrity/integrity-scanner';
 import { publicKeyEncryptionEngine } from '../public-key/public-key-engine';
 
 export interface FullSecurityReport extends SecurityInspectionReport {
   handler: 'None' | 'Standard' | 'PublicKey' | 'Unknown';
   metadata: { hasInfo: boolean; hasXmp: boolean; infoKeys: string[] };
-  embeddedFiles: { count: number; names: string[] };
-  javascript: { present: boolean; actionCount: number; warnings: string[] };
+  embeddedFiles: { count: number; names: string[]; complete: boolean };
+  javascript: { present: boolean; actionCount: number; warnings: string[]; complete: boolean };
   integrity: { ok: boolean; issueCount: number; brokenRefs: number };
   redactionMarks: number;
+  redactionMarksComplete: boolean;
   score: number;
 }
 
@@ -55,21 +56,45 @@ export class SecurityInspector implements ISecurityInspector {
           : 'Unknown';
 
     const meta = metadataEngine.validateMetadata(doc);
-    const attachments = embeddedFileSecurityEngine.listAttachments(doc);
+    let attachments: ReturnType<typeof embeddedFileSecurityEngine.listAttachments> = [];
+    let attachmentsComplete = true;
+    try {
+      attachments = embeddedFileSecurityEngine.listAttachments(doc);
+    } catch {
+      attachmentsComplete = false;
+    }
     const js = javaScriptSecurityEngine.analyze(doc);
+    let javascriptLimitation = '';
+    try {
+      assertJavaScriptRemovalSupported(doc);
+    } catch (error) {
+      javascriptLimitation = error instanceof Error ? error.message : 'Interactive form inspection is incomplete.';
+    }
     const integrity = integrityScanner.inspect(doc);
 
     let redactionMarks = 0;
+    let redactionMarksComplete = true;
+    const resolve = (value: PDFObject): PDFObject | undefined => {
+      const seen = new Set<string>();
+      while (value instanceof PDFRef) {
+        const key = value.toKey();
+        if (seen.has(key)) return undefined;
+        seen.add(key);
+        const next = doc.objects.get(key);
+        if (!next) return undefined;
+        value = next;
+      }
+      return value;
+    };
     for (const page of doc.pages) {
-      const annots = page.dict.getArray('Annots');
+      const annots = page.dict.get('Annots');
       if (!annots) continue;
-      for (let i = 0; i < annots.length; i++) {
-        const ref = annots.get(i);
-        if (!ref || !('toKey' in ref)) continue;
-        const obj = doc.objects.get((ref as { toKey(): string }).toKey());
-        if (obj && 'getName' in obj && (obj as { getName(k: string): string | undefined }).getName('Subtype') === 'Redact') {
-          redactionMarks++;
-        }
+      const resolved = resolve(annots);
+      if (!(resolved instanceof PDFArray)) { redactionMarksComplete = false; continue; }
+      for (const item of resolved.items) {
+        const annot = resolve(item);
+        if (!(annot instanceof PDFDict) || !annot.getName('Subtype')) { redactionMarksComplete = false; continue; }
+        if (annot.getName('Subtype') === 'Redact') redactionMarks++;
       }
     }
 
@@ -80,9 +105,14 @@ export class SecurityInspector implements ISecurityInspector {
     if (js.hasJavaScript) {
       recommendations.push('Remove JavaScript actions before distributing externally.');
     }
+    recommendations.push('JavaScript inspection covers known action locations only; it cannot rule out all scripts.');
+    if (javascriptLimitation) {
+      recommendations.push('JavaScript inspection is incomplete for this interactive form. Review it with a tool that supports XFA and malformed forms.');
+    }
     if (attachments.length > 0) {
       recommendations.push(`Review ${attachments.length} embedded attachment(s) for malware risk.`);
     }
+    if (!attachmentsComplete) recommendations.push('Attachment inspection is incomplete; unresolved document references require review.');
     if (meta.hasInfo || meta.hasXmp) {
       recommendations.push('Strip metadata if the document will leave your organization.');
     }
@@ -90,12 +120,11 @@ export class SecurityInspector implements ISecurityInspector {
       recommendations.push('Repair integrity issues before signing or archiving.');
     }
     if (redactionMarks > 0) {
-      recommendations.push(`Apply ${redactionMarks} pending redaction mark(s) securely.`);
+      recommendations.push(`${redactionMarks} redaction mark(s) are not applied. Complex redaction is unavailable; only isolated full pages and simple graphics are supported. Do not distribute marked content as redacted.`);
     }
-    if (recommendations.length === 0) {
-      recommendations.push('Security posture looks solid for typical internal use.');
+    if (!redactionMarksComplete) {
+      recommendations.push('Redaction marks could not be fully inspected. Do not distribute this document as redacted.');
     }
-
     const algorithm = enc ? detectAlgorithm(enc) : undefined;
     const permissions = enc ? permissionEngine.fromEncryptDict(enc) : undefined;
 
@@ -104,14 +133,14 @@ export class SecurityInspector implements ISecurityInspector {
     if (encrypted) score += 25;
     if (algorithm === 'AES-256') score += 15;
     else if (algorithm === 'AES-128') score += 10;
-    if (!js.hasJavaScript) score += 10;
-    if (attachments.length === 0) score += 5;
+    if (attachmentsComplete && attachments.length === 0) score += 5;
     if (integrity.ok) score += 5;
-    if (score > 100) score = 100;
+    score = Math.min(score, 60);
 
-    const summary = encrypted
+    const posture = encrypted
       ? `${handler} encryption (${algorithm ?? 'unknown'}); score ${score}/100`
       : `Unencrypted document; score ${score}/100`;
+    const summary = `${posture}; JavaScript inspection incomplete`;
 
     return {
       encrypted,
@@ -132,11 +161,17 @@ export class SecurityInspector implements ISecurityInspector {
       embeddedFiles: {
         count: attachments.length,
         names: attachments.map((a) => a.name),
+        complete: attachmentsComplete,
       },
       javascript: {
         present: js.hasJavaScript,
         actionCount: js.actions.length,
-        warnings: js.warnings,
+        warnings: [
+          ...js.warnings,
+          'JavaScript inspection covers known action locations only.',
+          ...(javascriptLimitation ? [javascriptLimitation] : []),
+        ],
+        complete: false,
       },
       integrity: {
         ok: integrity.ok,
@@ -144,6 +179,7 @@ export class SecurityInspector implements ISecurityInspector {
         brokenRefs: integrity.brokenRefs,
       },
       redactionMarks,
+      redactionMarksComplete,
       score,
     };
   }

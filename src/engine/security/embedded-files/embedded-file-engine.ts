@@ -12,7 +12,10 @@ import {
   type PDFDocumentData,
   type PDFObject,
 } from '../../types';
-import { resolveRef } from '../../parser/parser';
+import { associatedFileSpecs, assertAttachmentStreamsDetached, detachAssociatedFileSpecs, expandAttachmentStreams, removeAllAttachmentsSafely } from './attachment-removal';
+import { dehydrateDocument, hydrateDocument } from '../../worker/codec';
+import { hasDocumentSignature, SignedDocumentEditError } from '../../writer/save-pipeline';
+import { assertCompletePageTree } from '../validate-page-tree';
 import type {
   AttachmentScanResult,
   AttachmentScanner,
@@ -21,26 +24,42 @@ import type {
   IEmbeddedFileSecurityEngine,
 } from '../types';
 
+function resolveAttachment(obj: PDFObject | undefined, objects: Map<string, PDFObject>): PDFObject | undefined {
+  const seen = new Set<string>();
+  while (obj instanceof PDFRef) {
+    const key = obj.toKey();
+    if (seen.has(key)) throw new Error('Cannot safely inspect a cyclic attachment reference.');
+    seen.add(key);
+    obj = objects.get(key);
+    if (!obj) throw new Error('Cannot safely inspect an unresolved attachment reference.');
+  }
+  return obj;
+}
+
 function asDict(obj: PDFObject | undefined, objects: Map<string, PDFObject>): PDFDict | null {
-  if (!obj) return null;
-  const r = resolveRef(obj, objects);
+  const r = resolveAttachment(obj, objects);
   return r instanceof PDFDict ? r : null;
 }
 
 function asStream(obj: PDFObject | undefined, objects: Map<string, PDFObject>): PDFStream | null {
-  if (!obj) return null;
-  const r = resolveRef(obj, objects);
+  const r = resolveAttachment(obj, objects);
   return r instanceof PDFStream ? r : null;
 }
 
 function nameTreeFiles(
   namesDict: PDFDict,
   objects: Map<string, PDFObject>,
+  visited = new Set<PDFDict>(),
 ): Array<{ name: string; filespec: PDFDict }> {
+  if (visited.has(namesDict)) throw new Error('Cannot safely inspect a cyclic embedded-file name tree.');
+  visited.add(namesDict);
   const out: Array<{ name: string; filespec: PDFDict }> = [];
 
-  const names = namesDict.get('Names');
+  const namesValue = namesDict.get('Names');
+  const names = resolveAttachment(namesValue, objects);
+  if (namesValue && !(names instanceof PDFArray)) throw new Error('Cannot safely inspect embedded-file names.');
   if (names instanceof PDFArray) {
+    if (names.length % 2 !== 0) throw new Error('Cannot safely inspect embedded-file names.');
     for (let i = 0; i + 1 < names.length; i += 2) {
       const nameObj = names.get(i);
       const fsObj = names.get(i + 1);
@@ -51,18 +70,23 @@ function nameTreeFiles(
             ? nameObj.name
             : String(nameObj);
       const filespec = asDict(fsObj, objects);
-      if (filespec) out.push({ name, filespec });
+      if (!filespec) throw new Error('Cannot safely inspect an embedded file specification.');
+      out.push({ name, filespec });
     }
   }
 
-  const kids = namesDict.get('Kids');
+  const kidsValue = namesDict.get('Kids');
+  const kids = resolveAttachment(kidsValue, objects);
+  if (kidsValue && !(kids instanceof PDFArray)) throw new Error('Cannot safely inspect an embedded-file name tree.');
   if (kids instanceof PDFArray) {
     for (let i = 0; i < kids.length; i++) {
       const kid = asDict(kids.get(i), objects);
-      if (kid) out.push(...nameTreeFiles(kid, objects));
+      if (!kid) throw new Error('Cannot safely inspect an embedded-file name tree.');
+      out.push(...nameTreeFiles(kid, objects, visited));
     }
   }
 
+  visited.delete(namesDict);
   return out;
 }
 
@@ -77,7 +101,7 @@ function filespecToAttachment(
   let stream: PDFStream | null = null;
   let streamKey: string | undefined;
   if (ef) {
-    const f = ef.get('F') ?? ef.get('UF');
+    const f = ef.get('F') ?? ef.get('UF') ?? ef.get('DOS') ?? ef.get('Mac') ?? ef.get('Unix');
     if (f instanceof PDFRef) streamKey = f.toKey();
     stream = asStream(f, objects);
   }
@@ -102,10 +126,39 @@ function filespecToAttachment(
   };
 }
 
+/** Match the same aliases as the named removal path, including name-tree keys. */
+function matchingFileSpecs(doc: PDFDocumentData, targetName: string): Set<PDFDict> {
+  const result = new Set<PDFDict>();
+  const matches = (spec: PDFDict, alias?: string) => alias === targetName ||
+    spec.getString('F') === targetName || spec.getString('UF') === targetName;
+  const names = asDict(doc.catalog.get('Names'), doc.objects);
+  const tree = names ? asDict(names.get('EmbeddedFiles'), doc.objects) : null;
+  if (tree) for (const { name, filespec } of nameTreeFiles(tree, doc.objects)) {
+    if (matches(filespec, name)) result.add(filespec);
+  }
+  for (const page of doc.pages) {
+    const entry = page.dict.get('Annots');
+    if (!entry) continue;
+    const array = resolveAttachment(entry, doc.objects);
+    if (!(array instanceof PDFArray)) throw new Error('Cannot safely inspect page attachments.');
+    for (const item of array.items) {
+      const annot = asDict(item, doc.objects);
+      if (!annot || annot.getName('Subtype') !== 'FileAttachment') continue;
+      const spec = asDict(annot.get('FS'), doc.objects);
+      if (annot.has('FS') && !spec) throw new Error('Cannot safely inspect an attachment annotation.');
+      if (spec && matches(spec, annot.getString('Contents'))) result.add(spec);
+    }
+  }
+  for (const spec of associatedFileSpecs(doc)) {
+    if (matches(spec, spec.getString('F') ?? 'associated-file')) result.add(spec);
+  }
+  return result;
+}
+
 export class EmbeddedFileSecurityEngine implements IEmbeddedFileSecurityEngine {
   listAttachments(doc: PDFDocumentData): EmbeddedAttachment[] {
     const results: EmbeddedAttachment[] = [];
-    const seen = new Set<string>();
+    const seen = new Set<PDFDict>();
 
     // Catalog /Names → /EmbeddedFiles
     const names = asDict(doc.catalog.get('Names'), doc.objects);
@@ -114,8 +167,8 @@ export class EmbeddedFileSecurityEngine implements IEmbeddedFileSecurityEngine {
       if (embedded) {
         for (const { name, filespec } of nameTreeFiles(embedded, doc.objects)) {
           const att = filespecToAttachment(name, filespec, doc.objects, 'Names');
-          if (!seen.has(att.name)) {
-            seen.add(att.name);
+          if (!seen.has(filespec)) {
+            seen.add(filespec);
             results.push(att);
           }
         }
@@ -126,22 +179,27 @@ export class EmbeddedFileSecurityEngine implements IEmbeddedFileSecurityEngine {
     for (const page of doc.pages) {
       const annots = page.dict.get('Annots');
       if (!annots) continue;
-      const arr = annots instanceof PDFRef ? resolveRef(annots, doc.objects) : annots;
+      const arr = resolveAttachment(annots, doc.objects);
       if (!(arr instanceof PDFArray)) continue;
       for (let i = 0; i < arr.length; i++) {
         const item = arr.get(i);
-        if (!(item instanceof PDFRef)) continue;
         const dict = asDict(item, doc.objects);
         if (!dict || dict.getName('Subtype') !== 'FileAttachment') continue;
         const fs = asDict(dict.get('FS'), doc.objects);
         if (!fs) continue;
         const name = dict.getString('Contents') ?? fs.getString('F') ?? `attachment-${page.index}-${i}`;
         const att = filespecToAttachment(name, fs, doc.objects, 'FileAttachment', page.index);
-        if (!seen.has(att.name)) {
-          seen.add(att.name);
+        if (!seen.has(fs)) {
+          seen.add(fs);
           results.push(att);
         }
       }
+    }
+
+    for (const filespec of associatedFileSpecs(doc)) {
+      if (seen.has(filespec)) continue;
+      seen.add(filespec);
+      results.push(filespecToAttachment(filespec.getString('F') ?? 'associated-file', filespec, doc.objects, 'EF'));
     }
 
     return results;
@@ -156,41 +214,75 @@ export class EmbeddedFileSecurityEngine implements IEmbeddedFileSecurityEngine {
   }
 
   removeAttachment(doc: PDFDocumentData, name: string): boolean {
-    let removed = false;
+    assertCompletePageTree(doc, reason => {
+      throw new Error(`Cannot safely remove attachments: ${reason}; no changes were made.`);
+    });
+    const draft = hydrateDocument(dehydrateDocument(doc, { includeRawBytes: false }));
+    const streams: PDFStream[] = [];
+    const targets = matchingFileSpecs(draft, name);
+    if (!targets.size) return false;
+    if (targets.size > 1) throw new Error('The attachment name is ambiguous; multiple files match.');
+    if (hasDocumentSignature(doc)) throw new SignedDocumentEditError();
+    for (const spec of targets) {
+      if (spec.has('RF')) throw new Error('Cannot safely remove related files in an attachment specification.');
+      const ef = asDict(spec.get('EF'), draft.objects);
+      if (!ef) throw new Error('Cannot safely inspect the named attachment data.');
+      for (const value of ef.values()) {
+        const stream = asStream(value, draft.objects);
+        if (!stream) throw new Error('Cannot safely inspect the named attachment data.');
+        streams.push(stream);
+      }
+    }
+    const allStreams = expandAttachmentStreams(draft, streams);
+    if (!this.removeAttachmentInPlace(draft, targets)) return false;
+    assertAttachmentStreamsDetached(draft, allStreams);
+    const removed = this.removeAttachmentInPlace(doc, matchingFileSpecs(doc, name));
+    if (removed) doc.requiresFullRewrite = true;
+    return removed;
+  }
+
+  private removeAttachmentInPlace(doc: PDFDocumentData, targets: Set<PDFDict>): boolean {
+    let removed = detachAssociatedFileSpecs(doc, targets);
 
     const names = asDict(doc.catalog.get('Names'), doc.objects);
     if (names) {
       const embedded = asDict(names.get('EmbeddedFiles'), doc.objects);
       if (embedded) {
-        removed = removeFromNameTree(embedded, name, doc) || removed;
-        // If empty Names array, clear EmbeddedFiles
-        const namesArr = embedded.get('Names');
-        if (namesArr instanceof PDFArray && namesArr.length === 0) {
-          names.delete('EmbeddedFiles');
+        const pruned = removeFromNameTree(embedded, targets, doc);
+        if (pruned.changed) {
+          // Copy the owning dictionary and every changed path: the original
+          // name tree may also be referenced by unrelated retained objects.
+          const nextNames = new PDFDict([...names.entries()]);
+          const namesArr = resolveAttachment(pruned.node.get('Names'), doc.objects);
+          const kidsArr = resolveAttachment(pruned.node.get('Kids'), doc.objects);
+          if (namesArr instanceof PDFArray && namesArr.length === 0 &&
+              (!(kidsArr instanceof PDFArray) || kidsArr.length === 0)) {
+            nextNames.delete('EmbeddedFiles');
+          } else nextNames.set('EmbeddedFiles', pruned.node);
+          if (nextNames.size) doc.catalog.set('Names', nextNames);
+          else doc.catalog.delete('Names');
+          removed = true;
         }
-      }
-      if ([...names.keys()].length === 0) {
-        doc.catalog.delete('Names');
       }
     }
 
     for (const page of doc.pages) {
       const annots = page.dict.get('Annots');
       if (!annots) continue;
-      const arr = annots instanceof PDFRef ? resolveRef(annots, doc.objects) : annots;
+      const arr = resolveAttachment(annots, doc.objects);
       if (!(arr instanceof PDFArray)) continue;
-      for (let i = arr.length - 1; i >= 0; i--) {
-        const item = arr.get(i);
-        if (!(item instanceof PDFRef)) continue;
+      const retained: PDFObject[] = [];
+      for (const item of arr.items) {
         const dict = asDict(item, doc.objects);
-        if (!dict || dict.getName('Subtype') !== 'FileAttachment') continue;
-        const fs = asDict(dict.get('FS'), doc.objects);
-        const n = dict.getString('Contents') ?? fs?.getString('F') ?? '';
-        if (n === name || fs?.getString('UF') === name || fs?.getString('F') === name) {
-          arr.items.splice(i, 1);
-          doc.objects.delete(item.toKey());
-          removed = true;
-        }
+        const fs = dict?.getName('Subtype') === 'FileAttachment' ? asDict(dict.get('FS'), doc.objects) : null;
+        if (fs && targets.has(fs)) continue;
+        retained.push(item);
+      }
+      if (retained.length !== arr.length) {
+        // Do not mutate an annotation array shared with another live object.
+        if (retained.length) page.dict.set('Annots', new PDFArray(retained));
+        else page.dict.delete('Annots');
+        removed = true;
       }
     }
 
@@ -198,12 +290,10 @@ export class EmbeddedFileSecurityEngine implements IEmbeddedFileSecurityEngine {
   }
 
   removeAllAttachments(doc: PDFDocumentData): number {
-    const names = this.listAttachments(doc).map((a) => a.name);
-    let count = 0;
-    for (const n of names) {
-      if (this.removeAttachment(doc, n)) count++;
-    }
-    return count;
+    assertCompletePageTree(doc, reason => {
+      throw new Error(`Cannot safely remove attachments: ${reason}; no changes were made.`);
+    });
+    return removeAllAttachmentsSafely(doc);
   }
 
   validateAttachments(doc: PDFDocumentData): AttachmentValidationResult {
@@ -258,44 +348,50 @@ export class EmbeddedFileSecurityEngine implements IEmbeddedFileSecurityEngine {
 
 function removeFromNameTree(
   namesDict: PDFDict,
-  targetName: string,
+  targets: Set<PDFDict>,
   doc: PDFDocumentData,
-): boolean {
-  let removed = false;
-  const names = namesDict.get('Names');
+  visited = new Set<PDFDict>(),
+): { node: PDFDict; changed: boolean } {
+  if (visited.has(namesDict)) throw new Error('Cannot safely inspect a cyclic embedded-file name tree.');
+  visited.add(namesDict);
+  let result = namesDict;
+  let changed = false;
+  const copy = () => {
+    if (result === namesDict) result = new PDFDict([...namesDict.entries()]);
+    changed = true;
+    return result;
+  };
+  const namesValue = namesDict.get('Names');
+  const names = resolveAttachment(namesValue, doc.objects);
+  if (namesValue && !(names instanceof PDFArray)) throw new Error('Cannot safely inspect embedded-file names.');
   if (names instanceof PDFArray) {
-    for (let i = names.length - 2; i >= 0; i -= 2) {
-      const nameObj = names.get(i);
-      const name =
-        nameObj instanceof PDFString
-          ? nameObj.value
-          : nameObj instanceof PDFName
-            ? nameObj.name
-            : String(nameObj);
+    const kept: PDFObject[] = [];
+    for (let i = 0; i < names.length; i += 2) {
       const fsObj = names.get(i + 1);
       const fs = asDict(fsObj, doc.objects);
-      const fname = fs?.getString('UF') ?? fs?.getString('F') ?? name;
-      if (name === targetName || fname === targetName) {
-        // Delete EF stream if present
-        if (fs) {
-          const ef = asDict(fs.get('EF'), doc.objects);
-          const f = ef?.get('F') ?? ef?.get('UF');
-          if (f instanceof PDFRef) doc.objects.delete(f.toKey());
-          if (fsObj instanceof PDFRef) doc.objects.delete(fsObj.toKey());
-        }
-        names.items.splice(i, 2);
-        removed = true;
-      }
+      if (fs && targets.has(fs)) continue;
+      kept.push(names.get(i)!, fsObj!);
     }
+    if (kept.length !== names.length) copy().set('Names', new PDFArray(kept));
   }
-  const kids = namesDict.get('Kids');
+  const kidsValue = namesDict.get('Kids');
+  const kids = resolveAttachment(kidsValue, doc.objects);
+  if (kidsValue && !(kids instanceof PDFArray)) throw new Error('Cannot safely inspect an embedded-file name tree.');
   if (kids instanceof PDFArray) {
+    const nextKids: PDFObject[] = [];
+    let kidsChanged = false;
     for (let i = 0; i < kids.length; i++) {
-      const kid = asDict(kids.get(i), doc.objects);
-      if (kid && removeFromNameTree(kid, targetName, doc)) removed = true;
+      const item = kids.get(i)!;
+      const kid = asDict(item, doc.objects);
+      if (!kid) throw new Error('Cannot safely inspect an embedded-file name tree.');
+      const next = removeFromNameTree(kid, targets, doc, visited);
+      nextKids.push(next.changed ? next.node : item);
+      kidsChanged ||= next.changed;
     }
+    if (kidsChanged) copy().set('Kids', new PDFArray(nextKids));
   }
-  return removed;
+  visited.delete(namesDict);
+  return { node: result, changed };
 }
 
 export const embeddedFileSecurityEngine = new EmbeddedFileSecurityEngine();

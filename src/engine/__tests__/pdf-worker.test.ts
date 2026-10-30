@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, it } from 'vitest';
+import { PDFDocument } from 'pdf-lib';
 import { spawnSync } from 'child_process';
 import { readFileSync, unlinkSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { collectTransferBuffers, dehydrateDocument, extractNewObjects, hydrateDocument } from '../worker/codec';
+import { collectTransferBuffers, dehydrateDocument, extractNewObjects, hydrateDocument, sameDocumentSnapshot } from '../worker/codec';
 import { PDFArray, PDFBoolean, PDFDict, PDFHexString, PDFName, PDFNull, PDFNumber, PDFRef, PDFStream, PDFString, type PDFDocumentData, type PDFObject } from '../types';
 import { parsePDF, saveOptimized, saveQuick, resetPDFWorkerForTests } from '../worker/client';
 import { handleWorkerCommand } from '../worker/handler';
@@ -31,6 +32,85 @@ describe('PDF worker codec', () => {
   afterEach(() => {
     resetPDFWorkerForTests();
     delete (globalThis as { Worker?: unknown }).Worker;
+  });
+
+  it('round-trips deeply nested direct containers without recursive stack growth', () => {
+    const doc = fixture();
+    const root = new PDFDict();
+    let current = root;
+    for (let i = 0; i < 14_000; i++) {
+      const next = new PDFDict();
+      current.set('Next', next);
+      current = next;
+    }
+    const shared = new PDFString('deep alias');
+    current.set('Loop', root);
+    current.set('Shared', shared);
+    doc.catalog.set('Deep', root);
+    doc.catalog.set('Shared', shared);
+    const wire = dehydrateDocument(doc);
+    const restored = hydrateDocument(wire);
+    const first = restored.catalog.getDict('Deep')!;
+    let last = first;
+    for (let i = 0; i < 14_000; i++) last = last.getDict('Next')!;
+    expect(last.get('Loop')).toBe(first);
+    expect(last.get('Shared')).toBe(restored.catalog.get('Shared'));
+    expect(doc.catalog.get('Deep')).toBe(root);
+    expect(dehydrateDocument(restored)).toEqual(wire);
+  });
+
+  it('hydrates wide arrays without overflowing call argument limits', () => {
+    const doc = fixture();
+    const shared = new PDFString('shared');
+    doc.catalog.set('Wide', new PDFArray(Array.from({ length: 140_000 }, () => shared)));
+    const restored = hydrateDocument(dehydrateDocument(doc));
+    const array = restored.catalog.getArray('Wide')!;
+    expect(array.length).toBe(140_000);
+    expect(array.items[0]).toBe(array.items[139_999]);
+  });
+
+  it('preserves depth-first wire IDs for aliases and ordered children', () => {
+    const doc = fixture();
+    const shared = new PDFString('shared');
+    const nested = new PDFDict([['alias', shared]]);
+    const root = new PDFDict([['first', new PDFArray([shared, nested])], ['second', shared]]);
+    doc.objects = new Map([['1_0', root]]);
+    doc.catalog = root;
+    doc.xref.trailerDict = root;
+    doc.pages = [];
+    expect(dehydrateDocument(doc).nodes).toEqual([
+      { id: 1, kind: 'dict', entries: [['first', 2], ['second', 3]] },
+      { id: 2, kind: 'array', items: [3, 4] },
+      { id: 3, kind: 'string', value: 'shared' },
+      { id: 4, kind: 'dict', entries: [['alias', 3]] },
+    ]);
+  });
+
+  it('resolves missing page resource caches from the page and its ancestors', () => {
+    const direct = fixture();
+    const resources = direct.pages[0].resources;
+    Reflect.deleteProperty(direct.pages[0], 'resources');
+    const directRestored = hydrateDocument(dehydrateDocument(direct));
+    expect(directRestored.pages[0].resources).toBe(directRestored.pages[0].dict.get('Resources'));
+    expect(directRestored.pages[0].resources.getDict('Font')).toBeDefined();
+    expect(direct.pages[0].dict.get('Resources')).toBe(resources);
+
+    const inherited = fixture();
+    const inheritedResources = inherited.pages[0].resources;
+    const parent = new PDFDict([['Resources', inheritedResources]]);
+    inherited.objects.set('98_0', parent);
+    inherited.pages[0].dict.delete('Resources');
+    inherited.pages[0].dict.set('Parent', new PDFRef(98, 0));
+    Reflect.deleteProperty(inherited.pages[0], 'resources');
+    const reopened = hydrateDocument(dehydrateDocument(inherited));
+    expect(reopened.pages[0].resources).toBe((reopened.objects.get('98_0') as PDFDict).get('Resources'));
+    expect(inherited.pages[0].dict.has('Resources')).toBe(false);
+
+    const missing = fixture();
+    missing.pages[0].dict.delete('Resources');
+    Reflect.deleteProperty(missing.pages[0], 'resources');
+    expect(hydrateDocument(dehydrateDocument(missing)).pages[0].resources.size).toBe(0);
+    expect(missing.pages[0].dict.has('Resources')).toBe(false);
   });
 
   it('round-trips core classes, bytes, and aliases', () => {
@@ -87,6 +167,58 @@ describe('PDF worker codec', () => {
     expect(transfer).not.toContain(originalStreamBytes.buffer);
   });
 
+  it('isolates Buffer-backed source bytes before snapshot comparison and transfer', () => {
+    const doc = fixture();
+    const stream = doc.objects.get('2_0') as PDFStream;
+    doc.rawBytes = Buffer.from([10, 11]);
+    stream.rawBytes = Buffer.from([20, 21, 22]);
+    stream.decodedBytes = Buffer.from([30, 31]);
+    doc.encryptionFileKey = Buffer.from([40, 41]);
+    const sourceRaw = doc.rawBytes, sourceStream = stream.rawBytes, sourceDecoded = stream.decodedBytes;
+    const sourceKey = doc.encryptionFileKey;
+    const wire = dehydrateDocument(doc);
+    const node = wire.nodes.find(item => item.kind === 'stream');
+    if (!node || node.kind !== 'stream') throw new Error('Missing stream node');
+    sourceRaw[0] = 12; sourceStream[0] = 23; sourceDecoded[0] = 32; sourceKey[0] = 42;
+    expect([...wire.rawBytes!]).toEqual([10, 11]);
+    expect([...node.rawBytes]).toEqual([20, 21, 22]);
+    expect([...node.decodedBytes!]).toEqual([30, 31]);
+    expect([...wire.encryptionFileKey!]).toEqual([40, 41]);
+    expect(sameDocumentSnapshot(wire, dehydrateDocument(doc))).toBe(false);
+    const transfer = collectTransferBuffers(wire);
+    expect(transfer).not.toContain(sourceRaw.buffer);
+    expect(transfer).not.toContain(sourceStream.buffer);
+    expect(transfer).not.toContain(sourceDecoded.buffer);
+    expect(transfer).not.toContain(sourceKey.buffer);
+    structuredClone(wire, { transfer });
+    expect([...sourceRaw]).toEqual([12, 11]);
+    expect([...sourceStream]).toEqual([23, 21, 22]);
+    expect([...sourceDecoded]).toEqual([32, 31]);
+    expect([...sourceKey]).toEqual([42, 41]);
+  });
+
+  it('copies Buffer-backed wire bytes when hydrating without explicit raw bytes', () => {
+    const wire = dehydrateDocument(fixture());
+    const node = wire.nodes.find(item => item.kind === 'stream');
+    if (!node || node.kind !== 'stream') throw new Error('Missing stream node');
+    wire.rawBytes = Buffer.from([10, 11]);
+    wire.encryptionFileKey = Buffer.from([40, 41]);
+    node.rawBytes = Buffer.from([20, 21, 22]);
+    node.decodedBytes = Buffer.from([30, 31]);
+    const restored = hydrateDocument(wire);
+    const stream = restored.objects.get('2_0') as PDFStream;
+    restored.rawBytes[0] = 12; stream.rawBytes[0] = 23; stream.decodedBytes![0] = 32; restored.encryptionFileKey![0] = 42;
+    expect([...wire.rawBytes]).toEqual([10, 11]);
+    expect([...node.rawBytes]).toEqual([20, 21, 22]);
+    expect([...node.decodedBytes]).toEqual([30, 31]);
+    expect([...wire.encryptionFileKey]).toEqual([40, 41]);
+    wire.rawBytes[1] = 99; node.rawBytes[1] = 98; node.decodedBytes[1] = 97; wire.encryptionFileKey[1] = 96;
+    expect([...restored.rawBytes]).toEqual([12, 11]);
+    expect([...stream.rawBytes]).toEqual([23, 21, 22]);
+    expect([...stream.decodedBytes!]).toEqual([32, 31]);
+    expect([...restored.encryptionFileKey!]).toEqual([42, 41]);
+  });
+
   it('isolates xref entry objects in snapshots', () => {
     const doc = fixture();
     const original = doc.xref.entries.get('1_0')!;
@@ -134,7 +266,9 @@ describe('PDF worker codec', () => {
       }
     }
     Object.defineProperty(globalThis, 'Worker', { configurable: true, value: FakeWorker });
-    const doc = fixture();
+    const source = await PDFDocument.create();
+    source.addPage([10, 10]);
+    const doc = await parseDirect(await source.save({ useObjectStreams: false }));
     const modified = new Set(['1_0']);
     const first = await saveQuick(doc, modified);
     expect(doc.rawBytes).toBe(first);

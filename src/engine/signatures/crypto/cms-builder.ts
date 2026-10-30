@@ -25,7 +25,12 @@ export interface BuildCMSOptions {
   /** Include signingTime signed attribute. */
   includeSigningTime?: boolean;
   signingTime?: Date;
-  /** RFC 3161 TimeStampToken (ContentInfo DER) as unsigned attribute. */
+  /**
+   * Raw RFC 3161 TimeStampToken (ContentInfo DER) as an unsigned attribute.
+   * This low-level builder does not validate it: callers must verify the token,
+   * its binding to signatureValue, and the TSA's trust before relying on it.
+   * The high-level signing pipeline validates token integrity before embedding.
+   */
   timestampToken?: Uint8Array;
 }
 

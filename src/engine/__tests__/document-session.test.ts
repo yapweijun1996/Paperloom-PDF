@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { DocumentSession } from '../session/document-session';
+import { deferred } from './test-deferred';
 
 const bytes = (...values: number[]) => new Uint8Array(values);
 
@@ -106,7 +107,7 @@ describe('DocumentSession', () => {
   it('rejects nested and concurrent transactions until the active one closes', async () => {
     const session = new DocumentSession(bytes(1));
     const first = session.beginTransaction('first');
-    const { promise, resolve: release } = Promise.withResolvers<Uint8Array>();
+    const { promise, resolve: release } = deferred<Uint8Array>();
     const pending = first.apply(() => promise);
     expect(() => session.beginTransaction('second')).toThrow(/transaction.*active/i);
     expect(() => first.commit()).toThrow(/apply.*pending/i);
@@ -123,7 +124,7 @@ describe('DocumentSession', () => {
   it('does not publish an in-flight apply after rollback', async () => {
     const session = new DocumentSession(bytes(1));
     const transaction = session.beginTransaction('slow edit');
-    const { promise, resolve: release } = Promise.withResolvers<Uint8Array>();
+    const { promise, resolve: release } = deferred<Uint8Array>();
     const pending = transaction.apply(() => promise);
     transaction.rollback();
     await commit(session, 3);

@@ -16,6 +16,64 @@ Paperloom PDF's engine is a browser-native TypeScript implementation. It parses 
 
 The engine remains browser-native. Native content-stream editing, annotations, forms, page operations, rendering, PDF save behavior, and IndexedDB persistence must remain independent of any server conversion product surface.
 
+Recovery stores the current PDF and a separately versioned draft in IndexedDB.
+Successful downloads replace the stored PDF and remove stale recovery atomically;
+the home page can resume the saved document. Storage revisions reject stale writes
+and deletes from another tab. Uploads do not overwrite an existing saved record;
+users must resume it or explicitly discard it. A recoverable orphan draft can be
+restored, and malformed records are preserved rather than silently replaced.
+
+For an unlocked password-protected PDF, recovery overlays use AES-GCM with a key
+derived from the non-empty unlock password and are bound to the saved PDF bytes.
+The password and derived key are not persisted. Protected PDFs opened with an
+empty password, or newly protected without a recovery password available, cannot
+use this protected overlay recovery; the editor reports an autosave failure.
+Legacy protected drafts may already contain plaintext overlays and are reported to
+the user. Signed PDF graph edits use a separate, source-bound internal recovery
+snapshot while preserving the original signed bytes. Protected signed snapshots
+are encrypted together with overlays. They are recovery data, not signed PDF
+exports: edited signed documents still fail the save guard, and signature
+validation requires reopening the unedited saved PDF. Undo history before a
+reload is not retained, and the autosave debounce leaves a short crash window.
+
+Security cleanup follows known PDF action chains, including indirect and cyclic
+references. XFA JavaScript cleanup is unsupported and rejected before mutation;
+inspection is not exhaustive. After cleanup, incremental export is rejected
+because it would retain the original bytes; the quick-save pipeline uses a full
+rewrite instead. Signed documents cannot be rewritten without invalidating their
+signatures. Attachment cleanup handles standard associated-file references,
+attachment name trees and file annotations; it refuses unresolved references
+and shared attachment objects that cannot be detached safely. It does not
+identify independent copies represented elsewhere in the document. Sanitizing
+optional-content layers supports a strictly isolated single-page hidden-text
+subset with uncompressed or Flate-compressed content; other cases are rejected
+before mutation. Retained non-empty Info
+metadata is rejected for this operation, and arbitrary transformed or
+reordered semantic copies cannot be exhaustively ruled out. Explicitly
+disabling that cleanup preserves the layers.
+
+Secure redaction can clear an isolated page when every mark covers its complete
+MediaBox and the source graph passes strict checks. The engine removes its page
+content and resources, rejects shared sensitive objects, and requires a full
+rewrite. A restricted partial-region path supports wholly covered images and
+filled rectangles in simple, unfiltered graphics streams. It rejects shared
+objects, partial intersections, text, complex paths and unsupported features
+before mutation. Both paths reject retained filtered streams because encoded
+copies cannot be ruled out; the legacy page-level API still refuses marked documents. Drawing a
+covering rectangle is not proof of content removal. The redaction verification
+API is a diagnostic scan and always reports incomplete coverage; an empty result
+cannot prove that sensitive data is absent. Clearing a page does not search or
+remove independent copies in metadata, attachments, or other pages.
+
+### Optional-content visibility
+
+Rendering and tested text-search, export and edit paths honor default View
+configuration, nested optional-content groups, OCMD policies and visibility
+expressions. The document's catalog is passed through to rendering and previews;
+unknown configurations, unsupported View usage such as Zoom, and default-hidden
+soft-mask groups fail explicitly. This is a visibility feature, not redaction:
+hidden content remains in the original document and may be recoverable.
+
 ### Page trees and effective resources
 
 Page deletion removes the leaf from its containing `/Kids` array, decrements
@@ -298,6 +356,25 @@ Migrated native call paths in `src/app/editor/page.tsx`:
   cause false edit detection; reachable changes still block the save. The editor
   still stores its mutable document graph in React state, and the graph, visual
   lock, and history publication do not yet share an owner-level atomic boundary.
+- **Signature validation:** validation applies to `doc.rawBytes`, not pending
+  graph or overlay changes. The editor requires the original, unmodified upload
+  and clears stale reports; reopen the saved PDF after editing. `Valid` requires
+  a supported, verified CMS signature and document digest, the exact signature
+  Contents gap, full current-file coverage, a valid certificate date range and an
+  explicitly pinned signer certificate. No certificate-chain or signing-time
+  trust validation is implemented; revocation is checked only when a caller
+  supplies a callback. The editor provides no certificate pins, so untrusted
+  signatures report `Unknown`. Earlier revisions, unsupported formats and
+  ambiguous coverage also report `Unknown` rather than claiming current-file
+  validity. `allowSelfSigned` no longer grants trust without an explicit pin.
+- **RFC 3161 timestamps:** the high-level signing flow checks a response's
+  message imprint, request nonce, signed CMS content and cryptographic signature,
+  as well as the timestamping EKU and signer validity at the claimed time. It
+  falls back to signing without a timestamp if these checks fail. Certificate
+  chain trust and revocation are not validated; the result and editor say so.
+  The low-level `buildDetachedCMSAdvanced` accepts a raw `timestampToken` and
+  does not validate it; callers using that constructor must perform their own
+  validation, including binding it to `signatureValue` and checking TSA trust.
 - **Document identity:** the editor's identity owner tracks replacements and
   serializes native edits. Queued edits use generation-bound leases and reject
   obsolete documents even when two wrappers share an object map. Idle waiters
@@ -539,9 +616,9 @@ asset sizes (not network transfer sizes):
 | Font id | Asset | License | Approx. size |
 | --- | --- | --- | --- |
 | `sc` | `NotoSansSC-Regular.ttf` | `NotoSansSC-OFL.txt` | 10.1 MB |
-| `tc` | `NotoSansTC-Regular.ttf` | `NotoSansTC-OFL.txt` | 5.6 MB |
-| `jp` | `NotoSansJP-Regular.ttf` | `NotoSansJP-OFL.txt` | 4.4 MB |
-| `kr` | `NotoSansKR-Regular.ttf` | `NotoSansKR-OFL.txt` | 5.1 MB |
+| `tc` | `NotoSansTC-Regular.ttf` | `NotoSansTC-OFL.txt` | 6.8 MiB |
+| `jp` | `NotoSansJP-Regular.ttf` | `NotoSansJP-OFL.txt` | 5.5 MiB |
+| `kr` | `NotoSansKR-Regular.ttf` | `NotoSansKR-OFL.txt` | 5.9 MiB |
 | `latin` | `NotoSans-Regular.ttf` | `NotoSans-OFL.txt` | 86.4 KB |
 | `thai` | `NotoSansThai-Regular.ttf` | `NotoSansThai-OFL.txt` | 30.7 KB |
 | `devanagari` | `NotoSansDevanagari-Regular.ttf` | `NotoSansDevanagari-OFL.txt` | 190.3 KB |
@@ -581,8 +658,7 @@ fonts (including cmap fallbacks)
 from `${process.env.__NEXT_ROUTER_BASEPATH}/fonts/<file>` (empty basePath by
 default). Assets are not JavaScript imports. Bytes, in-flight loads, and parsed
 source metrics are cached per font; failed loads can be retried.
-The legacy public `pdf.worker.min.mjs` is not referenced by current product
-code; the native PDF worker is emitted with
+The native PDF worker is emitted with
 `new URL('./pdf.worker.ts', import.meta.url)`. Tests and other consumers can pass
 raw `Uint8Array` bytes or an asynchronous loader function instead of fetching;
 a single source supplies every selected id. A partial font-id record supplies
@@ -810,5 +886,6 @@ Untouched runs require exact text, font size, baseline y, and glyph text, with
 an absolute `1e-6` tolerance for x, bounds, and glyph coordinates: TJ gap
 compensation can change floating-point representation without moving a run.
 
-Pull requests run TypeScript checking, the complete Vitest suite, and Next build
-in `.github/workflows/ci.yml`.
+No CI workflow is tracked in this checkout, so pull requests are not checked
+automatically. Run the commands above locally until a workflow is restored; see
+BUG-015 and TASK-09 in the repository's `BUG.md` and `task.md`.

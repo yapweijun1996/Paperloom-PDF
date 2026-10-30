@@ -19,28 +19,99 @@
  */
 
 import {
-  PDFArray,
   PDFDict,
-  PDFName,
   PDFNumber,
   PDFObject,
-  PDFRef,
   PDFStream,
   type PDFDocumentData,
 } from '../types';
-import { serializeIndirectObject } from '../editor/stream-compiler';
-import { concatBytes } from '../editor/stream-compiler';
+import { serializeIndirectObject, serializeToString } from '../editor/stream-compiler';
+import { concatByteChunks } from '../editor/stream-compiler';
 import { packIntoObjectStreams, buildXRefStream } from '../optimize/object-streams';
 import { garbageCollect, rootsFromTrailer } from '../optimize/garbage-collect';
 import { getReencryptSaveContext, prepareEncryptedObjects } from '../security/encryption/encrypt-objects';
+import { formatXrefEntry } from './xref-entry';
 
 // ─── Full document serialization ────────────────────────────────────────────
+
+/** Sensitive-data cleanup cannot fall back to writing detached objects. */
+export function assertFullRewriteSafe(doc: PDFDocumentData): void {
+  if (!doc.requiresFullRewrite) return;
+  const ref = doc.xref.trailerDict.getRef('Root');
+  const catalog = ref && doc.objects.get(ref.toKey());
+  if (!(catalog instanceof PDFDict) || catalog !== doc.catalog || catalog.getName('Type') !== 'Catalog') {
+    throw new Error('Cannot safely rewrite cleaned PDF: the trailer root is missing or is not the document catalog.');
+  }
+}
+
+/** An xref entry identifies exactly one current generation of each object. */
+export function assertSerializableObjectKeys(keys: Iterable<string>): void {
+  const numbers = new Set<number>();
+  for (const key of keys) {
+    const match = /^([1-9]\d*)_(0|[1-9]\d*)$/.exec(key);
+    if (!match) throw new Error('Cannot serialize an invalid PDF object number.');
+    const objNum = Number(match[1]), genNum = Number(match[2]);
+    if (!Number.isSafeInteger(objNum) || objNum > 2_147_483_647 || !Number.isSafeInteger(genNum) || genNum > 65_535 || numbers.has(objNum)) {
+      throw new Error('Cannot serialize an invalid or duplicate PDF object number.');
+    }
+    numbers.add(objNum);
+  }
+}
+
+function assertReaderSafeObjectNumber(maxObjNum: number, fileLength: number): void {
+  // Some readers bound xref object numbers by the file size to avoid hostile
+  // allocations and silently ignore entries above that bound. Never publish a
+  // PDF whose reachable objects such readers would discard.
+  if (!Number.isSafeInteger(fileLength) || maxObjNum > Math.floor(fileLength / 3)) {
+    throw new Error('Cannot safely serialize sparse PDF object numbers: a reader may ignore reachable objects.');
+  }
+}
+
+function outputTrailer(doc: PDFDocumentData, size: number): PDFDict {
+  const trailer = new PDFDict([['Size', new PDFNumber(size)]]);
+  for (const key of ['Root', 'Info', 'Encrypt', 'ID'] as const) {
+    const value = doc.xref.trailerDict.get(key);
+    if (value !== undefined && (key !== 'Root' || doc.xref.trailerDict.getRef('Root'))) trailer.set(key, value);
+  }
+  return trailer;
+}
+
+/** Check the exact unencrypted full-rewrite layout without mutating the source. */
+export function assertFullRewriteLayoutSafe(doc: PDFDocumentData, reachable: Map<string, PDFObject>): void {
+  assertSerializableObjectKeys(reachable.keys());
+  const entries = Array.from(reachable.entries());
+  const nums = new Map<string, { objNum: number; genNum: number }>();
+  const offsets = new Map<string, number>();
+  let nextObjNum = 1;
+  let offset = `%PDF-${doc.version}\n%\xe2\xe3\xcf\xd3\n`.length;
+  for (const [key, value] of entries) {
+    const [objNum, genNum] = key.split('_').map(Number);
+    nums.set(key, { objNum, genNum });
+    nextObjNum = Math.max(nextObjNum, objNum + 1);
+    offsets.set(key, offset);
+    const header = `${objNum} ${genNum} obj\n`.length;
+    const body = serializeToString(value);
+    offset += header + body.length + (value instanceof PDFStream
+      ? '\nstream\n'.length + value.rawBytes.length + '\nendstream\nendobj\n'.length
+      : '\nendobj\n'.length);
+    if (!Number.isSafeInteger(offset)) throw new Error('PDF output exceeds the safe serialization length.');
+  }
+  const xrefOffset = offset;
+  offset += buildXrefTable(entries, offsets, nums).length;
+  offset += `trailer\n${trailerDictToString(outputTrailer(doc, nextObjNum))}\nstartxref\n${xrefOffset}\n%%EOF\n`.length;
+  assertReaderSafeObjectNumber(nextObjNum - 1, offset);
+}
 
 /**
  * Serialize a complete PDF document to bytes.
  * This writes every object — use for "Save As" or export operations.
  */
 export async function serializeDocument(doc: PDFDocumentData): Promise<Uint8Array> {
+  assertFullRewriteSafe(doc);
+  const reencrypt = getReencryptSaveContext(doc);
+  if (doc.decryptedFromEncrypted && (!reencrypt || reencrypt.fileKey.length === 0)) {
+    throw new Error('Cannot save protected PDF without its authenticated re-encryption context.');
+  }
   const chunks: Uint8Array[] = [];
   const offsets = new Map<string, number>(); // key → byte offset
 
@@ -54,14 +125,16 @@ export async function serializeDocument(doc: PDFDocumentData): Promise<Uint8Arra
   // page objects or their streams. Incremental saves intentionally preserve
   // old revisions, but a complete export writes only trailer-reachable data.
   const roots = rootsFromTrailer(doc.xref.trailerDict);
+  // Streams can be edited in place after reopening. Merging identical streams
+  // here would make an edit to one page or resource affect another.
   const reachable = roots.length > 0
-    ? garbageCollect(doc.objects, roots).objects
+    ? garbageCollect(doc.objects, roots, { deduplicateStreams: false }).objects
     : doc.objects;
-  const reencrypt = getReencryptSaveContext(doc);
   const serializedObjects = reencrypt
     ? await prepareEncryptedObjects(reachable, doc.xref.trailerDict.getRef('Encrypt')?.toKey(), reencrypt)
     : reachable;
   const objectEntries = Array.from(serializedObjects.entries());
+  assertSerializableObjectKeys(serializedObjects.keys());
 
   // Assign sequential object numbers
   const objNumMap = new Map<string, { objNum: number; genNum: number }>();
@@ -97,17 +170,7 @@ export async function serializeDocument(doc: PDFDocumentData): Promise<Uint8Arra
   currentOffset += xrefBytes.length;
 
   // 5. Write trailer. Re-encrypted saves retain the original /Encrypt and /ID.
-  const catalogRef = doc.xref.trailerDict.getRef('Root');
-  const infoRef = doc.xref.trailerDict.get('Info');
-  const encryptRef = doc.xref.trailerDict.get('Encrypt');
-  const idArr = doc.xref.trailerDict.get('ID');
-
-  const trailerDict = new PDFDict();
-  trailerDict.set('Size', new PDFNumber(nextObjNum));
-  if (catalogRef) trailerDict.set('Root', catalogRef);
-  if (infoRef) trailerDict.set('Info', infoRef as PDFObject);
-  if (encryptRef) trailerDict.set('Encrypt', encryptRef as PDFObject);
-  if (idArr) trailerDict.set('ID', idArr as PDFObject);
+  const trailerDict = outputTrailer(doc, nextObjNum);
 
   const trailerBytes = stringToBytes(
     `trailer\n${trailerDictToString(trailerDict)}\n` +
@@ -115,7 +178,9 @@ export async function serializeDocument(doc: PDFDocumentData): Promise<Uint8Arra
   );
   chunks.push(trailerBytes);
 
-  return concatBytes(...chunks);
+  assertReaderSafeObjectNumber(nextObjNum - 1, currentOffset + trailerBytes.length);
+
+  return concatByteChunks(chunks);
 }
 
 // ─── Compact serialization (ObjStm + XRef stream) ──────────────────────────
@@ -127,10 +192,16 @@ export async function serializeDocument(doc: PDFDocumentData): Promise<Uint8Arra
  * Falls back to standard serialization on failure.
  */
 export async function serializeDocumentCompact(doc: PDFDocumentData): Promise<Uint8Array> {
+  // Compact writing packs all objects, including detached historical data.
+  if (doc.requiresFullRewrite) return serializeDocument(doc);
   // Object streams are deliberately disabled for re-encrypted output. This
   // keeps each indirect object independently encrypted and leaves xref data
   // outside the encryption boundary.
-  if (getReencryptSaveContext(doc)) return serializeDocument(doc);
+  const reencrypt = getReencryptSaveContext(doc);
+  if (doc.decryptedFromEncrypted && (!reencrypt || reencrypt.fileKey.length === 0)) {
+    throw new Error('Cannot save protected PDF without its authenticated re-encryption context.');
+  }
+  if (reencrypt || doc.xref.trailerDict.has('Encrypt')) return serializeDocument(doc);
   try {
     return await _serializeCompact(doc);
   } catch (err) {
@@ -225,7 +296,7 @@ async function _serializeCompact(doc: PDFDocumentData): Promise<Uint8Array> {
   const footer = stringToBytes(`startxref\n${xrefStreamOffset}\n%%EOF\n`);
   chunks.push(footer);
 
-  return concatBytes(...chunks);
+  return concatByteChunks(chunks);
 }
 
 // ─── Cross-reference table building ─────────────────────────────────────────
@@ -251,24 +322,39 @@ function buildXrefTable(
     byObjNum.set(nums.objNum, { offset, genNum: nums.genNum });
   }
 
-  // Build xref table
+  // Keep the historical contiguous layout for ordinary files. A sparse PDF
+  // can have a huge maximum object number but only a few live objects; writing
+  // every missing number would allocate an unbounded cross-reference table.
   const lines: string[] = [];
   lines.push('xref');
+  if (maxObjNum > 100_000 && maxObjNum > byObjNum.size * 4) {
+    lines.push('0 1', formatXrefEntry(0, 65535, 'f'));
+    const nums = [...byObjNum.keys()].sort((a, b) => a - b);
+    for (let at = 0; at < nums.length;) {
+      let end = at + 1;
+      while (end < nums.length && nums[end] === nums[end - 1] + 1) end++;
+      lines.push(`${nums[at]} ${end - at}`);
+      for (let i = at; i < end; i++) {
+        const entry = byObjNum.get(nums[i])!;
+        lines.push(formatXrefEntry(entry.offset, entry.genNum, 'n'));
+      }
+      at = end;
+    }
+    return stringToBytes(lines.join('\n') + '\n');
+  }
   lines.push(`0 ${maxObjNum + 1}`);
 
   // Entry 0: free list head
-  lines.push('0000000000 65535 f \r');
+  lines.push(formatXrefEntry(0, 65535, 'f'));
 
   // Entries 1 to maxObjNum
   for (let n = 1; n <= maxObjNum; n++) {
     const entry = byObjNum.get(n);
     if (entry) {
-      const offsetStr = entry.offset.toString().padStart(10, '0');
-      const genStr = entry.genNum.toString().padStart(5, '0');
-      lines.push(`${offsetStr} ${genStr} n \r`);
+      lines.push(formatXrefEntry(entry.offset, entry.genNum, 'n'));
     } else {
       // Free entry
-      lines.push('0000000000 00000 f \r');
+      lines.push(formatXrefEntry(0, 0, 'f'));
     }
   }
 
@@ -276,28 +362,7 @@ function buildXrefTable(
 }
 
 function trailerDictToString(dict: PDFDict): string {
-  const entries: string[] = [];
-  const dictEntries = Array.from(dict.entries());
-  for (let i = 0; i < dictEntries.length; i++) {
-    const [key, value] = dictEntries[i];
-    entries.push(`/${key} ${pdfObjectToString(value)}`);
-  }
-  return `<< ${entries.join(' ')} >>`;
-}
-
-function pdfObjectToString(obj: PDFObject): string {
-  if (obj instanceof PDFNumber) return obj.toString();
-  if (obj instanceof PDFName) return obj.toString();
-  if (obj instanceof PDFRef) return obj.toString();
-  if (obj instanceof PDFArray) {
-    const items = [];
-    for (let i = 0; i < obj.length; i++) {
-      items.push(pdfObjectToString(obj.get(i)!));
-    }
-    return `[${items.join(' ')}]`;
-  }
-  if (obj instanceof PDFDict) return trailerDictToString(obj);
-  return obj.toString();
+  return serializeToString(dict);
 }
 
 // ─── Utility ────────────────────────────────────────────────────────────────

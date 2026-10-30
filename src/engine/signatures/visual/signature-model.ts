@@ -20,6 +20,7 @@ export interface CreateSignatureOpts {
   x: number;
   y: number;
   appearanceId: string;
+  appearanceImageDataUrl?: string;
   appearanceType: SignatureAppearanceType;
   width?: number;
   height?: number;
@@ -44,6 +45,7 @@ export function createVisualSignature(opts: CreateSignatureOpts): VisualSignatur
     locked: opts.locked ?? false,
     appearanceType: opts.appearanceType,
     appearanceId: opts.appearanceId,
+    appearanceImageDataUrl: opts.appearanceImageDataUrl,
   };
 }
 

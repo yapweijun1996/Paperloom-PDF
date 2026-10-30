@@ -1,7 +1,7 @@
 import type { PDFDocumentData } from '../types';
 import { saveQuick } from '../writer/save-pipeline';
 import { createSignatureFieldAtPoint, detectSignatureFieldsOnPage } from '../signatures/fields/signature-field';
-import { signDocumentCryptographic, type CryptoSignOptions, type SignPipelineResult } from '../signatures/crypto/signing-pipeline';
+import { installSignatureBase, prepareSignatureSource, signDocumentCryptographic, type CryptoSignOptions, type SignPipelineResult } from '../signatures/crypto/signing-pipeline';
 import { SessionDocumentEditor } from './document-edit';
 
 /** Sign the caller-owned document as one graph-and-byte history boundary. */
@@ -24,7 +24,8 @@ export async function signDocumentTransaction(
   const signed: { result?: SignPipelineResult; pageIndex?: number } = {};
   await editor.edit(doc, 'digital-sign', async staged => {
     // The revision being signed must include edits already present in the graph.
-    staged.rawBytes = await saveQuick(staged);
+    await prepareSignatureSource(staged);
+    await installSignatureBase(staged, await saveQuick(staged));
     const fields = detectSignatureFieldsOnPage(staged, input.pageIndex);
     let field = fields.find(item => item.id === input.selectedFieldId) ?? fields.find(item => !item.signed);
     if (!field) {

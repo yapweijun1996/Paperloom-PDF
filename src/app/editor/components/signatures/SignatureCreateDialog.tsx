@@ -18,6 +18,7 @@ import {
 
 export interface SignatureCreateResult {
   entry: Omit<SignatureLibraryEntry, 'id' | 'createdAt' | 'updatedAt' | 'favorite'>;
+  storage: 'session' | 'device';
   appearanceId?: string;
   appearanceImageDataUrl?: string;
 }
@@ -32,6 +33,7 @@ type Tab = 'draw' | 'upload' | 'typed';
 
 export function SignatureCreateDialog({ open, onOpenChange, onSave }: SignatureCreateDialogProps) {
   const [tab, setTab] = useState<Tab>('draw');
+  const [storage, setStorage] = useState<'session' | 'device'>('session');
   const [name, setName] = useState('My signature');
   const [drawColor, setDrawColor] = useState('#1a1a2e');
   const [drawWidth, setDrawWidth] = useState(2.5);
@@ -44,6 +46,7 @@ export function SignatureCreateDialog({ open, onOpenChange, onSave }: SignatureC
   const [templateId, setTemplateId] = useState('minimal');
   const [error, setError] = useState<string | null>(null);
   // A new session clears transient upload and error state but retains style choices.
+  const triggerRef = useRef<HTMLElement | null>(null);
   const [previousOpen, setPreviousOpen] = useState(false);
   if (previousOpen !== open) {
     setPreviousOpen(open);
@@ -51,6 +54,7 @@ export function SignatureCreateDialog({ open, onOpenChange, onSave }: SignatureC
       setUploadPreview(null);
       setUploadDims(null);
       setError(null);
+      setStorage('session');
     }
   }
 
@@ -201,6 +205,7 @@ export function SignatureCreateDialog({ open, onOpenChange, onSave }: SignatureC
     });
 
     return {
+      storage,
       entry: {
         name,
         source,
@@ -229,12 +234,20 @@ export function SignatureCreateDialog({ open, onOpenChange, onSave }: SignatureC
       <Dialog.Portal>
         {/* Z_LAYERS.modalBackdrop (500) / modal (600). */}
         <Dialog.Overlay className="fixed inset-0 bg-black/60 z-[500]" />
-        <Dialog.Content data-theme="dark" className="fixed left-1/2 top-1/2 z-[600] w-[min(560px,94vw)] -translate-x-1/2 -translate-y-1/2 rounded-xl border border-zinc-700 bg-zinc-900 shadow-2xl focus:outline-none">
+        <Dialog.Content onOpenAutoFocus={() => {
+          triggerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+        }} onCloseAutoFocus={(event) => {
+          if (triggerRef.current?.isConnected) {
+            event.preventDefault();
+            triggerRef.current.focus();
+          }
+        }} data-theme="dark" className="fixed left-1/2 top-1/2 z-[600] w-[min(560px,94vw)] -translate-x-1/2 -translate-y-1/2 rounded-xl border border-zinc-700 bg-zinc-900 shadow-2xl focus:outline-none">
+          <Dialog.Description className="sr-only">Create a reusable signature and choose how to store it.</Dialog.Description>
           <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-700">
             <Dialog.Title className="text-sm font-semibold text-zinc-100">
               Create signature
             </Dialog.Title>
-            <Dialog.Close className="p-1 rounded text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800">
+            <Dialog.Close aria-label="Close signature dialog" className="p-1 rounded text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800">
               <X size={16} />
             </Dialog.Close>
           </div>
@@ -421,6 +434,19 @@ export function SignatureCreateDialog({ open, onOpenChange, onSave }: SignatureC
                 ))}
               </select>
             </div>
+
+            <fieldset className="space-y-2 text-xs text-zinc-300">
+              <legend className="mb-1 font-medium">Keep in signature library</legend>
+              <label className="flex items-start gap-2">
+                <input type="radio" name="signature-storage" checked={storage === 'session'} onChange={() => setStorage('session')} />
+                <span>This session only (removed from the library on reload)</span>
+              </label>
+              <label className="flex items-start gap-2">
+                <input type="radio" name="signature-storage" checked={storage === 'device'} onChange={() => setStorage('device')} />
+                <span>Save on this device (not encrypted)</span>
+              </label>
+              <p className="text-[10px] text-zinc-400">Signatures placed in a PDF may also be kept in the document or its recovery data.</p>
+            </fieldset>
 
             {error && <p className="text-[11px] text-red-400">{error}</p>}
           </div>

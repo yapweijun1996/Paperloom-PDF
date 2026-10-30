@@ -1,10 +1,15 @@
-import { PDFDict, PDFName, PDFNumber, PDFStream, PDFRef } from '../types';
+import { PDFArray, PDFDict, PDFName, PDFNumber, PDFStream, PDFRef } from '../types';
 import type { PDFDocumentData, PDFPageInfo, PDFObject } from '../types';
-import type { ImageItem } from '../content/interpreter';
-import { getResource, resolvePageResources, resolveRef } from '../parser/parser';
+import { interpretPage, type ImageItem } from '../content/interpreter';
+import { parseContentStream } from '../content/operator-lexer';
+import { PDFLexer, TokenType } from '../parser/lexer';
+import { inspectContentRefs } from '../parser/content-refs';
+import { getPageContentBytes, getResource, resolvePageResources, resolveRef } from '../parser/parser';
 import { isolateBaseCtm } from './content-append';
-import { flateEncode } from '../parser/filters';
+import { applyFilters, flateEncode } from '../parser/filters';
 import { getNextObjNum as nextObjectNumber } from '../writer/serializer';
+import { recordPageContentModifiedKeys, updatePageContent } from './stream-compiler';
+import { runDocumentTransaction } from '../session/document-transaction';
 
 export interface ImageRunOptions {
   rotationDegrees?: number;
@@ -239,6 +244,57 @@ function imageIsShared(doc: PDFDocumentData, image: PDFStream): boolean {
   return false;
 }
 
+const inspectableFilters = new Set(['FlateDecode', 'Fl', 'ASCIIHexDecode', 'AHx', 'ASCII85Decode', 'A85', 'LZWDecode', 'LZW', 'RunLengthDecode', 'RL']);
+
+async function inspectStreamContent(value: PDFStream, label: string, limit: number): Promise<Uint8Array> {
+  if (value.rawBytes.length > limit) throw new Error(`Cannot safely inspect ${label} content`);
+  const filter = value.dict.get('Filter');
+  if (filter && !(filter instanceof PDFName) &&
+      !(filter instanceof PDFArray && filter.items.every(item => item instanceof PDFName))) {
+    throw new Error(`Cannot safely inspect ${label} filters`);
+  }
+  const filters = value.getFilters();
+  if (filters.some(name => !inspectableFilters.has(name))) throw new Error(`Cannot safely inspect ${label} filters`);
+  try {
+    const bytes = await applyFilters(value.rawBytes, filters, value.getDecodeParams(), { maxDecodedBytes: limit });
+    const cached = value.decodedBytes;
+    if (cached && (cached.length !== bytes.length || cached.some((byte, i) => byte !== bytes[i]))) {
+      throw new Error('Content cache differs from its saved bytes');
+    }
+    return bytes;
+  } catch {
+    throw new Error(`Cannot safely inspect ${label} content`);
+  }
+}
+
+/** A new page resource must not activate an unresolved Do in the page or in
+ * a Form which can inherit the page resources. */
+async function reservedImageNames(doc: PDFDocumentData, content: Uint8Array): Promise<Set<string>> {
+  const names = new Set<string>();
+  const collect = (bytes: Uint8Array) => {
+    for (const instruction of parseContentStream(bytes)) {
+      if (instruction.operator !== 'Do') continue;
+      for (const operand of instruction.operands) if (operand instanceof PDFName) names.add(operand.name);
+    }
+  };
+  collect(content);
+  let total = 0, forms = 0;
+  for (const value of doc.objects.values()) {
+    if (!(value instanceof PDFStream)) continue;
+    const subtype = value.dict.get('Subtype');
+    const resolvedSubtype = subtype ? resolveRef(subtype, doc.objects) : undefined;
+    if (!(resolvedSubtype instanceof PDFName) || resolvedSubtype.name !== 'Form') continue;
+    const resources = value.dict.get('Resources');
+    if (resources && resolveRef(resources, doc.objects) instanceof PDFDict) continue;
+    if (++forms > 4096) throw new Error('Cannot safely inspect inherited form resources');
+    const bytes = await inspectStreamContent(value, 'inherited form', 4 * 1024 * 1024);
+    total += bytes.length;
+    if (total > 16 * 1024 * 1024) throw new Error('Inherited form content exceeds the inspection limit');
+    collect(bytes);
+  }
+  return names;
+}
+
 
 /**
  * Replace an embedded image's pixel data while keeping the same placement
@@ -254,6 +310,31 @@ export async function replaceImageXObject(
   imageDataUrl: string,
   getNextObjNum?: () => number,
 ): Promise<void> {
+  const originalPage = doc.pages[pageIndex];
+  if (!originalPage) throw new Error('Page not found');
+  const actualRefs = inspectContentRefs(originalPage.dict.get('Contents'), doc.objects);
+  if (originalPage.contentInspectionComplete === false || actualRefs.length !== originalPage.contentRefs.length ||
+      actualRefs.some((ref, index) => ref.toKey() !== originalPage.contentRefs[index].toKey()) ||
+      doc.objects.get(originalPage.ref.toKey()) !== originalPage.dict ||
+      doc.pages.some(page => page !== originalPage && (page.dict === originalPage.dict || page.ref.toKey() === originalPage.ref.toKey())) ||
+      resolvePageResources(originalPage.dict, doc.objects) !== originalPage.resources) {
+    throw new Error('Page content or resources are stale');
+  }
+  const originalBytes = new Uint8Array(getPageContentBytes(originalPage, doc.objects));
+  await runDocumentTransaction(doc, staged => replaceImageXObjectDraft(staged, pageIndex, image, imageDataUrl, getNextObjNum), () => {
+    if (doc.pages[pageIndex] !== originalPage) return false;
+    const current = getPageContentBytes(originalPage, doc.objects);
+    return current.length === originalBytes.length && current.every((byte, index) => byte === originalBytes[index]);
+  });
+}
+
+async function replaceImageXObjectDraft(
+  doc: PDFDocumentData,
+  pageIndex: number,
+  image: ImageItem,
+  imageDataUrl: string,
+  getNextObjNum?: () => number,
+): Promise<void> {
   const page = doc.pages[pageIndex];
   const name = image.name.replace(/^\//, '');
   const xobj = getResource(page.resources, 'XObject', name, doc.objects);
@@ -262,6 +343,20 @@ export async function replaceImageXObject(
   }
   if (xobj.dict.getName('Subtype') !== 'Image') {
     throw new Error(`XObject /${name} is not an Image`);
+  }
+
+  const content = getPageContentBytes(page, doc.objects);
+  const instructions = parseContentStream(content);
+  const uses = instructions.flatMap((instruction, index) =>
+    instruction.operator === 'Do' && instruction.operands.length === 1 &&
+    instruction.operands[0] instanceof PDFName && instruction.operands[0].name === name ? [index] : []);
+  const index = image.sourceInstructionIndex ?? (uses.length === 1 ? uses[0] : -1);
+  const selected = interpretPage(content, page, doc.objects).displayList.find(item =>
+    item.type === 'image' && item.name === name && item.sourceInstructionIndex === index);
+  if (!selected || selected.type !== 'image' || !uses.includes(index) ||
+      !image.sourceImageVersion || image.sourceImageVersion !== selected.sourceImageVersion ||
+      !(['a', 'b', 'c', 'd', 'e', 'f'] as const).every(key => selected.ctm[key] === image.ctm[key])) {
+    throw new Error('Image selection is stale or ambiguous');
   }
 
   const base64Data = imageDataUrl.split(',')[1];
@@ -312,17 +407,54 @@ export async function replaceImageXObject(
     replacement = new PDFStream(dict, imageBytes);
   }
 
-  if (imageIsShared(doc, xobj)) {
+  if (uses.length > 1 || imageIsShared(doc, xobj)) {
     const ref = replacementRef ?? new PDFRef(allocate(), 0);
     const resources = new PDFDict([...page.resources.entries()]);
     const entry = resources.get('XObject');
     const previous = entry ? resolveRef(entry, doc.objects) : undefined;
     const xobjects = new PDFDict(previous instanceof PDFDict ? [...previous.entries()] : []);
-    xobjects.set(name, ref);
+    let newName = name;
+    if (uses.length > 1) {
+      for (const contentRef of page.contentRefs) {
+        const stream = doc.objects.get(contentRef.toKey());
+        if (!(stream instanceof PDFStream)) throw new Error('Cannot safely inspect page content');
+        const decoded = await inspectStreamContent(stream, 'page', 16 * 1024 * 1024);
+        const effective = stream.getBytes();
+        if (decoded.length !== effective.length || decoded.some((byte, i) => byte !== effective[i])) {
+          throw new Error('Cannot safely inspect page content');
+        }
+      }
+      const reserved = await reservedImageNames(doc, content);
+      let suffix = 1;
+      do { newName = `ImReplace${suffix++}`; } while (xobjects.has(newName) || reserved.has(newName));
+    }
+    xobjects.set(newName, ref);
     resources.set('XObject', xobjects);
     doc.objects.set(ref.toKey(), replacement);
     page.dict.set('Resources', resources);
     page.resources = resources;
+    if (uses.length > 1) {
+      const instruction = instructions[index];
+      const previous = instructions[index - 1];
+      const start = previous ? previous.offset + (previous.inlineImageBytes?.length ?? previous.operator.length) : 0;
+      const lexer = new PDFLexer(content.subarray(start, instruction.offset));
+      const token = lexer.nextToken();
+      const tokenEnd = lexer.position;
+      lexer.skipWhitespaceAndComments();
+      if (!token || token.type !== TokenType.Name || token.value !== name || !lexer.isEOF) {
+        throw new Error('Cannot safely identify image placement');
+      }
+      const newToken = new TextEncoder().encode(`/${newName}`);
+      const tokenStart = start + token.offset;
+      const tokenStop = start + tokenEnd;
+      const patched = new Uint8Array(content.length - (tokenStop - tokenStart) + newToken.length);
+      patched.set(content.subarray(0, tokenStart));
+      patched.set(newToken, tokenStart);
+      patched.set(content.subarray(tokenStop), tokenStart + newToken.length);
+      await updatePageContent(page.contentRefs, patched, doc.objects, false);
+    }
+    recordPageContentModifiedKeys(doc.objects, [page.ref.toKey(), ref.toKey(), ...page.contentRefs.map(contentRef => contentRef.toKey()),
+      ...(replacement.dict.getRef('SMask') ? [replacement.dict.getRef('SMask')!.toKey()] : [])]);
     return;
   }
 
@@ -331,4 +463,7 @@ export async function replaceImageXObject(
   for (const [key, value] of replacement.dict.entries()) xobj.dict.set(key, value);
   xobj.rawBytes = replacement.rawBytes;
   xobj.decodedBytes = replacement.decodedBytes;
+  const objectKeys = [...doc.objects].filter(([, object]) => object === xobj).map(([key]) => key);
+  recordPageContentModifiedKeys(doc.objects, [page.ref.toKey(), ...objectKeys,
+    ...(replacement.dict.getRef('SMask') ? [replacement.dict.getRef('SMask')!.toKey()] : [])]);
 }

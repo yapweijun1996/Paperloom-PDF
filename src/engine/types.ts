@@ -22,15 +22,52 @@ export class PDFName {
 export class PDFString {
   readonly _tag = 'PDFString' as const;
   constructor(public readonly value: string) {}
-  /** Raw bytes (for binary strings). Stores decoded bytes. */
+  /** Text dictionaries use UTF-16BE for non-ASCII, never ambiguous binary bytes. */
+  static fromText(value: string): PDFString {
+    if (!/[^\x20-\x7e\t\r\n]/.test(value)) return new PDFString(value);
+    let raw = '\xfe\xff';
+    for (let i = 0; i < value.length; i++) {
+      const code = value.charCodeAt(i);
+      raw += String.fromCharCode(code >>> 8, code & 0xff);
+    }
+    return new PDFString(raw);
+  }
+  /** Preserve byte strings; encode Unicode text outside the byte range as UTF-16BE. */
   toBytes(): Uint8Array {
-    const bytes = new Uint8Array(this.value.length);
+    const unicode = /[^\u0000-\u00ff]/.test(this.value);
+    const bytes = new Uint8Array(unicode ? 2 + this.value.length * 2 : this.value.length);
+    if (unicode) { bytes[0] = 0xfe; bytes[1] = 0xff; }
     for (let i = 0; i < this.value.length; i++) {
-      bytes[i] = this.value.charCodeAt(i) & 0xff;
+      const code = this.value.charCodeAt(i);
+      if (unicode) { bytes[2 + i * 2] = code >>> 8; bytes[3 + i * 2] = code & 0xff; }
+      else bytes[i] = code;
     }
     return bytes;
   }
+  /** Decode a PDF text string while retaining byte-oriented access via value/toBytes. */
+  toText(): string { return decodePdfTextString(this.toBytes()); }
   toString(): string { return `(${this.value})`; }
+}
+
+function decodePdfTextString(bytes: Uint8Array): string {
+  let result = '';
+  if (bytes.length >= 2 && bytes[0] === 0xfe && bytes[1] === 0xff && bytes.length % 2 === 0) {
+    for (let i = 2; i < bytes.length; i += 2) result += String.fromCharCode(bytes[i] * 256 + bytes[i + 1]);
+  } else {
+    // PDFDocEncoding differs from Latin-1 in these ranges; byte-oriented
+    // consumers continue to use PDFString.value or toBytes instead.
+    const accents = '\u02d8\u02c7\u02c6\u02d9\u02dd\u02db\u02da\u02dc';
+    const symbols = '\u2022\u2020\u2021\u2026\u2014\u2013\u0192\u2044\u2039\u203a\u2212\u2030\u201e\u201c\u201d\u2018\u2019\u201a\u2122\ufb01\ufb02\u0141\u0152\u0160\u0178\u017d\u0131\u0142\u0153\u0161\u017e';
+    for (const byte of bytes) {
+      if (byte === 0x16) result += '\u0017';
+      else if (byte >= 0x18 && byte <= 0x1f) result += accents[byte - 0x18];
+      else if (byte >= 0x80 && byte <= 0x9e) result += symbols[byte - 0x80];
+      else if (byte === 0xa0) result += '\u20ac';
+      else if (byte === 0x7f || byte === 0x9f || byte === 0xad) result += '\ufffd';
+      else result += String.fromCharCode(byte);
+    }
+  }
+  return result;
 }
 
 export class PDFHexString {
@@ -38,7 +75,7 @@ export class PDFHexString {
   constructor(public readonly hex: string) {}
   /** Decode hex string to raw bytes */
   toBytes(): Uint8Array {
-    const clean = this.hex.replace(/\s/g, '');
+    const clean = this.hex.replace(/[\s\x00]/g, '');
     // Pad with trailing 0 if odd length (per PDF spec)
     const padded = clean.length % 2 === 1 ? clean + '0' : clean;
     const bytes = new Uint8Array(padded.length / 2);
@@ -164,8 +201,8 @@ export class PDFDict {
   /** Resolve a key that should be a PDFString or PDFHexString, return text */
   getString(key: string): string | undefined {
     const v = this.map.get(key);
-    if (v instanceof PDFString) return v.value;
-    if (v instanceof PDFHexString) return v.toText();
+    if (v instanceof PDFString) return v.toText();
+    if (v instanceof PDFHexString) return decodePdfTextString(v.toBytes());
     return undefined;
   }
 
@@ -260,6 +297,8 @@ export interface XRefEntry {
 export interface XRefTable {
   entries: Map<string, XRefEntry>; // keyed by "objNum_genNum"
   trailerDict: PDFDict;
+  /** Integrity binding for parser-produced xref entries and their source bytes. */
+  provenance?: { source: 'strict' | 'conservative'; digest: string; rawDigest?: string };
 }
 
 // ─── High-level document structures ────────────────────────────────────────
@@ -288,6 +327,8 @@ export interface PDFPageInfo {
   resources: PDFDict;
   /** Content stream references (single ref or array of refs) */
   contentRefs: PDFRef[];
+  /** False when the original Contents structure could not be fully inspected. */
+  contentInspectionComplete?: boolean;
 }
 
 export interface PDFDocumentInfo {
@@ -320,6 +361,8 @@ export interface PDFDocumentData {
   info: PDFDocumentInfo;
   /** The raw file bytes (kept for incremental saves) */
   rawBytes: Uint8Array;
+  /** Sensitive content was removed; the original byte prefix must not be reused. */
+  requiresFullRewrite?: boolean;
   /** True after securityEngine.open() has decrypted the in-memory objects. */
   decryptedFromEncrypted?: boolean;
   /** Authenticated file key retained only for re-encrypting save output. */

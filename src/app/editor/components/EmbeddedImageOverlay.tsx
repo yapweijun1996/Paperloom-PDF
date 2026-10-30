@@ -3,7 +3,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Replace, X } from 'lucide-react';
 import type { ImageItem } from '@/engine/browser-core';
-import type { PDFObject, PDFPageInfo } from '@/engine/types';
+import type { PDFDict, PDFObject, PDFPageInfo } from '@/engine/types';
 import { renderImagePreviewLayers, type ImagePreviewLayers } from '@/engine/render/renderer';
 import type { ImageBox } from './imageBoxEdit';
 import { Z_LAYERS } from '../zLayers';
@@ -20,6 +20,7 @@ interface EmbeddedImageOverlayProps {
   previewBox?: ImageBox | null;
   page: PDFPageInfo;
   objects: Map<string, PDFObject>;
+  catalog?: PDFDict;
   /** Convert PDF → CSS for the live bbox */
   toCss: (pdf: { x: number; y: number; width: number; height: number }) => {
     left: number; top: number; width: number; height: number;
@@ -45,7 +46,7 @@ export const EMBEDDED_IMAGE_OVERLAY_LAYERS = {
  */
 export function EmbeddedImageOverlay(props: EmbeddedImageOverlayProps) {
   const {
-    item, toCss, scale, previewBox, page, objects,
+    item, toCss, scale, previewBox, page, objects, catalog,
     onCommitMove, onCommitResize, onReplace, onDeselect,
   } = props;
 
@@ -59,9 +60,9 @@ export function EmbeddedImageOverlay(props: EmbeddedImageOverlayProps) {
   const liveRef = useRef(live);
   useLayoutEffect(() => { liveRef.current = live; }, [live]);
   const layersRef = useRef<ImagePreviewLayers | null>(null);
-  const [layerSource, setLayerSource] = useState<{ page: typeof page; objects: typeof objects; item: typeof item; scale: number } | null>(null);
+  const [layerSource, setLayerSource] = useState<{ page: typeof page; objects: typeof objects; item: typeof item; scale: number; catalog: typeof catalog } | null>(null);
   const hasLayers = layerSource?.page === page && layerSource.objects === objects &&
-    layerSource.item === item && layerSource.scale === scale;
+    layerSource.item === item && layerSource.scale === scale && layerSource.catalog === catalog;
   const cleanupDragRef = useRef<() => void>(() => {});
   const backgroundRef = useRef<HTMLDivElement>(null);
   const imageRef = useRef<HTMLDivElement>(null);
@@ -70,14 +71,14 @@ export function EmbeddedImageOverlay(props: EmbeddedImageOverlayProps) {
 
   useEffect(() => {
     let cancelled = false;
-    void renderImagePreviewLayers(page, objects, item, scale).then(result => {
+    void renderImagePreviewLayers(page, objects, item, scale, catalog).then(result => {
       if (!cancelled) {
         layersRef.current = result;
-        setLayerSource({ page, objects, item, scale });
+        setLayerSource({ page, objects, item, scale, catalog });
       }
     }).catch(error => console.error('[EmbeddedImageOverlay] preview failed', error));
     return () => { cancelled = true; };
-  }, [page, objects, item, scale]);
+  }, [page, objects, item, scale, catalog]);
 
   const dragMode = useRef<'move' | `resize-${ResizeHandle}` | null>(null);
   const origin = useRef({

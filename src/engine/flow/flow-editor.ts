@@ -4,6 +4,7 @@
 
 import { detectTablesOnPage, findCellForLine } from './table-detect';
 import { interpretPage } from '../content/interpreter';
+import type { OptionalContentVisibility } from '../content/optional-content';
 import type { TextRun } from '../content/interpreter';
 import type { PDFObject, PDFPageInfo } from '../types';
 import {
@@ -117,6 +118,7 @@ function correctResidualRunGaps(
    * on top.
    */
   gapSourceLine?: TextLine,
+  optionalContent?: OptionalContentVisibility,
 ): { bytes: Uint8Array; corrections: RunPositionShift[] } {
   if (segmentEdits.length < 2) {
     return { bytes: contentBytes, corrections: [] };
@@ -130,7 +132,7 @@ function correctResidualRunGaps(
     return { bytes: contentBytes, corrections: [] };
   }
 
-  const interpreted = interpretPage(contentBytes, page, objects);
+  const interpreted = interpretPage(contentBytes, page, objects, optionalContent);
   const fresh = resolveFreshSegmentRuns(
     interpreted.textRuns,
     segmentEdits,
@@ -282,6 +284,7 @@ function collectPeerShiftsAfter(
 }
 
 export interface LineTextEditOptions {
+  optionalContent?: OptionalContentVisibility;
   /** Original line text at edit-session start (for caret-aware redistribute). */
   oldText?: string;
   /** Caret index after the edit (matches overlay preview). */
@@ -312,7 +315,7 @@ export function correctLineResidualGaps(
   page: PDFPageInfo,
   objects: Map<string, PDFObject>,
   line: TextLine,
-  options?: { gapSourceLine?: TextLine },
+  options?: { gapSourceLine?: TextLine; optionalContent?: OptionalContentVisibility },
 ): { bytes: Uint8Array; corrections: RunPositionShift[] } {
   if (line.segments.length < 2) {
     return { bytes: contentBytes, corrections: [] };
@@ -324,6 +327,7 @@ export function correctLineResidualGaps(
     line,
     line.segments.map(s => ({ run: s.run, newText: s.text })),
     options?.gapSourceLine,
+    options?.optionalContent,
   );
 }
 
@@ -480,6 +484,8 @@ export function applyLineTextEdit(
       objects,
       primaryLine,
       primarySegmentEdits,
+      undefined,
+      options?.optionalContent,
     );
     bytes = corrected.bytes;
   }

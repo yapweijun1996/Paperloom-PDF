@@ -1,4 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'fs';
+import { join } from 'path';
+import { securityEngine } from '../security';
+import { createSignedRecoverySnapshot, restoreSignedRecoverySnapshot } from '../session/signed-recovery';
 import { captureHistoryEntry, restoreDocumentStructure } from '../editing/editor-history';
 import { updatePageContent } from '../editor/stream-compiler';
 import { flattenFormFieldsOnPage, setFormFieldValue } from '../forms/apply-field';
@@ -6,7 +10,8 @@ import { detectFormFieldsOnPage } from '../forms/detect-fields';
 import * as parser from '../parser/parser';
 import { SessionDocumentEditor } from '../session/document-edit';
 import { SessionEditorHistory } from '../session/editor-history';
-import { placeVisualSignature, removeVisualSignature } from '../session/signature-edit';
+import { findVisualSignatureRefs, placeVisualSignature, removeVisualSignature } from '../session/signature-edit';
+import { encryptRecoveryOverlay, decryptRecoveryOverlay } from '../../lib/recoveryEncryption';
 import { createSignatureFieldAtPoint } from '../signatures/fields/signature-field';
 import { createVisualSignature } from '../signatures/visual/signature-model';
 import type { VisualSignature } from '../signatures/visual/visual-types';
@@ -25,7 +30,7 @@ async function setup() {
     '<< /Fields 6 0 R >>',
     '[8 0 R]',
     '[8 0 R]',
-    '<< /Type /Annot /Subtype /Widget /FT /Tx /T (Name) /Rect [10 10 100 30] /V (Before) /P 3 0 R >>',
+    '<< /Type /Annot /Subtype /Widget /F 4 /FT /Tx /T (Name) /Rect [10 10 100 30] /V (Before) /P 3 0 R >>',
   ]));
   await updatePageContent(doc.pages[0].contentRefs, new Uint8Array(), doc.objects);
   const history = new SessionEditorHistory();
@@ -43,6 +48,59 @@ async function setup() {
 }
 
 describe('signature and form toolbar history', () => {
+  it('keeps session-only visual edits protected in a signed encrypted document draft', async () => {
+    const fixture = new Uint8Array(readFileSync(join(__dirname, 'fixtures/encrypted/aes-128-r4.pdf')));
+    // The fixture is truly encrypted; signature markers exercise the signed-document guard.
+    const suffix = new TextEncoder().encode('\n% /ByteRange [0 10 20 10] /Contents <01020304>\n');
+    const bytes = new Uint8Array(fixture.length + suffix.length);
+    bytes.set(fixture); bytes.set(suffix, fixture.length);
+    const edited = (await securityEngine.open(await parser.parsePDF(bytes), 'userpass')).doc;
+    const original = (await securityEngine.open(await parser.parsePDF(bytes), 'userpass')).doc;
+    const image = tinyPNG([25, 50, 75, 255]);
+    const signature = createVisualSignature({ pageIndex: 0, x: 120, y: 120,
+      appearanceId: 'session-only', appearanceType: 'drawn', appearanceImageDataUrl: image });
+    await placeVisualSignature(edited, signature, image);
+    const signedSnapshot = await createSignedRecoverySnapshot(edited);
+    const overlay = { drawnPathsJson: '[]', floatingTextsJson: '[]', floatingImagesJson: '[]',
+      signaturesJson: JSON.stringify([signature]), currentPage: 0, signedSnapshot };
+    const encrypted = await encryptRecoveryOverlay(overlay, 'userpass', bytes);
+    expect(JSON.stringify(encrypted)).not.toContain(image);
+    expect(JSON.stringify(encrypted)).not.toContain(signedSnapshot);
+    const recovered = await decryptRecoveryOverlay(encrypted, 'userpass', bytes);
+    const restored = await restoreSignedRecoverySnapshot(original, recovered.signedSnapshot!);
+    const item = JSON.parse(recovered.signaturesJson)[0] as VisualSignature;
+    expect(findVisualSignatureRefs(restored, new Set([item.id])).size).toBe(1);
+    await placeVisualSignature(restored, { ...item, x: item.x + 15 }, item.appearanceImageDataUrl!);
+    expect(findVisualSignatureRefs(restored, new Set([item.id])).size).toBe(1);
+    removeVisualSignature(restored, item.id);
+    expect(findVisualSignatureRefs(restored, new Set([item.id])).size).toBe(0);
+    expect(restored.rawBytes).toEqual(bytes);
+  }, 30000);
+
+  it('recovers a session-only appearance securely and can move and delete it after reopening', async () => {
+    const { doc } = await setup();
+    const image = tinyPNG([30, 60, 90, 255]);
+    const signature = createVisualSignature({ pageIndex: 0, x: 120, y: 120,
+      appearanceId: 'session-only', appearanceType: 'drawn', appearanceImageDataUrl: image });
+    await placeVisualSignature(doc, signature, image);
+    const bytes = await serializeDocument(doc);
+    const overlay = { drawnPathsJson: '[]', floatingTextsJson: '[]', floatingImagesJson: '[]',
+      signaturesJson: JSON.stringify([signature]), currentPage: 0 };
+    const protectedOverlay = await encryptRecoveryOverlay(overlay, 'password', bytes);
+    expect(JSON.stringify(protectedOverlay)).not.toContain(image);
+    const recovered = await decryptRecoveryOverlay(protectedOverlay, 'password', bytes);
+    const restoredSignature = JSON.parse(recovered.signaturesJson)[0] as VisualSignature;
+    expect(restoredSignature.appearanceImageDataUrl).toBe(image);
+    const reopened = await parser.parsePDF(bytes);
+    expect(findVisualSignatureRefs(reopened, new Set([signature.id])).size).toBe(1);
+    await placeVisualSignature(reopened, { ...restoredSignature, x: signature.x + 15 }, restoredSignature.appearanceImageDataUrl!);
+    const moved = await parser.parsePDF(await serializeDocument(reopened));
+    expect(findVisualSignatureRefs(moved, new Set([signature.id])).size).toBe(1);
+    removeVisualSignature(moved, signature.id);
+    const deleted = await parser.parsePDF(await serializeDocument(moved));
+    expect(findVisualSignatureRefs(deleted, new Set([signature.id])).size).toBe(0);
+  }, 30000);
+
   it('orders creation, signature placement, values, removal, and flattening around legacy snapshots', async () => {
     const { doc, history, capture, move } = await setup();
     const before = await serializeDocument(doc);

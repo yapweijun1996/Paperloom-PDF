@@ -36,7 +36,7 @@ The browser UI and the client engine communicate directly. PDF bytes remain in t
 
 ```
 Browser
-  ├── React UI / Zustand state
+  ├── React UI (editor state in src/app/editor/page.tsx)
   ├── src/engine/  (parser, renderer, editor, annotations, forms, writer)
   └── src/lib/pdfStorage.ts  (IndexedDB persistence)
 ```
@@ -45,19 +45,52 @@ Browser
 
 The client engine includes binary parsing, content-stream interpretation, Canvas rendering, text and object editing, annotations, forms, page operations, signatures, OCR layout helpers, image handling, optimization, and incremental/full PDF writing. See [docs/ENGINE.md](docs/ENGINE.md) for the engine overview.
 
+## Network and privacy
+
+PDF processing runs in the browser, and local recovery may be stored in
+IndexedDB. Optional RFC 3161 timestamping sends a hash of the signature and a
+nonce to a timestamp service (by default FreeTSA and DigiCert are tried); the
+service also receives normal network information such as the client IP address.
+Timestamp certificate-chain trust and revocation are not verified by the engine.
+
+Certificate import supports password-authenticated P12/PFX files using PBES2
+AES-CBC, subject to size and derivation limits; older 3DES/RC2 containers and
+files without a supported integrity check are rejected. Imported private keys
+are held in session memory rather than persisted. A successful import or
+signature does not establish certificate-chain trust or revocation status.
+
+OCR runs in a same-origin browser worker using the bundled English language
+model. Page images are processed locally; they are not sent to an OCR API.
+The worker, runtime and model are included in the offline application cache.
+
+## Offline use
+
+A production static build provides a web manifest and a service worker. On the
+first online visit, the browser downloads the application shell and bundled
+fonts and OCR assets for offline use; the current uncompressed assets occupy
+roughly 47 MB. Transfer size varies with server compression.
+After the offline cache finishes installing, the editor can reopen without a
+network connection. PDFs and recovery data use the existing local browser
+storage; the service worker does not cache arbitrary requests or selected PDFs.
+
+The offline cache is scoped to the configured deployment path. Updates activate
+when older app tabs close. Clear site storage to remove the cache and locally
+stored recovery data. OCR may still need its separately hosted runtime and
+language files, and timestamping requires the network as described above.
+
 ## 🚀 Quick Start
 
 ### Prerequisites
 
-- Node.js ≥ 18
+- Node.js 20.19+, 22.13+, or 24+ (Node 21 and 23 are not supported by all dependencies)
 - npm ≥ 9
 
 ### Installation
 
 ```bash
-git clone https://github.com/stemlen/bloom-pdf-editor.git
-cd bloom-pdf-editor
-npm install
+git clone https://github.com/yapweijun1996/Paperloom-PDF.git
+cd Paperloom-PDF
+npm ci
 npm run dev
 ```
 
@@ -69,13 +102,24 @@ Open [http://localhost:3000](http://localhost:3000).
 npm run dev       # Next.js development server
 npm run build     # Next.js production build
 npm run lint      # ESLint
+npm run typecheck # TypeScript
 npm test          # Vitest
+npm run verify:release # Tests, lint, typecheck, production build and local guards
 npm run verify:browser-only # Check for server-runtime regressions
 ```
 
 `npm run build` produces the static export in `out/`, which can be hosted by any static web server or CDN.
+`verify:release` rebuilds that output and runs the applicable local checks in
+sequence. For a subpath deployment, set `NEXT_PUBLIC_BASE_PATH` to the target
+prefix for the entire command. This does not deploy the site or replace a
+browser smoke test of the actual deployment.
 
-Deploy a demo with GitHub Actions: [GitHub Pages guide](docs/DEPLOY_PAGES.md).
+The rendering tests use the platform-specific `@napi-rs/canvas` binary. Install
+with optional dependencies enabled (the npm default) before running `npm test`.
+CI also requires `openssl`, `qpdf`, and `pdfsig` for interoperability tests;
+`npm test` fails early in CI if any are missing.
+
+See [GitHub Pages notes](docs/DEPLOY_PAGES.md) for static hosting and deployment status.
 
 ## 📁 Project Structure
 
@@ -96,3 +140,6 @@ Paperloom PDF is licensed under the Apache License 2.0. See [LICENSE](LICENSE).
 ## Credits
 
 Paperloom PDF is based on BloomPDF by stemlen, licensed under Apache-2.0.
+See [NOTICE](NOTICE), the [bundled font inventory](docs/FONTS.md), and
+[production dependency license inventory](docs/THIRD_PARTY_LICENSES.md), and
+[security reporting guidance](SECURITY.md).

@@ -13,6 +13,7 @@ import {
   type PDFDocumentData,
 } from '../../types';
 import { listRevisions } from '../../writer/revision-manager';
+import { PDFLexer, TokenType } from '../../parser/lexer';
 import { listSignatureFields, type SignatureField } from '../fields/signature-field';
 import {
   parseCMSSignedData,
@@ -21,7 +22,7 @@ import {
   nodeOID,
 } from '../crypto/signature-verify';
 import { parseCertificateDer, isCertificateExpired } from '../certificates/certificate-parser';
-import { OID, type PDFSignatureDict, type ASN1Node } from '../crypto/types';
+import { OID, type CMSSignedData, type PDFSignatureDict, type ASN1Node } from '../crypto/types';
 import type {
   CertificateValidationInfo,
   SignatureValidationDetail,
@@ -109,8 +110,7 @@ export function extractPdfSignatureDict(
 
   const str = (key: string): string | null => {
     const v = sig.get(key);
-    if (v instanceof PDFString) return v.value;
-    if (v instanceof PDFHexString) return v.toText();
+    if (v instanceof PDFString || v instanceof PDFHexString) return sig.getString(key) ?? null;
     if (v instanceof PDFName) return v.name;
     return null;
   };
@@ -222,33 +222,45 @@ export async function verifyCmsCryptographic(
     };
   }
   const signer = cms.signerInfos[0];
-  if (!signer) return { ok: false, error: 'No SignerInfo', hasTimestamp: false };
+  if (!signer || cms.signerInfos.length !== 1) return { ok: false, error: 'Expected exactly one SignerInfo', hasTimestamp: false };
 
   const hasTimestamp = hasTimestampAttr(signer.signedAttrs);
-  const certNode = cms.certificates[0];
-  if (!certNode) {
-    return { ok: false, error: 'No certificate in CMS', hasTimestamp };
+  const certDer = findCmsSignerCertificate(cms);
+  if (!certDer) {
+    return { ok: false, error: 'Signer certificate cannot be uniquely identified', hasTimestamp };
   }
-
-  const certDer = wrapSequence(certNode.content);
   const dataToVerify = signedAttrsForVerify(signer.signedAttrs);
   if (!dataToVerify) {
     return { ok: false, error: 'Missing signed attributes', hasTimestamp };
   }
 
   const digestOid = signer.digestAlgorithm;
-  const hashName =
-    digestOid === OID.sha512
-      ? 'SHA-512'
-      : digestOid === OID.sha384
-        ? 'SHA-384'
-        : 'SHA-256';
+  const hashName = digestOid === OID.sha512 ? 'SHA-512'
+    : digestOid === OID.sha384 ? 'SHA-384'
+      : digestOid === OID.sha256 ? 'SHA-256' : null;
+  if (!hashName) return { ok: false, error: `Unsupported digest algorithm: ${digestOid}`, hasTimestamp };
 
   try {
     const spki = extractSpkiFromCertificate(certDer);
     const sigAlg = signer.signatureAlgorithm;
-    const isEcdsa =
-      sigAlg.includes('1.2.840.10045') || sigAlg === '1.2.840.10045.2.1';
+    const ecdsaAlgorithms: Record<string, string> = {
+      '1.2.840.10045.4.3.2': OID.sha256,
+      '1.2.840.10045.4.3.3': OID.sha384,
+      '1.2.840.10045.4.3.4': OID.sha512,
+    };
+    const rsaAlgorithms: Record<string, string | null> = {
+      [OID.rsaEncryption]: null,
+      '1.2.840.113549.1.1.11': OID.sha256,
+      '1.2.840.113549.1.1.12': OID.sha384,
+      '1.2.840.113549.1.1.13': OID.sha512,
+    };
+    const isEcdsa = Object.hasOwn(ecdsaAlgorithms, sigAlg);
+    const isRsa = Object.hasOwn(rsaAlgorithms, sigAlg);
+    if ((!isEcdsa && !isRsa) ||
+        (isEcdsa && ecdsaAlgorithms[sigAlg] !== digestOid) ||
+        (isRsa && rsaAlgorithms[sigAlg] !== null && rsaAlgorithms[sigAlg] !== digestOid)) {
+      return { ok: false, error: `Unsupported or inconsistent signature algorithm: ${sigAlg}`, hasTimestamp };
+    }
 
     if (isEcdsa) {
       let key: CryptoKey;
@@ -302,15 +314,71 @@ export async function verifyCmsCryptographic(
   }
 }
 
-async function validateCertificate(
-  cmsBytes: Uint8Array,
+/** Find the unique embedded certificate identified by the sole CMS signer. */
+export function findCmsSignerCertificate(cms: CMSSignedData): Uint8Array | null {
+  if (cms.signerInfos.length !== 1) return null;
+  const matches = cms.certificates
+    .map(node => wrapSequence(node.content))
+    .filter(cert => certificateMatchesSigner(cert, cms.signerInfos[0].sid));
+  return matches.length === 1 ? matches[0] : null;
+}
+
+function certificateMatchesSigner(certDer: Uint8Array, sid: ASN1Node): boolean {
+  try {
+    const tbs = parseDERNode(certDer).children?.[0]?.children;
+    const identifier = sid.children;
+    if (!tbs || !identifier || identifier.length !== 2) return false;
+    const offset = tbs[0]?.class === 'context' ? 1 : 0;
+    const serial = tbs[offset];
+    const issuer = tbs[offset + 2];
+    if (!serial || !issuer) return false;
+    const equal = (a: Uint8Array, b: Uint8Array) =>
+      a.length === b.length && a.every((byte, i) => byte === b[i]);
+    return equal(serial.content, identifier[1].content) && equal(issuer.content, identifier[0].content);
+  } catch {
+    return false;
+  }
+}
+
+/** Prove the excluded span is this indirect signature dictionary's Contents token. */
+function hasExactContentsGap(doc: PDFDocumentData, field: SignatureField, bytes: Uint8Array, start: number, end: number): boolean {
+  if (!field.valueRef) return false;
+  const entry = doc.xref.entries.get(field.valueRef.toKey());
+  if (!entry || entry.type !== 'n' || entry.compressedObjNum !== undefined || entry.offset >= start) return false;
+  const lexer = new PDFLexer(bytes, entry.offset);
+  const object = lexer.nextToken();
+  const generation = lexer.nextToken();
+  const keyword = lexer.nextToken();
+  if (object?.value !== field.valueRef.objNum || generation?.value !== field.valueRef.genNum || keyword?.value !== 'obj') return false;
+  let depth = 0;
+  let found = false;
+  while (!lexer.isEOF) {
+    const before = lexer.position;
+    const token = lexer.nextToken();
+    if (!token || token.type === TokenType.EOF || lexer.position <= before) return false;
+    if (token.type === TokenType.Keyword && token.value === 'endobj') return false;
+    if (token.type === TokenType.Keyword && (token.value === '<<' || token.value === '[')) depth++;
+    else if (token.type === TokenType.Keyword && (token.value === '>>' || token.value === ']')) {
+      depth--;
+      if (depth === 0) break;
+    }
+    else if (depth === 1 && token.type === TokenType.Name && token.value === 'Contents') {
+      const value = lexer.nextToken();
+      if (found || !value || (value.type !== TokenType.HexString && value.type !== TokenType.String) || value.offset !== start || lexer.position !== end) return false;
+      found = true;
+    }
+  }
+  return found;
+}
+
+/** Check trust and validity on the same uniquely identified signer used for CMS verification. */
+export async function validateSignerCertificate(
+  cms: CMSSignedData,
   options: ValidationOptions,
 ): Promise<CertificateValidationInfo | null> {
   try {
-    const cms = parseCMSSignedData(cmsBytes);
-    const certNode = cms.certificates[0];
-    if (!certNode) return null;
-    const certDer = wrapSequence(certNode.content);
+    const certDer = findCmsSignerCertificate(cms);
+    if (!certDer) return null;
     const info = await parseCertificateDer(certDer, 'der');
     const selfSigned =
       info.subject.raw === info.issuer.raw ||
@@ -318,12 +386,10 @@ async function validateCertificate(
         info.subject.commonName === info.issuer.commonName);
     const expired = isCertificateExpired(info, options.now);
     const anchors = options.trustAnchors ?? [];
-    const trusted =
-      anchors.some(
-        (a) =>
-          a.fingerprintSha256.toLowerCase() === info.fingerprintSha256.toLowerCase(),
-      ) ||
-      (options.allowSelfSigned !== false && selfSigned);
+    // Only an explicitly pinned leaf is trusted; no certificate-chain validation is implemented.
+    const trusted = anchors.some(
+      (a) => a.fingerprintSha256.toLowerCase() === info.fingerprintSha256.toLowerCase(),
+    );
 
     return {
       subject: info.subject.raw || info.subject.commonName || 'Unknown',
@@ -337,6 +403,17 @@ async function validateCertificate(
       trusted,
       publicKeyAlgorithm: info.publicKeyAlgorithm,
     };
+  } catch {
+    return null;
+  }
+}
+
+async function validateCertificate(
+  cmsBytes: Uint8Array,
+  options: ValidationOptions,
+): Promise<CertificateValidationInfo | null> {
+  try {
+    return await validateSignerCertificate(parseCMSSignedData(cmsBytes), options);
   } catch {
     return null;
   }
@@ -399,7 +476,7 @@ export async function validateSignatureField(
 
   const [a, b, c, d] = sigDict.byteRange;
   base.byteRangeOk =
-    a === 0 &&
+    [a, b, c, d].every(Number.isSafeInteger) && a === 0 &&
     b > 0 &&
     c > b &&
     d >= 0 &&
@@ -407,6 +484,8 @@ export async function validateSignatureField(
     c + d <= pdfBytes.length;
 
   if (!base.byteRangeOk) errors.push('Invalid ByteRange against file length');
+  const exactGap = base.byteRangeOk && hasExactContentsGap(doc, field, pdfBytes, b, c);
+  const coversCurrentFile = base.byteRangeOk && c + d === pdfBytes.length;
 
   const digestResult = await verifySignatureDigest(pdfBytes, sigDict);
   base.digestMatch = digestResult.digestMatch;
@@ -417,42 +496,62 @@ export async function validateSignatureField(
   base.cmsSignatureOk = cryptoResult.ok;
   base.hasTimestamp = cryptoResult.hasTimestamp;
   if (!cryptoResult.ok && cryptoResult.error) {
-    if (base.digestMatch) {
-      warnings.push(cryptoResult.error);
-      base.cmsSignatureOk = null;
-    } else {
-      errors.push(cryptoResult.error);
-    }
+    errors.push(cryptoResult.error);
   }
 
   const cert = await validateCertificate(sigDict.contents, options);
   base.certificate = cert;
 
   let revoked = false;
+  let revocationUnknown = false;
   if (cert && options.checkRevocation) {
     const rev = await options.checkRevocation(cert.serialNumberHex);
     if (rev === 'revoked') revoked = true;
+    if (rev === 'unknown') revocationUnknown = true;
   }
 
   if (revoked) {
     base.status = 'Revoked';
     base.summary = 'Certificate revoked (placeholder check)';
-  } else if (!base.digestMatch || !base.byteRangeOk) {
+  } else if (!base.byteRangeOk) {
     base.status = 'Modified';
-    base.summary = 'Document altered after signing or ByteRange invalid';
-  } else if (cert?.expired) {
+    base.summary = 'Invalid ByteRange';
+  } else if (!base.digestMatch && digestResult.embeddedDigest !== null && digestResult.computedDigest) {
+    base.status = 'Modified';
+    base.summary = 'Document digest does not match the signature';
+  } else if (!base.digestMatch) {
+    base.status = 'Unknown';
+    base.summary = 'Document digest could not be verified';
+  } else if (!base.cmsSignatureOk) {
+    base.status = 'Unknown';
+    base.summary = 'CMS signature verification failed or is unsupported';
+  } else if (!exactGap) {
+    base.status = 'Unknown';
+    base.summary = 'Could not verify that ByteRange excludes only this signature';
+  } else if (!coversCurrentFile) {
+    base.status = 'Unknown';
+    base.summary = 'Signature covers an earlier revision; later bytes are not verified';
+  } else if (!cert) {
+    base.status = 'Unknown';
+    base.summary = 'Signer certificate could not be verified';
+  } else if (!cert.notBefore || !cert.notAfter) {
+    base.status = 'Unknown';
+    base.summary = 'Certificate validity dates could not be verified';
+  } else if (revocationUnknown) {
+    base.status = 'Unknown';
+    base.summary = 'Certificate revocation status is unknown';
+  } else if (cert.expired) {
     base.status = 'Expired';
     base.summary = `Certificate expired${cert.notAfter ? ` (${cert.notAfter.slice(0, 10)})` : ''}`;
-  } else if (base.digestMatch && (base.cmsSignatureOk === true || base.cmsSignatureOk === null)) {
-    if (cert && !cert.trusted) {
+  } else if (base.digestMatch && base.cmsSignatureOk === true) {
+    if (!cert.trusted) {
       base.status = 'Unknown';
       base.summary = 'Digest OK — certificate not in trust list';
       warnings.push('Untrusted issuer / root');
     } else {
       base.status = 'Valid';
-      base.summary = cert
-        ? `Valid — signed by ${cert.subject.split(',')[0]}`
-        : 'Valid — digest matches';
+      base.summary = `Valid — signed by ${cert.subject.split(',')[0]} (pinned certificate${options.checkRevocation ? '' : '; revocation not checked'})`;
+      warnings.push('Certificate chain and signing-time trust are not verified');
     }
   } else {
     base.status = 'Unknown';
@@ -463,7 +562,7 @@ export async function validateSignatureField(
 }
 
 /**
- * Validate all signature fields in a document.
+ * Validate signatures over doc.rawBytes, not unsaved in-memory edits or overlays.
  */
 export async function validateDocumentSignatures(
   doc: PDFDocumentData,

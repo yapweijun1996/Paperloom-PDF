@@ -50,7 +50,7 @@ export function createSignatureField(
   dict.set('Type', new PDFName('Annot'));
   dict.set('Subtype', new PDFName('Widget'));
   dict.set('FT', new PDFName('Sig'));
-  dict.set('T', new PDFString(fieldName));
+  dict.set('T', PDFString.fromText(fieldName));
   dict.set('Rect', new PDFArray([
     new PDFNumber(rect.x),
     new PDFNumber(rect.y),

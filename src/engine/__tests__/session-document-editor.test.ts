@@ -13,6 +13,7 @@ import { PDFArray, PDFDict, PDFRef, PDFStream, type PDFDocumentData } from '../t
 import { applyWatermarks } from '../watermark/watermark-engine';
 import { getNextObjNum, serializeDocument } from '../writer/serializer';
 import { installPNGEnvironment, rawPDF, tinyPNG } from './audit-p1-fixtures';
+import { deferred } from './test-deferred';
 
 function fixture(): Uint8Array {
   const content = 'q 20 0 0 20 10 10 cm /Edit Do Q\n';
@@ -438,8 +439,8 @@ describe('SessionDocumentEditor', () => {
   it('rejects overlapping edits and does not overwrite a concurrent legacy mutation', async () => {
     const doc = await parsePDF(fixture());
     const editor = new SessionDocumentEditor();
-    const entered = Promise.withResolvers<void>();
-    const release = Promise.withResolvers<void>();
+    const entered = deferred<void>();
+    const release = deferred<void>();
     const pending = editor.edit(doc, 'watermark', async staged => {
       await watermark(staged);
       entered.resolve();

@@ -590,7 +590,7 @@ describe('redaction: unionRects / rectsOverlap', () => {
 });
 
 describe('redaction: markRedaction + applyRedactions', () => {
-  it('excises overlapping text and burns in a fill rect', async () => {
+  it('refuses to apply marks without a secure full-rewrite path', async () => {
     const { doc, page } = buildTestDoc('BT\n/F1 12 Tf\n100 700 Td\n(Secret) Tj\nET\n');
 
     const before = interpretPage(getPageContentBytes(page, doc.objects), page, doc.objects);
@@ -606,17 +606,14 @@ describe('redaction: markRedaction + applyRedactions', () => {
     const annotsBefore = page.dict.get('Annots');
     expect(annotsBefore instanceof PDFArray && annotsBefore.length).toBe(1);
 
-    const result = await applyRedactions(doc, 0);
-    expect(result.redactedCount).toBe(1);
-    expect(result.removedOperatorCount).toBeGreaterThan(0);
+    await expect(applyRedactions(doc, 0)).rejects.toThrow(/secure redaction.*unavailable/i);
 
     const after = interpretPage(getPageContentBytes(page, doc.objects), page, doc.objects);
-    expect(after.textRuns.some((r) => r.text.includes('Secret'))).toBe(false);
-    expect(after.displayList.some((d) => d.type === 'path' && d.fillColor?.every((c) => c === 0))).toBe(true);
+    expect(after.textRuns.some((r) => r.text.includes('Secret'))).toBe(true);
 
     const annotsAfter = page.dict.get('Annots');
-    expect(annotsAfter instanceof PDFArray ? annotsAfter.length : 0).toBe(0);
-    expect(doc.objects.has(ref.toKey())).toBe(false);
+    expect(annotsAfter instanceof PDFArray ? annotsAfter.length : 0).toBe(1);
+    expect(doc.objects.has(ref.toKey())).toBe(true);
   });
 });
 

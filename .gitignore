@@ -5,6 +5,10 @@
 /.next/
 /out/
 /build/
+/coverage/
+/test-results/
+/playwright-report/
+/public/ocr-assets/
 
 # Local environment and build caches
 .env*

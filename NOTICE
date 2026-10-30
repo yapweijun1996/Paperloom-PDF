@@ -1,0 +1,11 @@
+Paperloom PDF
+
+This project is based on BloomPDF by stemlen, available at
+https://github.com/stemlen/bloom-pdf-editor and distributed under Apache-2.0.
+See LICENSE and the upstream project's notices for applicable terms.
+
+The fonts in public/fonts include Noto fonts distributed under the SIL Open
+Font License 1.1. Copyright notices and license terms accompany each font;
+see docs/FONTS.md for the local inventory. Other dependencies have their own
+licenses in their respective packages; see docs/THIRD_PARTY_LICENSES.md for
+the declared production dependency inventory.

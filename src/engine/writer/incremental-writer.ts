@@ -27,10 +27,13 @@ import {
   PDFStream,
   type PDFDocumentData,
 } from '../types';
-import { serializeIndirectObject, concatBytes } from '../editor/stream-compiler';
+import { bindXrefProvenance, trailerWithXrefRevision } from '../parser/xref-provenance';
+import { serializeIndirectObject, serializeToString, concatBytes } from '../editor/stream-compiler';
 import { findStartXref } from '../parser/xref';
 import { OffsetManager, type ObjectKey } from './offset-manager';
 import { RevisionManager, listRevisions } from './revision-manager';
+import { formatXrefEntry } from './xref-entry';
+import { assertActiveXrefValidation, assertNewObjectsDoNotCollide, assertUniqueIncrementalObjectNumbers } from './new-object-safety';
 
 export interface IncrementalWriteResult {
   /** Complete PDF bytes (original + this update). Never rewrites original prefix. */
@@ -50,6 +53,17 @@ export interface IncrementalWriteResult {
 export interface IncrementalWriteOptions {
   offsetManager?: OffsetManager;
   revisionManager?: RevisionManager;
+}
+
+export function assertIncrementalOutputAllowed(doc: PDFDocumentData): void {
+  if (doc.requiresFullRewrite) {
+    throw new Error('This document requires a full rewrite after security changes; incremental output would retain previous content.');
+  }
+  if (doc.decryptedFromEncrypted || doc.xref.trailerDict.has('Encrypt')) {
+    // Incremental serialization does not encrypt new objects or preserve the
+    // encrypted trailer; emitting either form would expose or corrupt data.
+    throw new Error('Incremental output for encrypted PDFs is not supported; save using a full encrypted rewrite.');
+  }
 }
 
 // ─── Incremental save ───────────────────────────────────────────────────────
@@ -76,6 +90,26 @@ export function appendIncrementalUpdate(
   newObjects?: Map<string, PDFObject>,
   options?: IncrementalWriteOptions,
 ): IncrementalWriteResult {
+  return appendIncrementalUpdateCore(doc, modifiedKeys, newObjects, options, false);
+}
+
+/** Internal: call only immediately after the asynchronous save path verified
+ * the same document and object set, with no intervening await or callback. */
+export function saveIncrementalPrevalidated(doc: PDFDocumentData, modifiedKeys: Set<string>,
+  newObjects: Map<string, PDFObject> | undefined, token: object): Uint8Array {
+  assertActiveXrefValidation(doc, token);
+  return appendIncrementalUpdateCore(doc, modifiedKeys, newObjects, undefined, true).bytes;
+}
+
+function appendIncrementalUpdateCore(doc: PDFDocumentData, modifiedKeys: Set<string>,
+  newObjects: Map<string, PDFObject> | undefined, options: IncrementalWriteOptions | undefined,
+  prevalidated: boolean): IncrementalWriteResult {
+  let priorValid = !!doc.xref.provenance;
+  if (!prevalidated) {
+    const checked = assertNewObjectsDoNotCollide(doc, newObjects);
+    priorValid = assertUniqueIncrementalObjectNumbers(doc, modifiedKeys, newObjects, checked);
+  }
+  assertIncrementalOutputAllowed(doc);
   const originalBytes = doc.rawBytes;
   if (!originalBytes || originalBytes.length === 0) {
     throw new Error('Incremental update requires doc.rawBytes (original PDF)');
@@ -127,7 +161,6 @@ export function appendIncrementalUpdate(
       chunks.push(objBytes);
       currentOffset += objBytes.length;
 
-      doc.objects.set(key, obj);
     }
   }
 
@@ -144,7 +177,9 @@ export function appendIncrementalUpdate(
   } catch {
     prevXrefOffset = 0;
   }
-  const size = getMaxObjNum(doc) + 1;
+  let maxObjectNumber = getMaxObjNum(doc);
+  if (newObjects) for (const key of newObjects.keys()) maxObjectNumber = Math.max(maxObjectNumber, Number(key.split('_')[0]));
+  const size = Math.max(maxObjectNumber + 1, doc.xref.trailerDict.getNumber('Size') ?? 0);
 
   const trailerDict = new PDFDict();
   trailerDict.set('Size', new PDFNumber(size));
@@ -157,6 +192,12 @@ export function appendIncrementalUpdate(
   const info = doc.xref?.trailerDict?.get?.('Info');
   if (info) trailerDict.set('Info', info);
 
+  // Preserve the original file identifier through each revision. In
+  // particular, readers need the permanent ID to identify the document and
+  // encrypted documents use its bytes when deriving their encryption key.
+  const id = doc.xref?.trailerDict?.get?.('ID');
+  if (id) trailerDict.set('ID', id);
+
   trailerDict.set('Prev', new PDFNumber(prevXrefOffset));
 
   const trailerStr = trailerDictToString(trailerDict);
@@ -168,18 +209,49 @@ export function appendIncrementalUpdate(
 
   const bytes = concatBytes(originalBytes, ...chunks);
 
-  // Update managers
+  // Prepare the next xref before publishing bytes. A later save must not
+  // mistake an object just written as still free in the original revision.
+  const priorProof = doc.xref.provenance;
+  const nextEntries = new Map(doc.xref.entries);
+  for (const [key, offset] of newOffsets) {
+    const [objNum, genNum] = key.split('_').map(Number);
+    if (priorValid && priorProof?.source === 'strict') {
+      for (const [oldKey, entry] of nextEntries) if (entry.objNum === objNum) nextEntries.delete(oldKey);
+    }
+    nextEntries.set(key, { objNum, genNum, offset, type: 'n' });
+  }
+  const nextXref = { ...doc.xref, entries: nextEntries,
+    trailerDict: trailerWithXrefRevision(doc.xref.trailerDict, trailerDict) };
+  // The public synchronous writer binds here. The detached async save path
+  // re-parses and binds the output before publishing it to the live graph.
+  if (!prevalidated && priorValid && priorProof) bindXrefProvenance(bytes, nextXref, priorProof.source);
+
+  // Update managers only after all objects and the trailer have been encoded.
+  // If a manager rejects the update, restore both manager states before the
+  // live document is touched.
   const revIndex = (options?.revisionManager?.count ?? 0);
-  options?.offsetManager?.recordBatch(newOffsets, revIndex, bytes.length);
-  options?.revisionManager?.pushRevision({
-    xrefOffset,
-    prevOffset: prevXrefOffset,
-    size,
-    fileLength: bytes.length,
-    root: root ?? null,
-  });
+  const offsetSnapshot = options?.offsetManager?.snapshot();
+  const revisionSnapshot = options?.revisionManager?.snapshot();
+  try {
+    options?.offsetManager?.recordBatch(newOffsets, revIndex, bytes.length);
+    options?.revisionManager?.pushRevision({
+      xrefOffset,
+      prevOffset: prevXrefOffset,
+      size,
+      fileLength: bytes.length,
+      root: root ?? null,
+    });
+  } catch (error) {
+    if (offsetSnapshot) options?.offsetManager?.restore(offsetSnapshot);
+    if (revisionSnapshot) options?.revisionManager?.restore(revisionSnapshot);
+    throw error;
+  }
 
   // Keep doc.rawBytes in sync for subsequent incremental appends
+  if (newObjects) for (const [key, object] of newObjects) doc.objects.set(key, object);
+  doc.xref.entries = nextEntries;
+  doc.xref.trailerDict = nextXref.trailerDict;
+  doc.xref.provenance = nextXref.provenance;
   doc.rawBytes = bytes;
 
   return {
@@ -228,6 +300,10 @@ export class IncrementalUpdateSession {
 
   addNewObject(ref: PDFRef, obj: PDFObject): void {
     const key = ref.toKey();
+    assertIncrementalOutputAllowed(this.doc);
+    const added = new Map([[key, obj]]);
+    const checked = assertNewObjectsDoNotCollide(this.doc, added);
+    assertUniqueIncrementalObjectNumbers(this.doc, this.dirty, added, checked);
     this.doc.objects.set(key, obj);
     this.created.set(key, obj);
     this.dirty.add(key);
@@ -296,9 +372,7 @@ function buildIncrementalXref(offsets: Map<string, number>): Uint8Array {
   for (const sub of subsections) {
     lines.push(`${sub.start} ${sub.entries.length}`);
     for (const entry of sub.entries) {
-      const offsetStr = entry.offset.toString().padStart(10, '0');
-      const genStr = entry.genNum.toString().padStart(5, '0');
-      lines.push(`${offsetStr} ${genStr} n \r`);
+      lines.push(formatXrefEntry(entry.offset, entry.genNum, 'n'));
     }
   }
 
@@ -332,13 +406,7 @@ function getMaxObjNum(doc: PDFDocumentData): number {
 }
 
 function trailerDictToString(dict: PDFDict): string {
-  const entries: string[] = [];
-  const dictEntries = Array.from(dict.entries());
-  for (let i = 0; i < dictEntries.length; i++) {
-    const [key, value] = dictEntries[i];
-    entries.push(`/${key} ${value.toString()}`);
-  }
-  return `<< ${entries.join(' ')} >>`;
+  return serializeToString(dict);
 }
 
 function stringToBytes(str: string): Uint8Array {

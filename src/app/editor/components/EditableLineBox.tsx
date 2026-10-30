@@ -3,6 +3,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { GripHorizontal } from 'lucide-react';
 import { isPointNearRectEdge, pointerDragDelta } from './pointerDragGeometry';
+import { isCompositionKey } from '../keyboard-actions';
 
 /** One styled fragment inside the line editor (mirrors PDF runs). */
 export interface OverlaySegmentStyle {
@@ -81,6 +82,8 @@ export function EditableLineBox(props: EditableLineBoxProps) {
   const [selWidthPx, setSelWidthPx] = useState(0);
   const [caretBlink, setCaretBlink] = useState(true);
 
+  const composingRef = useRef(false);
+  const pendingCompositionBlurRef = useRef(false);
   const measureRef = useRef<HTMLSpanElement>(null);
   const visibleRef = useRef<HTMLDivElement>(null);
   const charEndsRef = useRef<number[]>([]);
@@ -541,12 +544,25 @@ export function EditableLineBox(props: EditableLineBoxProps) {
         ref={textRef as React.RefObject<HTMLTextAreaElement>}
         value={text}
         onInput={onTextInput}
-        onKeyDown={onKeyDown}
+        onCompositionStart={() => { composingRef.current = true; }}
+        onCompositionEnd={() => {
+          composingRef.current = false;
+          if (pendingCompositionBlurRef.current) {
+            pendingCompositionBlurRef.current = false;
+            onBlur();
+          }
+        }}
+        onKeyDown={(event) => {
+          if (!composingRef.current && !isCompositionKey(event.nativeEvent)) onKeyDown(event);
+        }}
         onSelect={(e) => {
           const el = e.currentTarget;
           onSelect?.(el.selectionStart ?? 0, el.selectionEnd ?? 0);
         }}
-        onBlur={onBlur}
+        onBlur={() => {
+          if (composingRef.current) pendingCompositionBlurRef.current = true;
+          else onBlur();
+        }}
         rows={1}
         aria-label="Edit line"
         spellCheck={false}
@@ -568,7 +584,7 @@ export function EditableLineBox(props: EditableLineBoxProps) {
           zIndex: 0,
         }}
         onPointerDown={onHitPointerDown}
-        onFocus={focusInput}
+        onFocus={() => { pendingCompositionBlurRef.current = false; focusInput(); }}
       />
 
       {/* Resize handles */}

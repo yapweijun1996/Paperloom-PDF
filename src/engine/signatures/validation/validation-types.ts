@@ -10,15 +10,15 @@ export type ValidationStatus =
   | 'Revoked';
 
 export interface TrustAnchor {
-  /** SHA-256 fingerprint of trusted root/intermediate DER. */
+  /** SHA-256 fingerprint of an explicitly trusted signer certificate. */
   fingerprintSha256: string;
   label?: string;
 }
 
 export interface ValidationOptions {
-  /** Extra trusted root/intermediate fingerprints (hex lowercase). */
+  /** Trusted signer certificate fingerprints (hex lowercase); chain validation is not supported. */
   trustAnchors?: TrustAnchor[];
-  /** Treat self-signed leaf as trusted when no anchors match. Default true. */
+  /** @deprecated Self-signed certificates require an explicit fingerprint in trustAnchors. */
   allowSelfSigned?: boolean;
   /** Wall clock for expiry checks. */
   now?: Date;
@@ -46,6 +46,7 @@ export interface SignatureValidationDetail {
   status: ValidationStatus;
   /** Human-readable summary line. */
   summary: string;
+  /** Bounds and ordering only; status also checks the excluded gap and current-file coverage. */
   byteRangeOk: boolean;
   digestMatch: boolean;
   cmsSignatureOk: boolean | null;

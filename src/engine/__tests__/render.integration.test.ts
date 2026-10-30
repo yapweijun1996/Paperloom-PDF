@@ -1,7 +1,9 @@
 /**
  * Browser canvas render integration test with DOM API mocks.
  */
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, vi } from 'vitest';
+
+const drawnLabels = vi.fn();
 
 function mock2dContext(canvas: { width: number; height: number }): CanvasRenderingContext2D {
   const state: Record<string, unknown> = {
@@ -18,6 +20,7 @@ function mock2dContext(canvas: { width: number; height: number }): CanvasRenderi
   return new Proxy(state, {
     get(target, prop) {
       if (prop in target) return target[prop as string];
+      if (prop === 'fillText') return drawnLabels;
       if (prop === 'getImageData') {
         return () => ({
           data: new Uint8ClampedArray([255, 255, 255, 255]),
@@ -124,4 +127,65 @@ describe('canvas render integration', () => {
     expect(result.pageHeight).toBe(792);
     expect(result.documentFlow).toBeDefined();
   });
+
+  it.each(['CCITTFaxDecode', 'JBIG2Decode', 'JPXDecode'])('renders a labelled placeholder for %s without changing its encoded stream', async filter => {
+    const { PDFDocument } = await import('pdf-lib');
+    const { parsePDF } = await import('../parser/parser');
+    const { updatePageContent } = await import('../editor/stream-compiler');
+    const { renderPage } = await import('../render/renderer');
+    const { PDFDict, PDFName, PDFNumber, PDFRef, PDFStream } = await import('../types');
+    const pdf = await PDFDocument.create(); pdf.addPage([100, 100]);
+    const doc = await parsePDF(await pdf.save({ useObjectStreams: false }));
+    const ref = new PDFRef(1000, 0);
+    const bytes = new Uint8Array([1, 2, 3, 4]);
+    const stream = new PDFStream(new PDFDict([
+      ['Type', new PDFName('XObject')], ['Subtype', new PDFName('Image')],
+      ['Width', new PDFNumber(2)], ['Height', new PDFNumber(2)],
+      ['Filter', new PDFName(filter)],
+    ]), bytes);
+    doc.objects.set(ref.toKey(), stream);
+    doc.pages[0].resources.set('XObject', new PDFDict([['Scan', ref]]));
+    await updatePageContent(doc.pages[0].contentRefs, new TextEncoder().encode('q 60 0 0 60 10 10 cm /Scan Do Q'), doc.objects, false);
+    drawnLabels.mockClear();
+    await renderPage(doc, 0, { scale: 1 });
+    expect(drawnLabels).toHaveBeenCalledWith(`Unsupported image: ${filter}`, 0.5, 0.5, 0.9);
+    expect(stream.rawBytes).toEqual(bytes);
+    const { serializeDocument } = await import('../writer/serializer');
+    const saved = await serializeDocument(doc);
+    const independent = await PDFDocument.load(saved);
+    expect(independent.getPageCount()).toBe(1);
+    const reopened = await parsePDF(saved);
+    expect((reopened.objects.get(ref.toKey()) as InstanceType<typeof PDFStream>).rawBytes).toEqual(bytes);
+  });
+
+  it.each(['self', 'mutual', 'depth'] as const)('bounds %s Form XObject recursion without blocking repeated placements', async kind => {
+    const { PDFDocument } = await import('pdf-lib');
+    const { parsePDF } = await import('../parser/parser');
+    const { updatePageContent } = await import('../editor/stream-compiler');
+    const { renderPage } = await import('../render/renderer');
+    const { PDFArray, PDFDict, PDFName, PDFNumber, PDFRef, PDFStream } = await import('../types');
+    const pdf = await PDFDocument.create(); pdf.addPage([100, 100]);
+    const doc = await parsePDF(await pdf.save({ useObjectStreams: false }));
+    const count = kind === 'self' ? 1 : kind === 'mutual' ? 2 : 66;
+    const refs = Array.from({ length: count }, (_, index) => new PDFRef(1000 + index, 0));
+    for (let index = 0; index < count; index++) {
+      const next = kind === 'self' ? refs[0] : kind === 'mutual' ? refs[(index + 1) % count] : refs[index + 1];
+      const bytes = new TextEncoder().encode(next ? '/Nested Do' : '0 0 5 5 re f');
+      const dict = new PDFDict([
+        ['Type', new PDFName('XObject')], ['Subtype', new PDFName('Form')],
+        ['BBox', new PDFArray([0, 0, 100, 100].map(value => new PDFNumber(value)))],
+        ['Resources', new PDFDict([['XObject', new PDFDict(next ? [['Nested', next]] : [])]])],
+      ]);
+      doc.objects.set(refs[index].toKey(), new PDFStream(dict, bytes, bytes));
+    }
+    doc.pages[0].resources.set('XObject', new PDFDict([['First', refs[0]]]));
+    await updatePageContent(doc.pages[0].contentRefs, new TextEncoder().encode('/First Do /First Do'), doc.objects, false);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const output = await renderPage(doc, 0, { scale: 1 });
+      expect(output.canvas.width).toBe(100);
+      expect(warn).toHaveBeenCalledTimes(2);
+      expect(warn.mock.calls[0][0]).toMatch(/circular or excessively nested/i);
+    } finally { warn.mockRestore(); }
+  }, 10000);
 });

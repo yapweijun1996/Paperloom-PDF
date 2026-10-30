@@ -16,6 +16,7 @@ import {
 import { detectCertificateFileFormat, importPkcs12 } from './pkcs12';
 
 const STORAGE_KEY = 'bloom-pdf-certificates-v1';
+const MAX_CERTIFICATE_FILE_BYTES = 1024 * 1024;
 
 export interface ManagedIdentity {
   id: string;
@@ -80,6 +81,7 @@ export class CertificateManager {
     file: File,
     password = '',
   ): Promise<ManagedIdentity> {
+    if (file.size > MAX_CERTIFICATE_FILE_BYTES) throw new Error('Certificate file exceeds the supported size limit.');
     const buf = new Uint8Array(await file.arrayBuffer());
     const format = detectCertificateFileFormat(file.name, buf);
     let bundle: ImportedCertificateBundle;

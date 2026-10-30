@@ -38,6 +38,9 @@ export interface AcroFormWidget {
   buttonFlags: number;
   /** For Ch: combo vs list, multi-select. */
   choiceFlags: number;
+  /** Available choice values and their display labels, if the field defines /Opt. */
+  choiceOptions?: Array<{ value: string; label: string }>;
+
   /** Export value for checkbox/radio (Opt / AS). */
   exportValue: string | null;
   /** Selected appearance state name (/AS). */

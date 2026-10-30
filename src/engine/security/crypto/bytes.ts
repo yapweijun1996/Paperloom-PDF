@@ -101,12 +101,15 @@ export function hexToBytes(hex: string): Uint8Array {
 }
 
 export function randomBytes(n: number): Uint8Array {
-  const out = new Uint8Array(n);
-  if (typeof globalThis.crypto !== 'undefined' && globalThis.crypto.getRandomValues) {
-    globalThis.crypto.getRandomValues(out);
-    return out;
+  const crypto = globalThis.crypto;
+  if (!crypto || typeof crypto.getRandomValues !== 'function') {
+    throw new Error('A secure random number generator is required for PDF security operations.');
   }
-  for (let i = 0; i < n; i++) out[i] = Math.floor(Math.random() * 256);
+  const out = new Uint8Array(n);
+  // Web Crypto limits each getRandomValues call to 65,536 bytes.
+  for (let offset = 0; offset < out.length; offset += 65536) {
+    crypto.getRandomValues(out.subarray(offset, Math.min(offset + 65536, out.length)));
+  }
   return out;
 }
 

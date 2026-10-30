@@ -1,7 +1,11 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { findBuiltWorker, smokeBuiltWorker } from './pdf-worker-build-check.mjs';
 
 const root = process.cwd();
+if ((process.env.CI === 'true' || process.env.CI === '1') && !existsSync(join(root, 'out'))) {
+  throw new Error('missing out/ in CI; run npm run build before verifying the PDF worker');
+}
 const required = ['src/engine/worker/codec.ts', 'src/engine/worker/protocol.ts', 'src/engine/worker/pdf.worker.ts', 'src/engine/worker/client.ts', 'docs/PDF_WORKER.md'];
 for (const file of required) if (!existsSync(join(root, file))) throw new Error(`missing ${file}`);
 const core = readFileSync(join(root, 'src/engine/browser-core.ts'), 'utf8');
@@ -22,8 +26,8 @@ if (existsSync(join(root, 'out'))) {
   const walk = (dir) => { for (const entry of readdirSync(dir, { withFileTypes: true })) { const path = join(dir, entry.name); if (entry.isDirectory()) walk(path); else files.push(path); } };
   walk(join(root, 'out'));
   if (files.some((file) => /pdf\.worker.*\.ts$/.test(file))) throw new Error('static export contains a raw pdf.worker TypeScript asset');
-  const executableWorker = files.find((file) => /\.js$/.test(file) && (() => { const text = readFileSync(file, 'utf8'); return text.includes('PARSE_PDF') && text.includes('self.onmessage'); })());
-  if (!executableWorker) throw new Error('static export has no compiled PDF worker JavaScript chunk');
-  console.log(`compiled PDF worker: ${executableWorker.replace(`${root}/`, '')}`);
+  const worker = findBuiltWorker(root);
+  await smokeBuiltWorker(root, worker);
+  console.log(`compiled PDF worker: ${worker.path.replace(`${root}/`, '')} (parse, save, optimize and reopen passed)`);
 }
 console.log('pdf-worker guard PASS');

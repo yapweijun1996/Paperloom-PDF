@@ -690,7 +690,7 @@ function parseSimpleGlyph(r: BinaryReader, numberOfContours: number): GlyphComma
 
     // Walk the contour
     const numContourPoints = contourEnd - contourStart + 1;
-    let idx = firstOnCurve >= 0 ? firstOnCurve - contourStart + 1 : 1;
+    let idx = firstOnCurve >= 0 ? firstOnCurve - contourStart + 1 : 0;
 
     for (let step = 0; step < numContourPoints; step++) {
       const i = contourStart + (idx % numContourPoints);
@@ -709,6 +709,7 @@ function parseSimpleGlyph(r: BinaryReader, numberOfContours: number): GlyphComma
             args: [xCoords[i], yCoords[i], xCoords[nextIdx], yCoords[nextIdx]],
           });
           idx++; // Skip the next on-curve point
+          step++;
         } else {
           // Two consecutive off-curve points — implicit on-curve midpoint
           const midX = (xCoords[i] + xCoords[nextIdx]) / 2;

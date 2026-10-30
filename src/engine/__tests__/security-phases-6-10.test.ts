@@ -393,7 +393,7 @@ describe('Phase 9 — JavaScript Security', () => {
 });
 
 describe('Phase 10 — Secure Redaction', () => {
-  it('marks and applies redaction without painting black rectangles', async () => {
+  it('retains marks and content when secure redaction cannot guarantee safe export', async () => {
     const doc = makeMinimalDoc('BT /F1 24 Tf 100 700 Td (Hello Secret World) Tj ET');
 
     securityEngine.redaction.markRegion(doc, 0, {
@@ -403,21 +403,20 @@ describe('Phase 10 — Secure Redaction', () => {
       height: 40,
     });
 
-    const result = await securityEngine.redaction.applySecureRedactions(doc, {
+    const before = getPageContentBytes(doc.pages[0], doc.objects).slice();
+    await expect(securityEngine.redaction.applySecureRedactions(doc, {
       text: true,
       annotations: true,
       paintBlack: false,
-    });
-
-    expect(result.pagesProcessed).toBe(1);
+    })).rejects.toMatchObject({ name: 'UnsupportedSecureRedactionError' });
 
     const bytes = getPageContentBytes(doc.pages[0], doc.objects);
     const text = new TextDecoder().decode(bytes);
-    // Must NOT contain black fill rectangle paint from old redaction
+    expect(bytes).toEqual(before);
     expect(text).not.toMatch(/0 0 0 rg/);
-    // Redact annotation should be gone
+    // The mark must remain available for a later supported operation.
     const annots = doc.pages[0].dict.getArray('Annots');
-    expect(annots?.length ?? 0).toBe(0);
+    expect(annots?.length ?? 0).toBe(1);
   });
 
   it('verifies forbidden strings are gone from content', async () => {
@@ -428,21 +427,21 @@ describe('Phase 10 — Secure Redaction', () => {
     expect(v.found).toContain('VISIBLE');
 
     securityEngine.redaction.markRegion(doc, 0, { x: 0, y: 0, width: 612, height: 792 });
-    await securityEngine.redaction.applySecureRedactions(doc, { text: true });
-    // After full-page text redaction, operators may be removed
+    await expect(securityEngine.redaction.applySecureRedactions(doc, { text: true }))
+      .rejects.toMatchObject({ name: 'UnsupportedSecureRedactionError' });
     const after = securityEngine.redaction.verifyRedaction(doc, ['VISIBLE']);
-    // Best-effort: either removed from stream or still present if interpreter missed
-    expect(after.found.length === 0 || after.found.includes('VISIBLE')).toBe(true);
+    expect(after.found).toContain('VISIBLE');
+    expect(after.ok).toBe(false);
   });
 
-  it('can strip metadata during redaction', async () => {
+  it('does not strip metadata when a marked redaction is refused', async () => {
     const doc = makeMinimalDoc();
     securityEngine.redaction.markRegion(doc, 0, { x: 0, y: 0, width: 10, height: 10 });
-    const result = await securityEngine.redaction.applySecureRedactions(doc, {
+    const before = securityEngine.metadata.readInfo(doc);
+    await expect(securityEngine.redaction.applySecureRedactions(doc, {
       metadata: true,
-    });
-    expect(result.metadataStripped).toBe(true);
-    expect(Object.keys(securityEngine.metadata.readInfo(doc)).length).toBe(0);
+    })).rejects.toMatchObject({ name: 'UnsupportedSecureRedactionError' });
+    expect(securityEngine.metadata.readInfo(doc)).toEqual(before);
   });
 });
 

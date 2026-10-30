@@ -15,8 +15,9 @@
 
 import { PDFLexer, TokenType } from './lexer';
 import { buildFullXref, parseObject as parseObjectFromXref } from './xref';
-import { applyFilters } from './filters';
+import { applyFilters, DecodeLimitError } from './filters';
 import { bindPageContentRefs } from '../editor/stream-compiler';
+import { inspectContentRefs } from './content-refs';
 import {
   PDFArray,
   PDFBoolean,
@@ -84,16 +85,20 @@ export async function parsePDF(
   // 5. Find catalog (root) dictionary
   const catalogRef = xref.trailerDict.getRef('Root');
   if (!catalogRef) throw new Error('Trailer missing /Root entry');
-  const catalog = resolve(catalogRef);
-  if (!(catalog instanceof PDFDict)) throw new Error('/Root is not a dictionary');
+  const resolvedCatalog = resolve(catalogRef);
+  // Encrypted object streams cannot be parsed until after authentication.
+  // Expose only an encrypted shell until those objects can be materialized.
+  const deferredObjects = deferFilters && [...xref.entries.values()].some(entry => entry.compressedObjNum !== undefined);
+  const catalog = resolvedCatalog instanceof PDFDict ? resolvedCatalog : deferredObjects ? new PDFDict() : null;
+  if (!catalog) throw new Error('/Root is not a dictionary');
 
   // 6. Build page tree
-  const pages = buildPageTree(catalog, objects, resolve);
+  const pages = deferredObjects ? [] : buildPageTree(catalog, objects, resolve);
 
   // 7. Extract document info (may contain encrypted strings — leave as-is)
-  const info = extractDocInfo(xref.trailerDict, resolve);
+  const info = deferredObjects ? {} : extractDocInfo(xref.trailerDict, resolve);
 
-  return {
+  const doc: PDFDocumentData = {
     version,
     objects,
     xref,
@@ -102,6 +107,8 @@ export async function parsePDF(
     info,
     rawBytes: data,
   };
+  for (const page of pages) bindPageContentRefs(page, doc);
+  return doc;
 }
 
 // ─── Header parsing ─────────────────────────────────────────────────────────
@@ -129,6 +136,60 @@ function readHeader(data: Uint8Array): string {
 
 // ─── Object reading ─────────────────────────────────────────────────────────
 
+// Stream bytes are initially located before referenced length objects are
+// necessarily available. The offsets let the object-loading pass re-slice the
+// exact original bytes after resolving /Length, before decoding filters.
+const streamDataOffsets = new WeakMap<PDFStream, number>();
+
+function resolveStreamLength(
+  stream: PDFStream,
+  objects: Map<string, PDFObject>,
+  xref: XRefTable,
+): number | null {
+  let value = stream.dict.get('Length');
+  if (!(value instanceof PDFRef)) return null;
+  const seen = new Set<string>();
+  while (value instanceof PDFRef) {
+    const key = value.toKey();
+    if (seen.has(key)) throw new Error('Invalid stream length: cyclic reference');
+    seen.add(key);
+    if (seen.size > 1024) throw new Error('Invalid stream length: reference chain is too deep');
+    const next = objects.get(key);
+    if (!next) {
+      const entry = xref.entries.get(key);
+      if (entry && entry.type !== 'f' && entry.compressedObjNum !== undefined) return null;
+      throw new Error(`Invalid stream length: unresolved reference ${key}`);
+    }
+    value = next;
+  }
+  if (!(value instanceof PDFNumber) || !Number.isSafeInteger(value.value) || value.value < 0) {
+    throw new Error('Invalid stream length: expected a non-negative integer');
+  }
+  return value.value;
+}
+
+function restoreIndirectStreamBytes(stream: PDFStream, data: Uint8Array, length: number): void {
+  const start = streamDataOffsets.get(stream);
+  if (start === undefined || length > data.length - start) throw new Error('Invalid stream length: outside the file');
+  const end = start + length;
+  // The optional separator is one PDF EOL, not an arbitrary run of bytes.
+  let marker = end;
+  if (data[marker] === 0x0d) {
+    marker++;
+    if (data[marker] === 0x0a) marker++;
+  } else if (data[marker] === 0x0a) marker++;
+  const keyword = 'endstream';
+  for (let i = 0; i < keyword.length; i++) {
+    if (data[marker + i] !== keyword.charCodeAt(i)) throw new Error('Invalid stream length: endstream does not follow the specified bytes');
+  }
+  const following = data[marker + keyword.length];
+  if (following !== undefined && ![0, 9, 10, 12, 13, 32, 40, 41, 60, 62, 91, 93, 123, 125, 47, 37].includes(following)) {
+    throw new Error('Invalid stream length: malformed endstream delimiter');
+  }
+  stream.rawBytes = data.slice(start, end);
+  stream.decodedBytes = null;
+}
+
 /**
  * Read all indirect objects referenced in the xref table.
  * Returns a Map keyed by "objNum_genNum".
@@ -142,7 +203,13 @@ async function readAllObjects(
 
   const xrefEntries = Array.from(xref.entries.entries());
 
-  // First pass: read all uncompressed objects
+  const pendingStreams = new Set<string>();
+  const pendingCompressed = new Map<string, XRefEntry>();
+  const objectStreamHeaders = new Map<PDFStream, Array<{ objNum: number; start: number; end: number }>>();
+  const objectStreamBudget = { entries: 0 };
+
+  // First pass: read uncompressed objects without decoding potentially
+  // provisional stream data. A referenced length can appear later in xref.
   for (let ei = 0; ei < xrefEntries.length; ei++) {
     const [key, entry] = xrefEntries[ei];
     if (entry.type === 'f') continue; // Skip free entries
@@ -153,10 +220,7 @@ async function readAllObjects(
       if (obj) {
         objects.set(key, obj);
 
-        // If it's a stream, decode it (unless encrypted — decrypt first)
-        if (obj instanceof PDFStream && !opts.skipFilters) {
-          await decodeStream(obj, objects);
-        }
+        if (obj instanceof PDFStream) pendingStreams.add(key);
       }
     } catch (e) {
       // Object might be corrupted — skip it
@@ -164,25 +228,53 @@ async function readAllObjects(
     }
   }
 
-  // Second pass: read compressed objects from Object Streams
+  // Resolve stream lengths and compressed objects in dependency order: a
+  // length may itself live in a different object stream.
   for (let ei = 0; ei < xrefEntries.length; ei++) {
     const [key, entry] = xrefEntries[ei];
     if (entry.type === 'f') continue;
     if (entry.compressedObjNum === undefined) continue;
+    pendingCompressed.set(key, entry);
+  }
+  if (opts.skipFilters) pendingCompressed.clear();
 
-    try {
-      const obj = await readCompressedObject(
-        entry,
-        objects,
-        data,
-        xref,
-      );
-      if (obj) {
-        objects.set(key, obj);
+  let dependencyPasses = 0;
+  for (;;) {
+    if (++dependencyPasses > 64) throw new Error('Invalid stream length: object-stream dependency chain is too deep');
+    let progress = false;
+    for (const key of [...pendingStreams]) {
+      const stream = objects.get(key);
+      if (!(stream instanceof PDFStream)) { pendingStreams.delete(key); continue; }
+      if (stream.dict.get('Length') instanceof PDFRef) {
+        const length = resolveStreamLength(stream, objects, xref);
+        if (length === null) continue;
+        restoreIndirectStreamBytes(stream, data, length);
       }
-    } catch (e) {
-      console.warn(`[PDF Parser] Failed to read compressed object ${key}:`, e);
+      if (!opts.skipFilters) await decodeStream(stream, objects);
+      pendingStreams.delete(key);
+      progress = true;
     }
+
+    for (const [key, entry] of pendingCompressed) {
+      const objStmKey = `${entry.compressedObjNum}_0`;
+      if (pendingStreams.has(objStmKey)) continue;
+      try {
+        // Do not let the compressed-object fallback decode an unverified
+        // stream when the container was missing from the first pass.
+        const obj = objects.has(objStmKey) ? await readCompressedObject(entry, objects, data, xref, objectStreamHeaders, objectStreamBudget) : null;
+        if (!obj) throw new ObjectStreamIntegrityError('Compressed object stream is missing or cannot be read.');
+        if (obj) objects.set(key, obj);
+      } catch (e) {
+        if (e instanceof DecodeLimitError || e instanceof ObjectStreamIntegrityError) throw e;
+        console.warn(`[PDF Parser] Failed to read compressed object ${key}:`, e);
+      }
+      pendingCompressed.delete(key);
+      progress = true;
+    }
+    if (!progress) break;
+  }
+  if (pendingStreams.size && !opts.skipFilters) {
+    throw new Error(`Invalid stream length: unresolved compressed reference for ${[...pendingStreams].join(', ')}`);
   }
 
   return objects;
@@ -205,7 +297,7 @@ function readIndirectObject(data: Uint8Array, offset: number): PDFObject | null 
   if (!genNumTok || genNumTok.type !== TokenType.Integer) return null;
 
   const objKeyword = lexer.nextToken();
-  if (!objKeyword || objKeyword.value !== 'obj') return null;
+  if (!objKeyword || objKeyword.type !== TokenType.Keyword || objKeyword.value !== 'obj') return null;
 
   // Parse the object value
   const value = parseFullObject(lexer, data);
@@ -223,133 +315,22 @@ function readIndirectObject(data: Uint8Array, offset: number): PDFObject | null 
  * might be followed by a stream.
  */
 function parseFullObject(lexer: PDFLexer, fileData: Uint8Array): PDFObject {
-  lexer.skipWhitespaceAndComments();
-
-  const token = lexer.nextToken();
-  if (!token) return PDFNull.instance;
-
-  switch (token.type) {
-    case TokenType.Boolean:
-      return new PDFBoolean(token.value as boolean);
-
-    case TokenType.Integer:
-    case TokenType.Real: {
-      // Check for indirect reference: num gen R
-      if (token.type === TokenType.Integer) {
-        const savedPos = lexer.position;
-        const nextTok = lexer.nextToken();
-        if (nextTok && nextTok.type === TokenType.Integer) {
-          const rTok = lexer.nextToken();
-          if (rTok && rTok.value === 'R') {
-            return new PDFRef(token.value as number, nextTok.value as number);
-          }
-        }
-        lexer.position = savedPos;
+  return parseObjectFromXref(lexer, {
+    limitArrays: false,
+    finishDictionary(dict) {
+      // Stream detection also applies to a completed nested dictionary, as in
+      // the former full parser's permissive handling of malformed input.
+      lexer.skipWhitespaceAndComments();
+      const savedPos = lexer.position;
+      const streamTok = lexer.nextToken();
+      if (streamTok && streamTok.type === TokenType.Keyword && streamTok.value === 'stream') {
+        lexer.skipStreamEOL();
+        return readStreamData(lexer, dict, fileData);
       }
-      return new PDFNumber(token.value as number);
-    }
-
-    case TokenType.String:
-      return new PDFString(token.value as string);
-
-    case TokenType.HexString:
-      return new PDFHexString(token.value as string);
-
-    case TokenType.Name:
-      return new PDFName(token.value as string);
-
-    case TokenType.Null:
-      return PDFNull.instance;
-
-    case TokenType.Keyword: {
-      const kw = token.value as string;
-
-      if (kw === '<<') {
-        // Dictionary — might be followed by stream
-        const dict = parseDictBody(lexer, fileData);
-
-        // Check if stream follows
-        lexer.skipWhitespaceAndComments();
-        const savedPos = lexer.position;
-        const streamTok = lexer.nextToken();
-
-        if (streamTok && streamTok.value === 'stream') {
-          lexer.skipStreamEOL();
-          return readStreamData(lexer, dict, fileData);
-        }
-
-        // Not a stream — restore position
-        lexer.position = savedPos;
-        return dict;
-      }
-
-      if (kw === '[') {
-        return parseArrayBody(lexer, fileData);
-      }
-
-      // 'endobj', 'endstream', etc. — return null
-      return PDFNull.instance;
-    }
-
-    default:
-      return PDFNull.instance;
-  }
-}
-
-/**
- * Parse dictionary entries (after '<<' has been consumed).
- */
-function parseDictBody(lexer: PDFLexer, fileData: Uint8Array): PDFDict {
-  const dict = new PDFDict();
-
-  while (true) {
-    lexer.skipWhitespaceAndComments();
-    if (lexer.isEOF) break;
-
-    const savedPos = lexer.position;
-    const token = lexer.nextToken();
-    if (!token) break;
-
-    // End of dictionary
-    if (token.type === TokenType.Keyword && token.value === '>>') break;
-
-    // Key must be a Name
-    if (token.type !== TokenType.Name) {
-      // Recovery: if we hit something unexpected, try to skip
-      continue;
-    }
-
-    const key = token.value as string;
-    const value = parseFullObject(lexer, fileData);
-    dict.set(key, value);
-  }
-
-  return dict;
-}
-
-/**
- * Parse array body (after '[' has been consumed).
- */
-function parseArrayBody(lexer: PDFLexer, fileData: Uint8Array): PDFArray {
-  const items: PDFObject[] = [];
-
-  while (true) {
-    lexer.skipWhitespaceAndComments();
-    if (lexer.isEOF) break;
-
-    const savedPos = lexer.position;
-    const token = lexer.nextToken();
-    if (!token) break;
-
-    // End of array
-    if (token.type === TokenType.Keyword && token.value === ']') break;
-
-    // Push token back and parse as full object
-    lexer.position = savedPos;
-    items.push(parseFullObject(lexer, fileData));
-  }
-
-  return new PDFArray(items);
+      lexer.position = savedPos;
+      return dict;
+    },
+  });
 }
 
 /**
@@ -405,7 +386,9 @@ function readStreamData(
     streamBytes = findStreamByEndMarker(lexer, fileData, streamStart);
   }
 
-  return new PDFStream(dict, streamBytes);
+  const stream = new PDFStream(dict, streamBytes);
+  streamDataOffsets.set(stream, streamStart);
+  return stream;
 }
 
 /**
@@ -419,11 +402,12 @@ function findStreamByEndMarker(
 ): Uint8Array {
   const endPos = lexer.searchForward('endstream', streamStart);
   if (endPos !== -1) {
-    // Trim trailing EOL before 'endstream'
+    // Trim only the single separator EOL, preserving earlier data bytes.
     let end = endPos;
-    while (end > streamStart && (fileData[end - 1] === 0x0a || fileData[end - 1] === 0x0d)) {
+    if (end > streamStart && fileData[end - 1] === 0x0a) {
       end--;
-    }
+      if (end > streamStart && fileData[end - 1] === 0x0d) end--;
+    } else if (end > streamStart && fileData[end - 1] === 0x0d) end--;
     lexer.position = endPos + 9; // past 'endstream'
     return fileData.slice(streamStart, end);
   }
@@ -471,12 +455,28 @@ async function decodeStream(
   try {
     stream.decodedBytes = await applyFilters(stream.rawBytes, filters, resolvedParams);
   } catch (e) {
+    if (e instanceof DecodeLimitError) throw e;
     console.warn('[PDF Parser] Failed to decode stream:', e);
     stream.decodedBytes = stream.rawBytes;
   }
 }
 
 // ─── Compressed object reading ──────────────────────────────────────────────
+
+class ObjectStreamIntegrityError extends Error {}
+
+/** Object stream index ranges must contain exactly one complete PDF object. */
+function parseObjectStreamMember(bytes: Uint8Array): PDFObject {
+  const lexer = new PDFLexer(bytes, 0);
+  try {
+    const object = parseObjectFromXref(lexer, { strictBytes: bytes });
+    lexer.skipWhitespaceAndComments();
+    if (!lexer.isEOF) throw new Error('Additional object stream tokens');
+    return object;
+  } catch {
+    throw new ObjectStreamIntegrityError('Invalid object stream member.');
+  }
+}
 
 /**
  * Read an object that is stored inside an Object Stream (ObjStm).
@@ -487,6 +487,8 @@ async function readCompressedObject(
   objects: Map<string, PDFObject>,
   data: Uint8Array,
   xref: XRefTable,
+  headers: Map<PDFStream, Array<{ objNum: number; start: number; end: number }>>,
+  budget: { entries: number },
 ): Promise<PDFObject | null> {
   if (entry.compressedObjNum === undefined || entry.compressedIndex === undefined) {
     return null;
@@ -513,39 +515,158 @@ async function readCompressedObject(
   if (!(objStm instanceof PDFStream)) return null;
 
   const streamData = objStm.getBytes();
-  const n = objStm.dict.getNumber('N') ?? 0; // Number of objects in the stream
-  const first = objStm.dict.getNumber('First') ?? 0; // Byte offset of first object
-
-  // Parse the object number / offset pairs at the beginning of the stream
-  const headerLexer = new PDFLexer(streamData, 0);
-  const objectOffsets: { objNum: number; offset: number }[] = [];
-
-  for (let i = 0; i < n; i++) {
-    const objNumTok = headerLexer.nextToken();
-    const offsetTok = headerLexer.nextToken();
-    if (!objNumTok || !offsetTok) break;
-    objectOffsets.push({
-      objNum: objNumTok.value as number,
-      offset: (offsetTok.value as number) + first,
-    });
+  let header = headers.get(objStm);
+  if (!header) {
+    const n = objStm.dict.getNumber('N');
+    const first = objStm.dict.getNumber('First');
+    if (objStm.dict.getName('Type') !== 'ObjStm' || !Number.isSafeInteger(n) || n! < 0 || n! > 250_000 ||
+        budget.entries + n! > 250_000 || !Number.isSafeInteger(first) || first! < 0 || first! > streamData.length) {
+      throw new ObjectStreamIntegrityError('Invalid object stream header.');
+    }
+    budget.entries += n!;
+    const headerLexer = new PDFLexer(streamData.subarray(0, first!), 0);
+    const offsets: Array<{ objNum: number; start: number }> = [];
+    const numbers = new Set<number>();
+    for (let i = 0; i < n!; i++) {
+      const obj = headerLexer.nextToken(), offset = headerLexer.nextToken();
+      if (!obj || obj.type !== TokenType.Integer || !offset || offset.type !== TokenType.Integer ||
+          !Number.isSafeInteger(obj.value) || (obj.value as number) <= 0 || numbers.has(obj.value as number) ||
+          !Number.isSafeInteger(offset.value) || (offset.value as number) < 0 ||
+          (offset.value as number) >= streamData.length - first!) {
+        throw new ObjectStreamIntegrityError('Invalid object stream index.');
+      }
+      const start = first! + (offset.value as number);
+      if (offsets.length && start <= offsets[offsets.length - 1].start) {
+        throw new ObjectStreamIntegrityError('Invalid object stream offsets.');
+      }
+      numbers.add(obj.value as number);
+      offsets.push({ objNum: obj.value as number, start });
+    }
+    headerLexer.skipWhitespaceAndComments();
+    if (!headerLexer.isEOF) throw new ObjectStreamIntegrityError('Invalid object stream header.');
+    header = offsets.map((item, index) => ({ ...item, end: offsets[index + 1]?.start ?? streamData.length }));
+    headers.set(objStm, header);
+  }
+  const targetOffset = header[entry.compressedIndex];
+  if (!targetOffset || targetOffset.objNum !== entry.objNum || targetOffset.start >= targetOffset.end) {
+    throw new ObjectStreamIntegrityError('Invalid object stream reference.');
   }
 
-  // Find the target object
-  const targetOffset = objectOffsets[entry.compressedIndex];
-  if (!targetOffset) return null;
-
-  // Determine the end of this object's data
-  const nextOffset = entry.compressedIndex + 1 < objectOffsets.length
-    ? objectOffsets[entry.compressedIndex + 1].offset
-    : streamData.length;
-
   // Parse the object from the stream data
-  const objData = streamData.slice(targetOffset.offset, nextOffset);
-  const objLexer = new PDFLexer(objData, 0);
-
   // Objects in ObjStm are stored without 'obj'/'endobj' wrappers
-  // Use the xref parser's parseObject since these are simple objects (no streams)
-  return parseObjectFromXref(objLexer);
+  // and must occupy precisely their declared index range.
+  return parseObjectStreamMember(streamData.subarray(targetOffset.start, targetOffset.end));
+}
+
+/** Materialize encrypted object streams only after their contents have been decrypted. */
+export class EncryptedObjectMaterializer {
+  private readonly deferred: Map<string, XRefEntry>;
+  private readonly headers = new Map<PDFStream, Array<{ objNum: number; start: number; end: number }>>();
+  private totalHeaderEntries = 0;
+
+  constructor(private readonly doc: PDFDocumentData) {
+    this.deferred = new Map([...doc.xref.entries.entries()].filter(([key, entry]) =>
+      entry.type !== 'f' && entry.compressedObjNum !== undefined && !doc.objects.has(key)));
+  }
+
+  /** Materialize entries from streams which have already been decrypted. */
+  processAvailable(): boolean {
+    let progress = false;
+    for (const [key, entry] of this.deferred) {
+      const stream = this.doc.objects.get(`${entry.compressedObjNum}_0`);
+      if (!(stream instanceof PDFStream) || stream.dict.getName('Type') !== 'ObjStm' || !stream.decodedBytes) continue;
+      let header = this.headers.get(stream);
+      if (!header) {
+        const bytes = stream.decodedBytes;
+        const count = stream.dict.getNumber('N');
+        const first = stream.dict.getNumber('First');
+        if (!Number.isSafeInteger(count) || count! < 0 || count! > 250_000 ||
+            !Number.isSafeInteger(first) || first! < 0 || first! > bytes.length ||
+            this.totalHeaderEntries + count! > 250_000) throw new Error('Invalid encrypted object stream header');
+        this.totalHeaderEntries += count!;
+        const lexer = new PDFLexer(bytes.subarray(0, first!), 0);
+        const offsets: Array<{ objNum: number; start: number }> = [];
+        for (let index = 0; index < count!; index++) {
+          const obj = lexer.nextToken();
+          const offset = lexer.nextToken();
+          if (!obj || obj.type !== TokenType.Integer || !offset || offset.type !== TokenType.Integer ||
+              !Number.isSafeInteger(obj.value) || (obj.value as number) <= 0 ||
+              !Number.isSafeInteger(offset.value) || (offset.value as number) < 0 ||
+              (offset.value as number) > bytes.length - first!) throw new Error('Invalid encrypted object stream index');
+          const start = first! + (offset.value as number);
+          if (offsets.length && start <= offsets[offsets.length - 1].start) throw new Error('Invalid encrypted object stream offsets');
+          offsets.push({ objNum: obj.value as number, start });
+        }
+        lexer.skipWhitespaceAndComments();
+        if (!lexer.isEOF) throw new Error('Invalid encrypted object stream header');
+        header = offsets.map((item, index) => ({ ...item, end: offsets[index + 1]?.start ?? bytes.length }));
+        this.headers.set(stream, header);
+      }
+      const target = header[entry.compressedIndex ?? -1];
+      if (!target || target.objNum !== entry.objNum || target.start >= target.end) throw new Error('Invalid encrypted object stream reference');
+      const value = parseObjectStreamMember(stream.decodedBytes.subarray(target.start, target.end));
+      this.doc.objects.set(key, value);
+      this.deferred.delete(key);
+      progress = true;
+    }
+    return progress;
+  }
+
+  finish(): void {
+    if (this.deferred.size) throw new Error('Invalid encrypted object stream: unresolved dependency');
+    const doc = this.doc;
+    const root = doc.xref.trailerDict.getRef('Root');
+    const catalog = root && resolveRef(root, doc.objects);
+    if (!(catalog instanceof PDFDict)) throw new Error('Invalid encrypted document catalog');
+    doc.catalog = catalog;
+    doc.pages = buildPageTree(catalog, doc.objects, object => resolveRef(object, doc.objects));
+  }
+}
+
+function sameStreamMetadata(left: PDFObject, right: PDFObject, depth = 0): boolean {
+  if (depth > 100) return false;
+  if (left instanceof PDFDict && right instanceof PDFDict) {
+    return left.size === right.size && [...left.entries()].every(([key, value]) => {
+      const other = right.get(key);
+      return other !== undefined && sameStreamMetadata(value, other, depth + 1);
+    });
+  }
+  if (left instanceof PDFArray && right instanceof PDFArray) {
+    return left.length === right.length && left.items.every((value, index) => sameStreamMetadata(value, right.items[index], depth + 1));
+  }
+  if (left instanceof PDFName && right instanceof PDFName) return left.name === right.name;
+  if (left instanceof PDFString && right instanceof PDFString) return left.value === right.value;
+  if (left instanceof PDFHexString && right instanceof PDFHexString) return left.hex === right.hex;
+  if (left instanceof PDFNumber && right instanceof PDFNumber) return left.value === right.value;
+  if (left instanceof PDFBoolean && right instanceof PDFBoolean) return left.value === right.value;
+  if (left instanceof PDFRef && right instanceof PDFRef) return left.equals(right);
+  return left instanceof PDFNull && right instanceof PDFNull;
+}
+
+/** Validate encrypted stream state and resolve indirect length after materialization. */
+export function restoreEncryptedIndirectStream(doc: PDFDocumentData, key: string, stream: PDFStream): boolean {
+  const entry = doc.xref.entries.get(key);
+  if (!entry || entry.type === 'f' || entry.compressedObjNum !== undefined) throw new Error('Invalid stream length: missing stream entry');
+  const original = readIndirectObject(doc.rawBytes, entry.offset);
+  if (!(original instanceof PDFStream)) throw new Error('Invalid stream length: missing original stream');
+  if (!sameStreamMetadata(original.dict, stream.dict)) throw new Error('Encrypted stream changed before length resolution');
+  const provisional = original.rawBytes;
+  const equal = (left: Uint8Array, right: Uint8Array) => left.length === right.length && left.every((byte, index) => byte === right[index]);
+  if (!(original.dict.get('Length') instanceof PDFRef)) {
+    if (!equal(provisional, stream.rawBytes)) throw new Error('Encrypted stream changed before length resolution');
+    return true;
+  }
+  const length = resolveStreamLength(original, doc.objects, doc.xref);
+  if (length === null) return false;
+  restoreIndirectStreamBytes(original, doc.rawBytes, length);
+  // The parser might already have resolved the length before authentication,
+  // or it may have only found a provisional end marker in the ciphertext.
+  if (!equal(provisional, stream.rawBytes) && !equal(original.rawBytes, stream.rawBytes)) {
+    throw new Error('Encrypted stream changed before length resolution');
+  }
+  stream.rawBytes = original.rawBytes;
+  stream.decodedBytes = null;
+  return true;
 }
 
 // ─── Reference resolution ───────────────────────────────────────────────────
@@ -558,14 +679,18 @@ export function resolveRef(
   obj: PDFObject,
   objects: Map<string, PDFObject>,
 ): PDFObject {
-  if (obj instanceof PDFRef) {
-    const resolved = objects.get(obj.toKey());
+  const visited = new Set<string>();
+  let current = obj;
+  while (current instanceof PDFRef) {
+    const key = current.toKey();
+    if (visited.has(key)) throw new Error('Cyclic indirect reference in PDF object graph');
+    if (visited.size >= 100_000) throw new Error('Indirect reference chain exceeds the supported limit');
+    visited.add(key);
+    const resolved = objects.get(key);
     if (!resolved) return PDFNull.instance;
-    // Recursively resolve (in case of chains of references)
-    if (resolved instanceof PDFRef) return resolveRef(resolved, objects);
-    return resolved;
+    current = resolved;
   }
-  return obj;
+  return current;
 }
 
 /**
@@ -649,13 +774,22 @@ function buildPageTree(
   if (!(pagesObj instanceof PDFDict)) throw new Error('/Pages is not a dictionary');
 
   const pages: PDFPageInfo[] = [];
-  collectPages(pagesObj, pagesRef, objects, resolve, pages, {});
+  const pending = [{ node: pagesObj, ref: pagesRef, inherited: {} as Record<string, PDFObject> }];
+  const visited = new Set<PDFDict>();
+  const maxPageTreeNodes = 100_000;
+  while (pending.length > 0) {
+    const item = pending.pop()!;
+    if (visited.has(item.node)) throw new Error('Cyclic or duplicate node in PDF page tree');
+    if (visited.size >= maxPageTreeNodes) throw new Error('PDF page tree exceeds the supported node limit');
+    visited.add(item.node);
+    collectPages(item.node, item.ref, objects, resolve, pages, item.inherited, pending, maxPageTreeNodes);
+  }
 
   return pages;
 }
 
 /**
- * Recursively collect page dictionaries from the page tree.
+ * Collect a page and enqueue its children for iterative traversal.
  * Inherited properties (MediaBox, CropBox, Rotate, Resources) are propagated
  * from parent /Pages nodes to child /Page nodes.
  */
@@ -666,6 +800,8 @@ function collectPages(
   resolve: (obj: PDFObject) => PDFObject,
   pages: PDFPageInfo[],
   inherited: Record<string, PDFObject>,
+  pending: { node: PDFDict; ref: PDFRef; inherited: Record<string, PDFObject> }[],
+  maxPageTreeNodes: number,
 ): void {
   const type = node.getName('Type');
 
@@ -704,7 +840,15 @@ function collectPages(
 
     // Content streams
     const contentsObj = node.get('Contents');
-    const contentRefs = extractContentRefs(contentsObj, resolve);
+    let contentRefs: PDFRef[], contentInspectionComplete = true;
+    try { contentRefs = inspectContentRefs(contentsObj, objects); }
+    catch {
+      // Preserve the historical permissive open behavior, but do not let a
+      // partial cache masquerade as a complete page during reading or editing.
+      contentInspectionComplete = false;
+      contentRefs = contentsObj instanceof PDFRef ? [contentsObj]
+        : contentsObj instanceof PDFArray ? contentsObj.items.filter((item): item is PDFRef => item instanceof PDFRef) : [];
+    }
 
     pages.push(bindPageContentRefs({
       index: pageIndex,
@@ -715,6 +859,7 @@ function collectPages(
       ref: nodeRef,
       resources,
       contentRefs,
+      ...(contentInspectionComplete ? {} : { contentInspectionComplete: false }),
     }));
   } else if (type === 'Pages') {
     // Intermediate node — recurse into Kids
@@ -722,40 +867,20 @@ function collectPages(
     const kids = resolve(kidsObj ?? PDFNull.instance);
 
     if (kids instanceof PDFArray) {
-      for (const kidRef of kids.items) {
+      if (pending.length + kids.length > maxPageTreeNodes) {
+        throw new Error('PDF page tree exceeds the supported node limit');
+      }
+      // Stack traversal must retain the original /Kids order.
+      for (let i = kids.items.length - 1; i >= 0; i--) {
+        const kidRef = kids.items[i];
         const resolvedKid = resolve(kidRef);
         if (resolvedKid instanceof PDFDict) {
           const ref = kidRef instanceof PDFRef ? kidRef : new PDFRef(0, 0);
-          collectPages(resolvedKid, ref, objects, resolve, pages, currentInherited);
+          pending.push({ node: resolvedKid, ref, inherited: currentInherited });
         }
       }
     }
   }
-}
-
-/**
- * Extract content stream references from a page's /Contents entry.
- * /Contents can be a single reference or an array of references.
- */
-function extractContentRefs(
-  contentsObj: PDFObject | undefined,
-  resolve: (obj: PDFObject) => PDFObject,
-): PDFRef[] {
-  if (!contentsObj) return [];
-
-  if (contentsObj instanceof PDFRef) return [contentsObj];
-
-  const resolved = resolve(contentsObj);
-
-  if (resolved instanceof PDFRef) return [resolved];
-
-  if (resolved instanceof PDFArray) {
-    return resolved.items
-      .filter((item): item is PDFRef => item instanceof PDFRef);
-  }
-
-  // Direct stream (rare but possible)
-  return [];
 }
 
 /**
@@ -815,6 +940,15 @@ export function getPageContentBytes(
   page: PDFPageInfo,
   objects: Map<string, PDFObject>,
 ): Uint8Array {
+  if (page.contentInspectionComplete === false) {
+    let refs: PDFRef[];
+    try { refs = inspectContentRefs(page.dict.get('Contents'), objects); }
+    catch { throw new Error('Page content cannot be fully inspected.'); }
+    // The damaged structure may have been repaired since opening the file.
+    page.contentRefs.splice(0);
+    for (const ref of refs) page.contentRefs.push(ref);
+    page.contentInspectionComplete = true;
+  }
   const chunks: Uint8Array[] = [];
 
   for (const ref of page.contentRefs) {

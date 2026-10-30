@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { writeFileSync } from 'node:fs';
+import { rmSync, writeFileSync } from 'node:fs';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -59,6 +59,7 @@ function syntheticDocument(pageCount = 3): PDFDocumentData {
     page.set('Type', new PDFName('Page'));
     page.set('Parent', pagesRef);
     page.set('MediaBox', new PDFArray([new PDFNumber(0), new PDFNumber(0), new PDFNumber(612), new PDFNumber(792)]));
+    page.set('Resources', new PDFDict());
     page.set('Contents', contentRef);
     objects.set(ref.toKey(), page);
     const bytes = new TextEncoder().encode(index === 0 ? 'ONLY_PAGE_ONE_SECRET' : `PAGE_${index + 1}`);
@@ -81,7 +82,7 @@ function syntheticDocument(pageCount = 3): PDFDocumentData {
       index, dict: objects.get(ref.toKey()) as PDFDict,
       mediaBox: { x: 0, y: 0, width: 612, height: 792 },
       cropBox: { x: 0, y: 0, width: 612, height: 792 }, rotate: 0, ref,
-      resources: new PDFDict(), contentRefs: [new PDFRef(10 + index, 0)],
+      resources: (objects.get(ref.toKey()) as PDFDict).getDict('Resources')!, contentRefs: [new PDFRef(10 + index, 0)],
     })),
     xref: { entries: new Map(), trailerDict: new PDFDict([['Root', catalogRef]]) },
     info: {}, rawBytes: new Uint8Array(),
@@ -93,7 +94,6 @@ describe('page deletion privacy', () => {
     const doc = syntheticDocument();
     deletePage(doc, 0);
     const bytes = await serializeDocument(doc);
-    writeFileSync('/tmp/bloom-page-delete-serialization-test.pdf', bytes);
     const text = new TextDecoder().decode(bytes);
     expect(text).not.toContain('ONLY_PAGE_ONE_SECRET');
     const reparsed = await parsePDF(bytes);
@@ -350,13 +350,16 @@ describe('page deletion privacy', () => {
     const doc = syntheticDocument(6);
     deletePage(doc, 0);
     const bytes = await serializeDocument(doc);
-    const path = join(mkdtempSync(join(tmpdir(), 'bloom-page-delete-')), 'deleted-page.pdf');
-    writeFileSync(path, bytes);
-    expect(new TextDecoder().decode(bytes)).not.toContain('ONLY_PAGE_ONE_SECRET');
-    const result = spawnSync('qpdf', ['--check', path], { encoding: 'utf8' });
-    const diagnostics = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
-    expect(result.status).toBe(0);
-    expect(diagnostics).not.toMatch(/WARNING|ERROR/);
+    const directory = mkdtempSync(join(tmpdir(), 'bloom-page-delete-'));
+    try {
+      const path = join(directory, 'deleted-page.pdf');
+      writeFileSync(path, bytes);
+      expect(new TextDecoder().decode(bytes)).not.toContain('ONLY_PAGE_ONE_SECRET');
+      const result = spawnSync('qpdf', ['--check', path], { encoding: 'utf8' });
+      const diagnostics = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
+      expect(result.status, diagnostics).toBe(0);
+      expect(diagnostics).not.toMatch(/WARNING|ERROR/);
+    } finally { rmSync(directory, { recursive: true, force: true }); }
   });
 
 });

@@ -6,7 +6,6 @@
 import type { PDFDocumentData } from '../../types';
 import { PDFRef } from '../../types';
 import { garbageCollect } from '../../optimize/garbage-collect';
-import { deduplicateStreams } from '../../optimize/garbage-collect';
 import type { ISecureOptimizer } from '../types';
 
 export interface OptimizeReport {
@@ -37,16 +36,10 @@ export class SecureOptimizer implements ISecureOptimizer {
     if (infoRef) roots.push(infoRef);
     if (encryptRef) roots.push(encryptRef);
 
-    let deduplicatedStreams = 0;
-    try {
-      const dedup = deduplicateStreams(doc.objects);
-      deduplicatedStreams = dedup.groups?.length ?? dedup.refMap.size;
-      if (deduplicatedStreams > 0) {
-        notes.push(`Deduplicated ${deduplicatedStreams} stream group(s)`);
-      }
-    } catch {
-      notes.push('Stream deduplication skipped');
-    }
+    // This optimizer does not apply a stream remapping. Keep the report honest
+    // and avoid introducing shared editable streams without copy-on-write.
+    const deduplicatedStreams = 0;
+    notes.push('Stream deduplication skipped to preserve independent editing');
 
     let removedObjects = 0;
     try {

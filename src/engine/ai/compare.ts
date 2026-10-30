@@ -5,6 +5,8 @@
 import type { PDFDocumentData } from '../types';
 import { getPageContentBytes } from '../parser/parser';
 import { interpretPage } from '../content/interpreter';
+import { extractPageTextRuns } from '../content/form-text';
+import { OptionalContentVisibility } from '../content/optional-content';
 import { buildDocumentFlow } from '../flow';
 
 export interface TextDiff {
@@ -56,8 +58,9 @@ export function comparePageText(a: string, b: string): TextDiff {
 export function extractPagePlainText(doc: PDFDocumentData, pageIndex: number): string {
   const page = doc.pages[pageIndex];
   const bytes = getPageContentBytes(page, doc.objects);
-  const interpreted = interpretPage(bytes, page, doc.objects);
-  const flow = buildDocumentFlow(interpreted.textRuns);
+  const visibility = new OptionalContentVisibility(doc.catalog, doc.objects);
+  const interpreted = interpretPage(bytes, page, doc.objects, visibility);
+  const flow = buildDocumentFlow(extractPageTextRuns(page, doc.objects, visibility, interpreted).map(entry => entry.run));
   return flow.lines.map(l => l.text).join('\n');
 }
 

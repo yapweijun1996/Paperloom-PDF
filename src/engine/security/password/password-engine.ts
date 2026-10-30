@@ -21,6 +21,7 @@ import {
   detectAlgorithm,
 } from '../encryption/standard-handler';
 import { parseEncryptDict, bytesToPdfHex } from '../encryption/encrypt-dict';
+import { validateEncryptionPasswords } from '../encryption/password-validation';
 import {
   PDFBoolean,
   PDFDict,
@@ -102,9 +103,10 @@ export class PasswordEngine implements IPasswordEngine {
     options: EncryptOptions,
     fileId: FileIdPair,
   ): Promise<{ encrypt: EncryptDictionary; fileKey: Uint8Array }> {
+    validateEncryptionPasswords(options);
     const algorithm = options.algorithm ?? 'AES-256';
     const userPassword = options.userPassword ?? '';
-    const ownerPassword = options.ownerPassword ?? userPassword;
+    const ownerPassword = options.ownerPassword!;
     const permissions: PdfPermissions = mergePermissions(options.permissions);
     const encryptMetadata = options.encryptMetadata ?? true;
 

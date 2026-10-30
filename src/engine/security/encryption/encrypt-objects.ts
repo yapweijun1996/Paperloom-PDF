@@ -104,6 +104,7 @@ async function encryptIndirectObject(
   context: ReencryptSaveContext,
 ): Promise<PDFObject> {
   if (object instanceof PDFStream) {
+    if (object.dict.getName('Type') === 'XRef') return object;
     await encryptValue(object.dict, objNum, genNum, context);
     const type = object.dict.getName('Type');
     const subtype = object.dict.getName('Subtype');

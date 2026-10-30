@@ -44,24 +44,38 @@ const UNIVERSAL_NAMES: Record<number, string> = {
   0x31: 'SET',
 };
 
-function readLength(data: Uint8Array, offset: number): { length: number; bytesRead: number } {
-  const first = data[offset]!;
+function readLength(data: Uint8Array, offset: number, limit: number): { length: number; bytesRead: number } {
+  if (offset >= limit) throw new Error('Truncated DER length at ' + offset);
+  const first = data[offset];
   if (first < 0x80) return { length: first, bytesRead: 1 };
   const numBytes = first & 0x7f;
   if (numBytes === 0 || numBytes > 4) throw new Error('Invalid DER length at ' + offset);
+  if (offset + 1 + numBytes > limit) throw new Error('Truncated DER length at ' + offset);
   let length = 0;
   for (let i = 1; i <= numBytes; i++) {
-    length = (length << 8) | data[offset + i]!;
+    // Arithmetic avoids signed 32-bit truncation for four-byte lengths.
+    length = length * 256 + data[offset + i];
   }
   return { length, bytesRead: 1 + numBytes };
 }
+
+const MAX_DER_NESTING = 128;
 
 /**
  * Parse one ASN.1 DER node starting at offset.
  */
 export function parseDERNode(data: Uint8Array, offset = 0): ASN1Node {
+  if (!Number.isSafeInteger(offset) || offset < 0 || offset >= data.length) {
+    throw new Error('Invalid DER offset ' + offset);
+  }
+  return parseDERNodeWithin(data, offset, data.length, 0);
+}
+
+function parseDERNodeWithin(data: Uint8Array, offset: number, limit: number, depth: number): ASN1Node {
+  if (depth > MAX_DER_NESTING) throw new Error('DER nesting limit exceeded');
+  if (offset >= limit) throw new Error('Truncated DER tag at ' + offset);
   const start = offset;
-  const tagByte = data[offset]!;
+  const tagByte = data[offset];
   const cls = classFromTag(tagByte);
   const constructed = (tagByte & 0x20) !== 0;
   let tag = tagByte & 0x1f;
@@ -69,17 +83,21 @@ export function parseDERNode(data: Uint8Array, offset = 0): ASN1Node {
 
   if (tag === 0x1f) {
     tag = 0;
-    while (offset < data.length) {
-      const b = data[offset]!;
+    let terminated = false;
+    while (offset < limit) {
+      const b = data[offset];
       offset++;
-      tag = (tag << 7) | (b & 0x7f);
-      if ((b & 0x80) === 0) break;
+      tag = tag * 128 + (b & 0x7f);
+      if (!Number.isSafeInteger(tag)) throw new Error('Invalid DER tag at ' + start);
+      if ((b & 0x80) === 0) { terminated = true; break; }
     }
+    if (!terminated) throw new Error('Truncated DER tag at ' + start);
   }
 
-  const { length, bytesRead } = readLength(data, offset);
+  const { length, bytesRead } = readLength(data, offset, limit);
   offset += bytesRead;
   const contentEnd = offset + length;
+  if (contentEnd > limit) throw new Error('DER length exceeds available content at ' + start);
   const content = data.slice(offset, contentEnd);
 
   const node: ASN1Node = {
@@ -96,7 +114,8 @@ export function parseDERNode(data: Uint8Array, offset = 0): ASN1Node {
     node.children = [];
     let childOff = offset;
     while (childOff < contentEnd) {
-      const child = parseDERNode(data, childOff);
+      const child = parseDERNodeWithin(data, childOff, contentEnd, depth + 1);
+      if (child.length <= 0) throw new Error('Invalid DER child length at ' + childOff);
       node.children.push(child);
       childOff += child.length;
     }
@@ -156,7 +175,7 @@ function parseSignerInfo(node: ASN1Node): CMSSignerInfo {
     digestAlgorithm: parseAlgorithmId(ch[2]!),
     signedAttrs: ch[3]?.class === 'context' ? ch[3] : null,
     signatureAlgorithm: parseAlgorithmId(ch[ch[3]?.class === 'context' ? 4 : 3]!),
-    encryptedDigest: ch[ch.length - 1]?.content ?? new Uint8Array(0),
+    encryptedDigest: ch[ch[3]?.class === 'context' ? 5 : 4]?.content ?? new Uint8Array(0),
   };
 }
 
@@ -238,15 +257,17 @@ function bytesToHex(bytes: Uint8Array): string {
 
 function findMessageDigestInSignedAttrs(signedAttrs: ASN1Node | null): string | null {
   if (!signedAttrs?.children) return null;
+  let found: string | null = null;
   for (const attr of signedAttrs.children) {
     const oid = nodeOID(attr.children?.[0] ?? attr);
     if (oid === OID.messageDigest) {
       const set = attr.children?.[1];
       const octet = set?.children?.[0];
-      if (octet?.content) return bytesToHex(octet.content);
+      if (found !== null || set?.children?.length !== 1 || octet?.tagName !== 'OCTET STRING') return null;
+      found = bytesToHex(octet.content);
     }
   }
-  return null;
+  return found;
 }
 
 /**
@@ -288,8 +309,21 @@ export async function verifySignatureDigest(
     };
   }
 
-  const algoFromSigner = OID_TO_DIGEST[signer.digestAlgorithm] ?? opts.algorithm;
+  const algoFromSigner = OID_TO_DIGEST[signer.digestAlgorithm];
   const embeddedDigest = findMessageDigestInSignedAttrs(signer.signedAttrs);
+
+  if (!algoFromSigner || embeddedDigest === null) {
+    if (!algoFromSigner) errors.push(`Unsupported digest algorithm: ${signer.digestAlgorithm}`);
+    if (embeddedDigest === null) errors.push('Missing CMS message digest');
+    return {
+      valid: false,
+      digestMatch: false,
+      computedDigest: '',
+      embeddedDigest,
+      algorithm: algoFromSigner ?? opts.algorithm,
+      errors,
+    };
+  }
 
   let computedBytes: Uint8Array;
   try {
@@ -307,11 +341,9 @@ export async function verifySignatureDigest(
   }
 
   const computedDigest = bytesToHex(computedBytes);
-  const digestMatch = embeddedDigest !== null
-    ? embeddedDigest === computedDigest
-    : true;
+  const digestMatch = embeddedDigest === computedDigest;
 
-  if (embeddedDigest !== null && !digestMatch) {
+  if (!digestMatch) {
     errors.push('Message digest mismatch between CMS signed attrs and byte ranges');
   }
 

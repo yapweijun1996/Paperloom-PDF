@@ -2,72 +2,28 @@
  * Checkbox / radio / choice appearance regeneration and calculation order.
  */
 
-import {
-  PDFArray,
-  PDFBoolean,
-  PDFDict,
-  PDFName,
-  PDFNumber,
-  PDFRef,
-  PDFStream,
-  type PDFDocumentData,
-} from '../types';
+import { PDFArray, PDFBoolean, PDFDict, PDFRef, type PDFDocumentData } from '../types';
 import { resolveRef } from '../parser/parser';
 import { setFormFieldValue } from './apply-field';
 import type { AcroFormWidget } from './types';
 import { formText } from './text-appearance';
-import { getNextObjNum } from '../writer/serializer';
-
-function buildCheckAppearance(on: boolean, w: number, h: number): PDFStream {
-  const content = on
-    ? `q 0 0 0 rg 1 w 0 0 ${w} ${h} re S ${w * 0.2} ${h * 0.5} m ${w * 0.45} ${h * 0.2} l ${w * 0.8} ${h * 0.8} l S Q`
-    : `q 0 0 0 rg 1 w 0 0 ${w} ${h} re S Q`;
-  const bytes = new TextEncoder().encode(content);
-  const dict = new PDFDict();
-  dict.set('Type', new PDFName('XObject'));
-  dict.set('Subtype', new PDFName('Form'));
-  dict.set('BBox', new PDFArray([
-    new PDFNumber(0), new PDFNumber(0), new PDFNumber(w), new PDFNumber(h),
-  ]));
-  dict.set('Length', new PDFNumber(bytes.length));
-  return new PDFStream(dict, bytes, bytes);
-}
+import { setButtonValue } from './button-value';
 
 /** Set checkbox/radio value and regenerate /AP On/Off appearances. */
 export function setButtonFieldValue(
   doc: PDFDocumentData,
   widget: AcroFormWidget,
   checked: boolean,
-  onName = 'Yes',
+  onName?: string,
 ): void {
-  setFormFieldValue(doc, widget, checked);
-
-  const w = widget.rect?.width ?? 12;
-  const h = widget.rect?.height ?? 12;
-  const onStream = buildCheckAppearance(true, w, h);
-  const offStream = buildCheckAppearance(false, w, h);
-
-  const onRef = new PDFRef(getNextObjNum(doc), 0);
-  doc.objects.set(onRef.toKey(), onStream);
-  const offRef = new PDFRef(getNextObjNum(doc), 0);
-  doc.objects.set(offRef.toKey(), offStream);
-
-  const nDict = new PDFDict();
-  nDict.set(onName, onRef);
-  nDict.set('Off', offRef);
-
-  const ap = new PDFDict();
-  ap.set('N', nDict);
-  widget.dict.set('AP', ap);
-  widget.dict.set('AS', new PDFName(checked ? onName : 'Off'));
-  widget.dict.set('V', new PDFName(checked ? onName : 'Off'));
+  setButtonValue(doc, widget, checked, onName);
 }
 
 /** Set a choice (dropdown/list) field value. */
 export function setChoiceFieldValue(
   doc: PDFDocumentData,
   widget: AcroFormWidget,
-  value: string,
+  value: string | string[],
 ): void {
   setFormFieldValue(doc, widget, value);
 }

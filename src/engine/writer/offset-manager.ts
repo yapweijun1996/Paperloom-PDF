@@ -44,6 +44,16 @@ export class OffsetManager {
     return this.fileLength;
   }
 
+  /** Preserve manager state when an incremental append cannot be published. */
+  snapshot(): { records: OffsetRecord[]; fileLength: number } {
+    return { records: [...this.records.values()].map(record => ({ ...record })), fileLength: this.fileLength };
+  }
+
+  restore(snapshot: { records: OffsetRecord[]; fileLength: number }): void {
+    this.records = new Map(snapshot.records.map(record => [record.key, { ...record }]));
+    this.fileLength = snapshot.fileLength;
+  }
+
   setFileLength(len: number): void {
     this.fileLength = Math.max(0, len);
   }

@@ -12,6 +12,8 @@ export type { PDFObject, PDFDocumentData } from './types';
 export { parsePDF } from './worker/client';
 export { getPageContentBytes } from './parser/parser';
 export { interpretPage } from './content/interpreter';
+export { extractPageTextRuns } from './content/form-text';
+export { OptionalContentVisibility } from './content/optional-content';
 export { explodeTJGaps } from './content/tj-normalizer';
 export type { TextRun, PathItem, ImageItem, DisplayItem } from './content/interpreter';
 
@@ -51,11 +53,12 @@ export type { TextLine, TextStylePatch, DetectedTable } from './flow';
 export { ingestPage, blockPlainText } from './bloom';
 export type { BloomBlock, BloomPage } from './bloom';
 
-export { applyRunPositionShifts, findAndReplace, insertTextRun, assertTextEncodable, prepareTextForExport, loadFontForName } from './editor/text-editor';
+export { applyRunPositionShifts, applyTextEdits, applyVerifiedCrossRunEdits, findAndReplace, findTextOccurrences, insertTextRun, assertTextEncodable, prepareTextForExport, loadFontForName } from './editor/text-editor';
 export { insertImageRun, replaceImageXObject, createRGBAImageObjects } from './editor/image-editor';
 export { applyObjectTransform, deleteObject } from './editor/object-editor';
 export { addHighlightFromLineSelection } from './editor/highlight';
 export { updatePageContent, serializeObject } from './editor/stream-compiler';
+export { MultiStreamBoundaryError } from './editor/multistream-edit-safety';
 export { insertInvisibleTextLayer } from './editor/invisible-text';
 export {
   createAnnotationDict,
@@ -168,6 +171,7 @@ export type {
 } from './signatures';
 
 export { securityEngine } from './security';
+export { createSignedRecoverySnapshot, restoreSignedRecoverySnapshot } from './session/signed-recovery';
 export type { PdfPermissions, FullSecurityReport } from './security';
 
 export { buildTextWatermarkContent, buildImageWatermarkContent } from './watermark/watermark-engine';

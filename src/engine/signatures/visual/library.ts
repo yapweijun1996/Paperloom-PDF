@@ -11,24 +11,27 @@ const STORAGE_KEY = 'bloom-pdf-signature-library-v1';
 export class SignatureLibrary {
   private entries: SignatureLibraryEntry[] = [];
   private storage: Storage | null;
+  private sessionIds = new Set<string>();
+  private lastRaw: string | null = null;
+  private readable = true;
+  private warning: string | null = null;
 
   constructor(storage?: Storage | null) {
-    this.storage =
-      storage === undefined
-        ? typeof localStorage !== 'undefined'
-          ? localStorage
-          : null
-        : storage;
+    try {
+      this.storage = storage === undefined ? (typeof localStorage !== 'undefined' ? localStorage : null) : storage;
+    } catch {
+      this.storage = null;
+    }
     this.load();
   }
 
   list(): SignatureLibraryEntry[] {
-    return this.entries.map((e) => ({ ...e }));
+    return this.entries.map((e) => this.view(e));
   }
 
   get(id: string): SignatureLibraryEntry | null {
     const e = this.entries.find((x) => x.id === id);
-    return e ? { ...e } : null;
+    return e ? this.view(e) : null;
   }
 
   favorites(): SignatureLibraryEntry[] {
@@ -46,6 +49,7 @@ export class SignatureLibrary {
     typedFont?: string;
     typedColor?: string;
     typedFontSize?: number;
+    sessionOnly?: boolean;
   }): SignatureLibraryEntry {
     const now = Date.now();
     const entry: SignatureLibraryEntry = {
@@ -64,24 +68,30 @@ export class SignatureLibrary {
       typedFontSize: input.typedFontSize,
     };
     this.entries.unshift(entry);
-    this.persist();
-    return { ...entry };
+    if (input.sessionOnly) this.sessionIds.add(entry.id);
+    else if (!this.persist()) this.sessionIds.add(entry.id);
+    return this.view(entry);
   }
 
   rename(id: string, name: string): SignatureLibraryEntry | null {
     const e = this.entries.find((x) => x.id === id);
     if (!e) return null;
+    const before = { ...e };
     e.name = name.trim() || e.name;
     e.updatedAt = Date.now();
-    this.persist();
-    return { ...e };
+    if (!this.sessionIds.has(id) && !this.persist()) Object.assign(e, before);
+    return this.view(e);
   }
 
   delete(id: string): boolean {
-    const before = this.entries.length;
-    this.entries = this.entries.filter((x) => x.id !== id);
-    if (this.entries.length === before) return false;
-    this.persist();
+    const index = this.entries.findIndex((x) => x.id === id);
+    if (index < 0) return false;
+    const [entry] = this.entries.splice(index, 1);
+    if (this.sessionIds.delete(id)) return true;
+    if (!this.persist()) {
+      this.entries.splice(index, 0, entry);
+      return false;
+    }
     return true;
   }
 
@@ -98,17 +108,19 @@ export class SignatureLibrary {
       updatedAt: now,
     };
     this.entries.unshift(copy);
-    this.persist();
-    return { ...copy };
+    if (this.sessionIds.has(id)) this.sessionIds.add(copy.id);
+    else if (!this.persist()) this.sessionIds.add(copy.id);
+    return this.view(copy);
   }
 
   setFavorite(id: string, favorite: boolean): SignatureLibraryEntry | null {
     const e = this.entries.find((x) => x.id === id);
     if (!e) return null;
+    const before = { ...e };
     e.favorite = favorite;
     e.updatedAt = Date.now();
-    this.persist();
-    return { ...e };
+    if (!this.sessionIds.has(id) && !this.persist()) Object.assign(e, before);
+    return this.view(e);
   }
 
   toggleFavorite(id: string): SignatureLibraryEntry | null {
@@ -118,28 +130,52 @@ export class SignatureLibrary {
   }
 
   clear(): void {
+    const before = this.entries;
     this.entries = [];
-    this.persist();
+    if (!this.persist()) this.entries = before;
+    else this.sessionIds.clear();
+  }
+
+  consumeStorageWarning(): string | null {
+    const warning = this.warning;
+    this.warning = null;
+    return warning;
+  }
+
+  private view(entry: SignatureLibraryEntry): SignatureLibraryEntry {
+    return { ...entry, sessionOnly: this.sessionIds.has(entry.id) };
   }
 
   private load(): void {
     if (!this.storage) return;
     try {
-      const raw = this.storage.getItem(STORAGE_KEY);
-      if (!raw) return;
-      const parsed = JSON.parse(raw) as SignatureLibraryEntry[];
-      if (Array.isArray(parsed)) this.entries = parsed;
+      this.lastRaw = this.storage.getItem(STORAGE_KEY);
+      if (this.lastRaw === null) return;
+      const parsed: unknown = JSON.parse(this.lastRaw);
+      if (!Array.isArray(parsed) || !parsed.every(e => e && typeof e === 'object' && typeof e.id === 'string' && typeof e.imageDataUrl === 'string')) {
+        this.readable = false;
+        return;
+      }
+      this.entries = parsed as SignatureLibraryEntry[];
     } catch {
-      this.entries = [];
+      this.readable = false;
     }
   }
 
-  private persist(): void {
-    if (!this.storage) return;
+  private persist(): boolean {
     try {
-      this.storage.setItem(STORAGE_KEY, JSON.stringify(this.entries));
+      if (!this.storage || !this.readable) throw new Error('unavailable');
+      if (this.storage.getItem(STORAGE_KEY) !== this.lastRaw) {
+        this.warning = 'Signature library changed in another tab. Existing data was preserved; new signatures are available only for this session. Reload before saving other changes.';
+        return false;
+      }
+      const raw = JSON.stringify(this.entries.filter(entry => !this.sessionIds.has(entry.id)));
+      this.storage.setItem(STORAGE_KEY, raw);
+      this.lastRaw = raw;
+      return true;
     } catch {
-      // quota / private mode — ignore
+      this.warning = 'Could not save the signature library on this device. New signatures remain available only for this session; other changes were not saved.';
+      return false;
     }
   }
 }

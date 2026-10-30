@@ -134,8 +134,25 @@ function regenerate(doc: PDFDocumentData, dict: PDFDict): boolean {
   if (width <= 0 || height <= 0) return false;
 
   const value = inherited(doc, dict, 'V');
-  if (value && !(value instanceof PDFString || value instanceof PDFHexString)) return false;
+  const flags = number(inherited(doc, dict, 'Ff'));
+  const isMulti = type.name === 'Ch' && (flags & (1 << 21)) !== 0;
+  if (value && !(value instanceof PDFString || value instanceof PDFHexString || (isMulti && value instanceof PDFArray))) return false;
+  const selected = value instanceof PDFArray ? value.items.map(item => formText(resolved(doc, item))) : value ? [formText(value)] : [];
   let text = formText(value);
+  let listRows: Array<{ value: string; label: string }> | undefined;
+  if (isMulti) {
+    const options = inherited(doc, dict, 'Opt');
+    if (!(options instanceof PDFArray)) return false;
+    listRows = [];
+    for (const entry of options.items) {
+      const option = resolved(doc, entry);
+      const exportValue = option instanceof PDFArray ? resolved(doc, option.get(0)) : option;
+      const label = option instanceof PDFArray ? resolved(doc, option.get(1)) : option;
+      if (!(exportValue instanceof PDFString || exportValue instanceof PDFHexString) || !(label instanceof PDFString || label instanceof PDFHexString)) return false;
+      listRows.push({ value: formText(exportValue), label: formText(label).replace(/[\r\n\t]/g, ' ') });
+    }
+    text = listRows.map(row => row.label).join('');
+  }
   if (type.name === 'Ch') {
     const options = inherited(doc, dict, 'Opt');
     if (options instanceof PDFArray) {
@@ -148,7 +165,6 @@ function regenerate(doc: PDFDocumentData, dict: PDFDict): boolean {
       }
     }
   }
-  const flags = number(inherited(doc, dict, 'Ff'));
   const multiline = type.name === 'Tx' && (flags & 4096) !== 0;
   const maxLen = Math.max(0, Math.floor(number(inherited(doc, dict, 'MaxLen'))));
   const comb = type.name === 'Tx' && (flags & 16777216) !== 0 && maxLen > 0 && !multiline;
@@ -203,6 +219,7 @@ function regenerate(doc: PDFDocumentData, dict: PDFDict): boolean {
   const descent = (selectedFont.descent ?? -200) / 1000;
   const emHeight = Math.max(1, ascent - descent);
   const layout = (size: number): string[] => multiline ? wrap(text, line => units(line) * size, availableWidth) : [text];
+  if (fontSize === 0 && isMulti) fontSize = 12;
   if (fontSize === 0) {
     let low = 0, high = availableHeight / emHeight;
     for (let i = 0; i < 24; i++) {
@@ -220,13 +237,26 @@ function regenerate(doc: PDFDocumentData, dict: PDFDict): boolean {
   if (borderColor && borderWidth > 0) {
     commands.push(borderColor, `${fmt(borderWidth)} w`, `${fmt(borderWidth / 2)} ${fmt(borderWidth / 2)} ${fmt(Math.max(0, width - borderWidth))} ${fmt(Math.max(0, height - borderWidth))} re S`);
   }
-  commands.push(`${fmt(pad)} ${fmt(pad)} ${fmt(availableWidth)} ${fmt(availableHeight)} re W n`, '/Tx BMC', 'BT', `/FForm ${fmt(fontSize)} Tf`, textColor);
+  commands.push(`${fmt(pad)} ${fmt(pad)} ${fmt(availableWidth)} ${fmt(availableHeight)} re W n`, '/Tx BMC');
+  const topIndex = Math.max(0, Math.floor(number(inherited(doc, dict, 'TI'))));
+  const rowHeight = Math.max(fontSize * 1.2, 1);
+  if (listRows) listRows.slice(topIndex).forEach((row, index) => {
+    if (selected.includes(row.value)) commands.push('q', '0.2 0.4 0.8 rg', `${fmt(pad)} ${fmt(height - pad - (index + 1) * rowHeight)} ${fmt(availableWidth)} ${fmt(rowHeight)} re f`, 'Q');
+  });
+  commands.push('BT', `/FForm ${fmt(fontSize)} Tf`, textColor);
   const baseline = multiline ? height - pad - ascent * fontSize : (height - (ascent + descent) * fontSize) / 2;
   const show = (line: string, x: number, y: number): void => {
     const encoded = new PDFString(Array.from(line, ch => glyph(ch).bytes).join(''));
     commands.push(`1 0 0 1 ${fmt(x)} ${fmt(y)} Tm ${serializeToString(encoded)} Tj`);
   };
-  if (comb) {
+  if (listRows) {
+    listRows.slice(topIndex).forEach((row, index) => {
+      const baseline = height - pad - ascent * fontSize - index * rowHeight;
+      if (baseline < pad - fontSize) return;
+      commands.push(selected.includes(row.value) ? '1 g' : textColor);
+      show(row.label, pad, baseline);
+    });
+  } else if (comb) {
     const chars = Array.from(text);
     const start = alignment === 1 ? Math.floor((maxLen - chars.length) / 2) : alignment === 2 ? maxLen - chars.length : 0;
     chars.forEach((ch, i) => show(ch, pad + (start + i + 0.5) * availableWidth / maxLen - units(ch) * fontSize / 2, baseline));
@@ -257,7 +287,7 @@ function regenerate(doc: PDFDocumentData, dict: PDFDict): boolean {
 }
 
 /** Update the terminal field and all its widgets, including widgets on other pages. */
-export function setTextFieldValue(doc: PDFDocumentData, widget: AcroFormWidget, value: string): void {
+export function setTextFieldValue(doc: PDFDocumentData, widget: AcroFormWidget, value: string | string[]): void {
   let owner = widget.dict;
   const seen = new Set<PDFDict>();
   while (!owner.has('T') && !owner.has('FT') && !seen.has(owner)) {
@@ -267,8 +297,29 @@ export function setTextFieldValue(doc: PDFDocumentData, widget: AcroFormWidget, 
     owner = parent;
   }
   const maxLen = Math.max(0, Math.floor(number(inherited(doc, owner, 'MaxLen'))));
-  if (widget.fieldType === 'Tx' && maxLen) value = Array.from(value).slice(0, maxLen).join('');
-  owner.set('V', valueString(value));
+  if (Array.isArray(value)) {
+    if (widget.fieldType !== 'Ch' || !(widget.choiceFlags & (1 << 21)) || (widget.choiceFlags & (1 << 17)) || widget.readOnly) throw new Error('This field does not allow multiple selections.');
+    if (owner !== widget.dict && widget.dict.has('V')) throw new Error('The field has an ambiguous widget value.');
+    const options = widget.choiceOptions;
+    if (!options || new Set(options.map(option => option.value)).size !== options.length || new Set(value).size !== value.length) throw new Error('Choice options are unavailable or ambiguous.');
+    const indices = value.map(item => options.findIndex(option => option.value === item));
+    if (indices.some(index => index < 0)) throw new Error('The selected value is not a choice option.');
+    indices.sort((a, b) => a - b);
+    value = indices.map(index => options[index].value);
+    owner.set('V', new PDFArray(value.map(valueString)));
+    owner.set('I', new PDFArray(indices.map(index => new PDFNumber(index))));
+    if (owner !== widget.dict) widget.dict.delete('I');
+  } else {
+    if (widget.fieldType === 'Ch' && (widget.choiceFlags & (1 << 21))) throw new Error('Multiple-choice fields require an array of values.');
+    if (widget.fieldType === 'Tx' && maxLen) value = Array.from(value).slice(0, maxLen).join('');
+    owner.set('V', valueString(value));
+  }
+  // /I contains selected option indices. A single-value edit must not retain
+  // stale indices from the previous selection. Readers can derive it from /V.
+  if (widget.fieldType === 'Ch' && !Array.isArray(value)) {
+    owner.delete('I');
+    if (owner !== widget.dict) widget.dict.delete('I');
+  }
   widget.value = value;
   const regenerated = new Set<PDFDict>();
   const visited = new Set<PDFDict>();
@@ -287,7 +338,8 @@ export function setTextFieldValue(doc: PDFDocumentData, widget: AcroFormWidget, 
     }
     return complete;
   };
-  visit(owner);
+  const ownerComplete = visit(owner);
+  if (Array.isArray(value) && !ownerComplete) throw new Error('The multiple-choice appearance cannot be generated safely.');
   const acro = acroForm(doc);
   if (!(acro?.get('NeedAppearances') instanceof PDFBoolean) || !(acro.get('NeedAppearances') as PDFBoolean).value) return;
   visited.clear();

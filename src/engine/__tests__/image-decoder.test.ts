@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { decodeImage, type DecodedImage } from '../render/image-decoder';
 import { PDFArray, PDFDict, PDFName, PDFNumber, PDFRef, PDFStream, type PDFObject } from '../types';
+import { tinyJPEG } from './audit-p1-fixtures';
 
 function image(width: number, height: number, bpc: number, bytes: number[], colorSpace = 'DeviceGray'): PDFStream {
   return new PDFStream(new PDFDict([
@@ -10,6 +11,112 @@ function image(width: number, height: number, bpc: number, bytes: number[], colo
     ['ColorSpace', new PDFName(colorSpace)],
   ]), new Uint8Array(bytes));
 }
+
+describe('image allocation limits', () => {
+  it.each([
+    [100_000, 100_000],
+    [32_768, 1],
+    [10_000, 3_201],
+    [1.5, 1],
+    [Number.POSITIVE_INFINITY, 1],
+  ])('rejects unsafe dimensions %s × %s before allocating pixels', async (width, height) => {
+    const realArray = Uint8ClampedArray;
+    const guarded = new Proxy(realArray, {
+      construct(target, args, newTarget) {
+        if (typeof args[0] === 'number' && args[0] > 1024) throw new Error('unsafe pixel allocation attempted');
+        return Reflect.construct(target, args, newTarget);
+      },
+    });
+    vi.stubGlobal('Uint8ClampedArray', guarded);
+    try {
+      await expect(decodeImage(image(width, height, 8, [0]), new Map())).rejects.toThrow(/image.*(dimension|limit)/i);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('rejects a malicious soft-mask dimension instead of sampling it', async () => {
+    const base = image(1, 1, 8, [127]);
+    base.dict.set('SMask', new PDFRef(2, 0));
+    await expect(decodeImage(base, new Map([['2_0', image(1, 33_000, 8, [255])]])))
+      .rejects.toThrow(/image.*(dimension|limit)/i);
+  });
+
+  it('checks decoded JPEG bitmap dimensions before creating an offscreen canvas', async () => {
+    const close = vi.fn();
+    const canvas = vi.fn();
+    const base = image(1, 1, 8, [0xff, 0xd8, 0xff, 0xc0, 0, 11, 8, 0, 1, 0, 1, 1, 1, 0x11, 0, 0xff, 0xda, 0, 8, 1, 1, 0, 0, 63, 0, 0xff, 0xd9]);
+    base.dict.set('Filter', new PDFName('DCTDecode'));
+    vi.stubGlobal('createImageBitmap', vi.fn().mockResolvedValue({ width: 50_000, height: 50_000, close }));
+    vi.stubGlobal('OffscreenCanvas', canvas);
+    try {
+      await expect(decodeImage(base, new Map())).rejects.toThrow(/image.*(dimension|limit)/i);
+      expect(canvas).not.toHaveBeenCalled();
+      expect(close).toHaveBeenCalledOnce();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it.each([0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf])(
+    'rejects oversized JPEG SOF marker %s before browser decoding', async marker => {
+      const base = image(1, 1, 8, [0xff, 0xd8, 0xff, marker, 0, 11, 8, 0x80, 0, 0, 1, 1, 1, 0x11, 0, 0xff, 0xd9]);
+      base.dict.set('Filter', new PDFName('DCTDecode'));
+      const browserDecode = vi.fn();
+      vi.stubGlobal('createImageBitmap', browserDecode);
+      try {
+        await expect(decodeImage(base, new Map())).rejects.toThrow(/image.*(dimension|limit)/i);
+        expect(browserDecode).not.toHaveBeenCalled();
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    },
+  );
+
+  it.each([
+    { bytes: [0xff, 0xd8, 0xff, 0xc0] }, // no length
+    { bytes: [0xff, 0xd8, 0xff, 0xc0, 0, 2, 0xff, 0xd9] }, // undersized SOF
+    { bytes: [0xff, 0xd8, 0xff, 0xc0, 0, 11, 8, 0, 1, 0, 1] }, // truncated segment
+    { bytes: [0xff, 0xd8, 0xff, 0xda, 0, 6, 1, 1, 0, 0, 0xff, 0xd9] }, // scan without SOF
+    { bytes: [0xff, 0xd8, 0xff, 0xde, 0, 2, 0xff, 0xd9] }, // unsupported hierarchy
+    { bytes: [0xff, 0xd8, 0xff, 0xc0, 0, 11, 8, 0, 0, 0, 1, 1, 1, 0x11, 0, 0xff, 0xd9] }, // DNL-dependent height
+    { bytes: [0xff, 0xd8, 0xff, 0xc0, 0, 11, 8, 0, 1, 0, 1, 1, 1, 0x11, 0] }, // missing scan and EOI
+    { bytes: [0xff, 0xd8, 0xff, 0xc0, 0, 11, 8, 0, 1, 0, 1, 1, 1, 0xf1, 0, 0xff, 0xd9] }, // unsafe sampling factor
+  ])('rejects malformed or unsupported JPEG headers before browser decoding', async ({ bytes }) => {
+    const base = image(1, 1, 8, bytes);
+    base.dict.set('Filter', new PDFName('DCTDecode'));
+    const browserDecode = vi.fn();
+    vi.stubGlobal('createImageBitmap', browserDecode);
+    try {
+      await expect(decodeImage(base, new Map())).rejects.toThrow(/jpeg|image.*dimension/i);
+      expect(browserDecode).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it.each([
+    { name: 'baseline', data: () => tinyJPEG(), dimension: 1 },
+    { name: 'progressive', data: () => Uint8Array.from(atob('/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAYEBQYFBAYGBQYHBwYIChAKCgkJChQODwwQFxQYGBcUFhYaHSUfGhsjHBYWICwgIyYnKSopGR8tMC0oMCUoKSj/2wBDAQcHBwoIChMKChMoGhYaKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCj/wgARCAACAAIDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAb/xAAUAQEAAAAAAAAAAAAAAAAAAAAF/9oADAMBAAIQAxAAAAG6BQn/xAAWEAEBAQAAAAAAAAAAAAAAAAADBQH/2gAIAQEAAQUCmiezv//EABcRAAMBAAAAAAAAAAAAAAAAAAABAzL/2gAIAQMBAT8Brtn/xAAXEQADAQAAAAAAAAAAAAAAAAAAAQMy/9oACAECAQE/AaaZ/8QAGhABAAIDAQAAAAAAAAAAAAAAAQIDAARBYf/aAAgBAQAGPwLVWuCtUeeZ/8QAFhABAQEAAAAAAAAAAAAAAAAAAREA/9oACAEBAAE/IUzAqmrO/9oADAMBAAIAAwAAABD3/8QAFxEAAwEAAAAAAAAAAAAAAAAAAAGhsf/aAAgBAwEBPxC96f/EABcRAAMBAAAAAAAAAAAAAAAAAAABobH/2gAIAQIBAT8Qren/xAAWEAEBAQAAAAAAAAAAAAAAAAABACH/2gAIAQEAAT8QTWV8hFVNW//Z'), c => c.charCodeAt(0)), dimension: 2 },
+  ])('accepts a normal $name JPEG through the browser decoder', async ({ data, dimension }) => {
+    const bytes = data();
+    const base = new PDFStream(image(dimension, dimension, 8, []).dict, bytes);
+    base.dict.set('Filter', new PDFName('DCTDecode'));
+    const close = vi.fn();
+    const decode = vi.fn().mockResolvedValue({ width: dimension, height: dimension, close });
+    vi.stubGlobal('createImageBitmap', decode);
+    vi.stubGlobal('OffscreenCanvas', class {
+      getContext() { return { drawImage: () => {}, getImageData: () => ({ data: new Uint8ClampedArray(dimension * dimension * 4) }) }; }
+    });
+    try {
+      expect((await decodeImage(base, new Map()))?.width).toBe(dimension);
+      expect(decode).toHaveBeenCalledOnce();
+      expect(close).toHaveBeenCalledOnce();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
 
 async function decoded(base: PDFStream, mask?: PDFStream): Promise<DecodedImage> {
   const objects = new Map<string, PDFObject>();
@@ -216,5 +323,31 @@ describe('image soft-mask Matte correction', () => {
     base.dict.set('ColorSpace', colorRef);
     base.dict.set('SMask', mask);
     expect(Array.from((await decodeImage(base, objects))!.data)).toEqual([128, 128, 128, 128]);
+  });
+});
+
+describe('unsupported compressed images', () => {
+  it.each(['CCITTFaxDecode', 'CCF', 'JBIG2Decode', 'JPXDecode', 'UnknownCodec'])('rejects %s before interpreting encoded bytes as pixels', async filter => {
+    const source = image(2, 1, 8, [0x9a, 0xbc, 0xde]);
+    source.dict.set('Filter', new PDFName(filter));
+    await expect(decodeImage(source, new Map())).rejects.toThrow(`Unsupported PDF image filter: ${filter}`);
+    expect([...source.rawBytes]).toEqual([0x9a, 0xbc, 0xde]);
+  });
+
+  it('does not treat missing decoded bytes as uncompressed pixels', async () => {
+    const source = image(1, 1, 8, [0x78, 0x9c]);
+    source.dict.set('Filter', new PDFName('FlateDecode'));
+    await expect(decodeImage(source, new Map())).rejects.toThrow(/undecoded filter/);
+  });
+
+  it('rejects indirect filters and encoded soft masks that are not decoded', async () => {
+    const source = image(1, 1, 8, [100]);
+    source.dict.set('Filter', new PDFRef(8, 0));
+    await expect(decodeImage(source, new Map([['8_0', new PDFName('JPXDecode')]]))).rejects.toThrow(/indirect filter/);
+    source.dict.delete('Filter');
+    const mask = image(1, 1, 8, [23]);
+    mask.dict.set('Filter', new PDFName('JBIG2Decode'));
+    source.dict.set('SMask', new PDFRef(9, 0));
+    await expect(decodeImage(source, new Map([['9_0', mask]]))).rejects.toThrow(/JBIG2Decode/);
   });
 });

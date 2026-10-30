@@ -164,10 +164,10 @@ export function createAnnotationDict(
   }
 
   if (annotation.author) {
-    dict.set('T', new PDFString(annotation.author));
+    dict.set('T', PDFString.fromText(annotation.author));
   }
   if (annotation.contents) {
-    dict.set('Contents', new PDFString(annotation.contents));
+    dict.set('Contents', PDFString.fromText(annotation.contents));
   }
   if (annotation.modDate) {
     dict.set('M', new PDFString(annotation.modDate));
@@ -196,7 +196,7 @@ export function createAnnotationDict(
         `/${annotation.fontName} ${annotation.fontSize} Tf ` +
         `${annotation.textColor[0]} ${annotation.textColor[1]} ${annotation.textColor[2]} rg`,
       ));
-      dict.set('Contents', new PDFString(annotation.text));
+      dict.set('Contents', PDFString.fromText(annotation.text));
       if (annotation.borderWidth > 0) {
         dict.set('BS', buildBorderStyle(annotation.borderWidth));
       }
@@ -272,7 +272,7 @@ export function createAnnotationDict(
         annotation.quadPoints.map((n) => new PDFNumber(n)),
       ));
       if (annotation.overlayText) {
-        dict.set('OverlayText', new PDFString(annotation.overlayText));
+        dict.set('OverlayText', PDFString.fromText(annotation.overlayText));
       }
       // Interior color (fill after redaction)
       dict.set('IC', new PDFArray([

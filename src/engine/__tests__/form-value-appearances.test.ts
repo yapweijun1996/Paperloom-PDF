@@ -213,6 +213,38 @@ describe('exported form value appearances', () => {
     expect(font.getName('Encoding')).toBe('WinAnsiEncoding');
   });
 
+  it('exposes inherited and indirect choice labels and clears stale selection indices on edit', async () => {
+    const doc = await parsePDF(fixture());
+    const initial = detectFormFieldsOnPage(doc, 0)[0];
+    const widgetDict = initial.dict;
+    widgetDict.delete('FT');
+    widgetDict.delete('T');
+    widgetDict.delete('V');
+    const fieldRef = new PDFRef(20, 0);
+    const optionsRef = new PDFRef(21, 0);
+    const labelRef = new PDFRef(22, 0);
+    const parent = new PDFDict([
+      ['FT', new PDFName('Ch')], ['T', new PDFString('Choice')],
+      ['Opt', optionsRef], ['V', new PDFString('a')], ['I', new PDFArray([new PDFNumber(0)])],
+      ['Kids', new PDFArray([initial.ref])],
+    ]);
+    widgetDict.set('Parent', fieldRef);
+    doc.objects.set(fieldRef.toKey(), parent);
+    doc.objects.set(labelRef.toKey(), new PDFString('Second label'));
+    doc.objects.set(optionsRef.toKey(), new PDFArray([
+      new PDFString('a'), new PDFArray([new PDFString('b'), labelRef]),
+    ]));
+    (resolveRef(doc.catalog.get('AcroForm')!, doc.objects) as PDFDict).set('Fields', new PDFArray([fieldRef]));
+    const widget = detectFormFieldsOnPage(doc, 0)[0];
+    expect(widget.choiceOptions).toEqual([{ value: 'a', label: 'a' }, { value: 'b', label: 'Second label' }]);
+    setChoiceFieldValue(doc, widget, 'b');
+    const reopened = await parsePDF(await serializeDocument(doc));
+    const result = detectFormFieldsOnPage(reopened, 0)[0];
+    expect(result.choiceOptions).toEqual(widget.choiceOptions);
+    expect(result.value).toBe('b');
+    expect((resolveRef(result.dict.get('Parent')!, reopened.objects) as PDFDict).has('I')).toBe(false);
+  });
+
   it('displays a choice option label while retaining its export value', async () => {
     const doc = await parsePDF(fixture('/Opt [[(a) (Before)] [(b) (New label)]]'));
     const widget = detectFormFieldsOnPage(doc, 0)[0];

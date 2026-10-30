@@ -41,6 +41,7 @@ import {
   shouldEncryptString,
 } from '../encryption/object-cipher';
 import { getNextObjNum } from '../../writer/serializer';
+import { runDocumentTransaction } from '../../session/document-transaction';
 import { randomBytes } from '../crypto/bytes';
 import { buildRecipientCms, unwrapFileKeyFromCms } from './cms-enveloped';
 import { RecipientManager, recipientInfoFromCms } from './recipient-manager';
@@ -86,6 +87,15 @@ export class PublicKeyEncryptionEngine implements IPublicKeyEncryptionEngine {
     doc: PDFDocumentData,
     recipients: RecipientCert[],
     options: PublicKeyEncryptOptions = {},
+  ): Promise<PDFDocumentData> {
+    await runDocumentTransaction(doc, staged => this.encryptForRecipientsInPlace(staged, recipients, options));
+    return doc;
+  }
+
+  private async encryptForRecipientsInPlace(
+    doc: PDFDocumentData,
+    recipients: RecipientCert[],
+    options: PublicKeyEncryptOptions,
   ): Promise<PDFDocumentData> {
     if (recipients.length === 0) {
       throw new Error('At least one recipient certificate is required');
@@ -180,7 +190,7 @@ export class PublicKeyEncryptionEngine implements IPublicKeyEncryptionEngine {
       encryptObj instanceof PDFRef ? doc.objects.get(encryptObj.toKey()) : encryptObj;
     if (!(dict instanceof PDFDict)) throw new Error('Invalid Encrypt dictionary');
 
-    const enc = parseEncryptDict(dict);
+    const enc = parseEncryptDict(dict, undefined, encryptObj instanceof PDFRef ? encryptObj : undefined);
     const rec = dict.getArray('Recipients');
     if (!rec || rec.length === 0) throw new Error('No recipients in Encrypt dictionary');
 

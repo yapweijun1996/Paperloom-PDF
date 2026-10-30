@@ -1,14 +1,19 @@
 'use client';
 
-import { useEffect, useLayoutEffect, useState, useRef, useCallback, useMemo } from 'react';
+import { useEffect, useLayoutEffect, useState, useRef, useCallback, useMemo, type SetStateAction } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   loadPdfFromStorage,
   clearPdfFromStorage,
   loadEditorSession,
   saveEditorSession,
-  clearEditorSession,
+  captureEditorSessionGeneration,
+  commitDownloadedPdf,
+  type EditorSessionRecord,
+  type EditorSessionOverlay,
+  type RecoveredFormDraft,
 } from '@/lib/pdfStorage';
+import { encryptRecoveryOverlay, decryptRecoveryOverlay } from '@/lib/recoveryEncryption';
 import { X, Loader2, ChevronLeft, Image, Type } from 'lucide-react';
 import { BRAND_NAME } from '@/lib/brand';
 
@@ -17,6 +22,7 @@ import { BRAND_NAME } from '@/lib/brand';
 import type { PDFDocumentData, RenderResult, TextRun, TextLine, ImageItem, PathItem, DisplayItem, TextWatermark, ImageWatermark, Watermark, DetectedWatermark, AcroFormWidget, BloomPage, DetectedTable, VisualSignature, SignatureField, ManagedIdentity, ValidationReport } from '@/engine/browser-core';
 
 import type { EditorTool, ToolDef, PathType, DrawnPath, FloatingText, FloatingImage, DrawMode } from './types';
+import type { WatermarkPosition } from '@/engine/watermark/watermark-engine';
 import { TOOLS } from './types';
 import {
   canvasToPdf, pdfToCanvas, hexToRGB,
@@ -32,8 +38,15 @@ import { signDocumentTransaction } from '@/engine/session/signature-transaction'
 import { findVisualSignatureRefs, placeVisualSignature, removeVisualSignature } from '@/engine/session/signature-edit';
 import { PDFDict, PDFString } from '@/engine/types';
 import { findMatchingFlowLine } from './flowLineMatch';
-import { commitThenCleanup } from './commit-after-success';
 import { EditorDocumentOwner } from './document-owner';
+import { parseRecoveryOverlay } from './recovery-overlay';
+import { FormDraftController, resolveRecoveredFormDraft } from './form-draft-controller';
+import { decodeMultiChoiceDraft, encodeMultiChoiceDraft } from './multi-choice-draft';
+import { useDrawingPointer } from './drawing-pointer';
+import { pageOverlayGroups, restoreOverlayPages, snapshotOverlayItems } from './overlay-pages';
+import { timestampFallbackMessage } from './timestamp-fallback';
+import { UnassignedOverlays, type OverlayKind } from './components/UnassignedOverlays';
+import { openDocumentLink } from './document-link';
 import {
   resolveTypingStyleFromCaret,
   runAtDistributedEditIndex,
@@ -51,6 +64,9 @@ import type { CompressedDownloadOptions } from './components/downloadQualityOpti
 import { ToolsSidebar } from './components/ToolsSidebar';
 import { PropertiesSidebar } from './components/PropertiesSidebar';
 import { EditableLineBox, type OverlaySegmentStyle } from './components/EditableLineBox';
+import { runOcrOperation, supportsOcrPageGeometry } from './ocr-operation';
+import { normalizePageContent } from './normalize-page-content';
+import { canvasToImageData } from '@/lib/ocr/adapter';
 import { LinkPopover, type LinkPopoverMode } from './components/LinkPopover';
 import { EmbeddedImageOverlay } from './components/EmbeddedImageOverlay';
 import { SignatureOverlay } from './components/signatures/SignatureOverlay';
@@ -58,11 +74,17 @@ import { SignatureCreateDialog, type SignatureCreateResult } from './components/
 import { CertificateImportDialog } from './components/signatures/CertificateImportDialog';
 import { WatermarkPreview } from './components/WatermarkPreview';
 import { ThumbnailsSidebar } from './components/ThumbnailsSidebar';
+import { generateThumbnails, ThumbnailCoordinator } from './thumbnail-generation';
+import { captureFormThumbnailSnapshot, changedFormThumbnailPages, type FormThumbnailSnapshot } from './form-thumbnail-pages';
+import { FieldRenameNotice } from './components/FieldRenameNotice';
 import { FindReplacePanel } from './components/FindReplacePanel';
 import { StatusBar } from './components/StatusBar';
 import { ExportPanel } from './components/ExportPanel';
 import { PasswordDialog } from './components/PasswordDialog';
+import { PdfConformanceNotice } from './components/PdfConformanceNotice';
+import { UnsavedChangesDialog } from './components/UnsavedChangesDialog';
 import { SecurityPanel } from './components/SecurityPanel';
+import { hasPendingFormFieldDraft, isButtonWidgetChecked } from './components/button-field-state';
 import { useTextStyleActions, type TextStyleUI } from './hooks/useTextStyleActions';
 import { useIsMobile } from './hooks/useIsMobile';
 import { usePanelLayout } from './hooks/usePanelLayout';
@@ -74,17 +96,10 @@ import { resizeBox } from './components/resizeGeometry';
 import { findImagePlacement, sameImagePlacement } from './components/imageSelection';
 import { resolveSelectedObject } from './components/selectedObject';
 import type { ImageBox } from './components/imageBoxEdit';
-
-export interface SearchMatch {
-  id: string;
-  pageIndex: number;
-  pdfX: number;
-  pdfY: number;
-  pdfWidth: number;
-  pdfHeight: number;
-  matchedText: string;
-  runText: string;
-}
+import { DocumentSearchIndex, SearchChangedError, SearchPageError, assertCurrentReplaceSupported, replaceSearchMatches, searchLatestDocument, type SearchMatch } from './search-index';
+import { searchHighlightBounds } from './search-highlight';
+import { redactionRegionFromDrag } from './redaction-selection';
+import { hasDocumentSignature } from '@/engine/writer/save-pipeline';
 
 async function restoreHistoryGraph(
   doc: PDFDocumentData,
@@ -111,18 +126,21 @@ export default function EditorPage() {
   // ── Core state ──
   const [doc, setDocumentState] = useState<PDFDocumentData | null>(null);
   const documentOwnerRef = useRef(new EditorDocumentOwner());
+  useEffect(() => () => { documentOwnerRef.current.replace(null); }, []);
   const setDoc = useCallback((next: PDFDocumentData | null) => {
     documentOwnerRef.current.replace(next);
     setDocumentState(next);
   }, []);
   const [fileName, setFileName] = useState('');
   const [currentPage, setCurrentPage] = useState(0);
+  const currentPageRef = useRef(0);
   const [totalPages, setTotalPages] = useState(0);
   const [scale, setScale] = useState(1.0);
   const [isLoading, setIsLoading] = useState(true);
   const [isRendering, setIsRendering] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [glyphWarning, setGlyphWarning] = useState<string | null>(null);
+  const [renamedFields, setRenamedFields] = useState<Array<{ from: string; to: string }>>([]);
   const [loadingFont, setLoadingFont] = useState(false);
   const showUnsupportedGlyphWarning = useCallback((cause: unknown): boolean => {
     if (!(cause instanceof UnsupportedGlyphsError)) return false;
@@ -133,9 +151,21 @@ export default function EditorPage() {
   const [passwordError, setPasswordError] = useState<string | null>(null);
   const [isVerifyingPassword, setIsVerifyingPassword] = useState(false);
   const pendingEncryptedDocRef = useRef<PDFDocumentData | null>(null);
+  const pendingRecoveryRef = useRef<EditorSessionRecord | null>(null);
+  const recoveryPasswordRef = useRef<string | null>(null);
   const [renderResult, setRenderResult] = useState<RenderResult | null>(null);
+  const [renderedPage, setRenderedPage] = useState<{
+    doc: PDFDocumentData; page: number; scale: number; dpr: number; revision: number; retry: number;
+  } | null>(null);
+  const [pageRenderError, setPageRenderError] = useState<string | null>(null);
+  const renderReadyRef = useRef(false);
   const [thumbnails, setThumbnails] = useState<string[]>([]);
-  const [thumbnailKey, setThumbnailKey] = useState(0);
+  const [thumbnailKey, setThumbnailKeyState] = useState(0);
+  const thumbnailCoordinator = useRef(new ThumbnailCoordinator<PDFDocumentData>());
+  const setThumbnailKey = useCallback((value: SetStateAction<number>) => {
+    thumbnailCoordinator.current.invalidate();
+    setThumbnailKeyState(value);
+  }, []);
   const [isGeneratingThumbnails, setIsGeneratingThumbnails] = useState(false);
 
   const [activeTool, setActiveTool] = useState<EditorTool>('text');
@@ -190,7 +220,42 @@ export default function EditorPage() {
   /** Manual size override in CSS px (null = auto-grow from content). */
   const [editManualSize, setEditManualSize] = useState<{ w: number | null; h: number | null }>({ w: null, h: null });
   const [isSaving, setIsSaving] = useState(false);
+  const [securityBusy, setSecurityBusy] = useState(false);
+  const [isDownloading, setIsDownloading] = useState(false);
+  const [isCheckingClose, setIsCheckingClose] = useState(false);
+  const [closeDialogOpen, setCloseDialogOpen] = useState(false);
+  const [closeBusy, setCloseBusy] = useState(false);
+  const [closeError, setCloseError] = useState<string | null>(null);
+  const closeOperationRef = useRef(false);
+  const downloadOperationRef = useRef(false);
+  const securityBusyRef = useRef(false);
   const [renderKey, setRenderKey] = useState(0);
+  const [renderRetry, setRenderRetry] = useState(0);
+  const [redactionSelecting, setRedactionSelecting] = useState(false);
+  const [redactionRegion, setRedactionRegion] = useState<{
+    pageKey: string; scale: number; revision: number;
+    pdf: { x: number; y: number; width: number; height: number };
+    screen: { x: number; y: number; width: number; height: number };
+  } | null>(null);
+  const redactionDragRef = useRef<{ pointerId: number; x: number; y: number; width: number; height: number;
+    doc: PDFDocumentData; pageKey: string; page: number; scale: number; revision: number } | null>(null);
+  const [redactionPreview, setRedactionPreview] = useState<{ x: number; y: number; width: number; height: number } | null>(null);
+  const renderReady = !!renderResult && !!renderedPage && renderedPage.doc === doc &&
+    renderedPage.page === currentPage && renderedPage.scale === scale &&
+    renderedPage.revision === renderKey && renderedPage.retry === renderRetry;
+  const redactionViewRef = useRef({ doc, page: currentPage, scale, revision: renderKey, tool: activeTool });
+  useLayoutEffect(() => { redactionViewRef.current = { doc, page: currentPage, scale, revision: renderKey, tool: activeTool }; },
+    [doc, currentPage, scale, renderKey, activeTool]);
+  useLayoutEffect(() => { renderReadyRef.current = renderReady; }, [renderReady]);
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => {
+      setRedactionSelecting(false);
+      setRedactionRegion(null);
+      setRedactionPreview(null);
+      redactionDragRef.current = null;
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [doc, currentPage, scale, renderKey]);
 
   // Bloom Engine — Word-like page model (source of truth for text editing)
   const [bloomPage, setBloomPage] = useState<BloomPage | null>(null);
@@ -203,6 +268,7 @@ export default function EditorPage() {
 
   // Drawing state
   const [isDrawing, setIsDrawing] = useState(false);
+  const isDrawingRef = useRef(false);
   const [drawnPaths, setDrawnPaths] = useState<DrawnPath[]>([]);
   const [drawMode, setDrawMode] = useState<DrawMode>('freehand');
   const currentDrawPath = useRef<{ x: number; y: number }[]>([]);
@@ -236,6 +302,28 @@ export default function EditorPage() {
 
   const [floatingImages, setFloatingImages] = useState<FloatingImage[]>([]);
   const [activeFloatingImageId, setActiveFloatingImageId] = useState<string | null>(null);
+  const activePageKey = doc?.pages[currentPage]?.ref.toKey();
+  if (activeFloatingTextId && !floatingTexts.some(item => item.id === activeFloatingTextId && item.pageKey === activePageKey)) {
+    setActiveFloatingTextId(null);
+  }
+  if (activeFloatingImageId && !floatingImages.some(item => item.id === activeFloatingImageId && item.pageKey === activePageKey)) {
+    setActiveFloatingImageId(null);
+  }
+  const formDraftControllerRef = useRef(new FormDraftController());
+  const formComposingRef = useRef(false);
+  // Central page transition; page-owned overlays remain in their original page.
+  const changePage = useCallback((next: number | ((previous: number) => number)) => {
+    const page = typeof next === 'function' ? next(currentPageRef.current) : next;
+    if (page === currentPageRef.current) return;
+    if (formDraftControllerRef.current.get()) {
+      setError('Finish the form field edit before changing pages.');
+      return;
+    }
+    currentPageRef.current = page;
+    setActiveFloatingTextId(null);
+    setActiveFloatingImageId(null);
+    setCurrentPage(page);
+  }, []);
   const replacingImageIdRef = useRef<string | null>(null);
   /** When set, next file pick replaces this embedded PDF image in-place. */
   const replacingEmbeddedImageRef = useRef<ImageItem | null>(null);
@@ -270,7 +358,7 @@ export default function EditorPage() {
   const [watermarkOpacity, setWatermarkOpacity] = useState(50);
   const [watermarkRotation, setWatermarkRotation] = useState(45);
   const [watermarkSize, setWatermarkSize] = useState(50);
-  const [watermarkPosition, setWatermarkPosition] = useState('center');
+  const [watermarkPosition, setWatermarkPosition] = useState<WatermarkPosition>('center');
   const [watermarkMosaic, setWatermarkMosaic] = useState(false);
   const [watermarkLivePreview, setWatermarkLivePreview] = useState(true);
   const [showApplySuccessModal, setShowApplySuccessModal] = useState(false);
@@ -339,7 +427,15 @@ export default function EditorPage() {
   const [textAlign, setTextAlign] = useState<'left' | 'center' | 'right'>('left');
   const [textOpacity, setTextOpacity] = useState(100);
   const [saveMode, setSaveMode] = useState<'quick' | 'optimized'>('optimized');
-  const [isDirty, setIsDirty] = useState(false);
+  const [isDirty, setIsDirtyState] = useState(false);
+  const [editRevision, setEditRevision] = useState(0);
+  const isDirtyRef = useRef(false);
+  const editRevisionRef = useRef(0);
+  const setIsDirty = useCallback((value: boolean) => {
+    isDirtyRef.current = value;
+    if (value) { editRevisionRef.current++; setEditRevision(editRevisionRef.current); }
+    setIsDirtyState(value);
+  }, []);
   // Saving clears unsaved state, not the fact that the upload has been edited.
   const hasEditedRef = useRef(true);
   const uploadBytesRef = useRef<Uint8Array | null>(null);
@@ -376,6 +472,8 @@ export default function EditorPage() {
     setActiveMatchIndex(index);
   }, []);
   const [searchBusy, setSearchBusy] = useState(false);
+  const searchBusyRef = useRef(false);
+  const lastSearchRef = useRef<{ doc: PDFDocumentData | null; query: string; caseSensitive: boolean } | null>(null);
   const [showExportPanel, setShowExportPanel] = useState(false);
 
   // Editable signature overlays backed by transactional native appearances.
@@ -481,13 +579,118 @@ export default function EditorPage() {
       historyRef.current.replace(entry, true, sessionEditor);
       if (resize) imageResizeHistoryRef.current.set(entry, resize);
     } else historyRef.current.push(entry, sessionEditor);
+    setIsDirty(true);
     syncTxState();
-  }, [doc, currentPage, syncTxState]);
+  }, [doc, currentPage, setIsDirty, syncTxState]);
+
+  const assignRecoveredOverlay = useCallback((kind: OverlayKind, id: string, pageKey: string) => {
+    if (!pageKey || !doc?.pages.some(page => page.ref.toKey() === pageKey)) return;
+    if (kind === 'drawnPaths') {
+      const next = drawnPathsRef.current.map(item => item.id === id && !item.pageKey ? { ...item, pageKey } : item);
+      drawnPathsRef.current = next;
+      setDrawnPaths(next);
+      pushEditorHistory('assign-recovered-overlay', { drawnPaths: next });
+    } else if (kind === 'floatingTexts') {
+      const next = floatingTextsRef.current.map(item => item.id === id && !item.pageKey ? { ...item, pageKey } : item);
+      floatingTextsRef.current = next;
+      setFloatingTexts(next);
+      pushEditorHistory('assign-recovered-overlay', { floatingTexts: next });
+    } else {
+      const next = floatingImagesRef.current.map(item => item.id === id && !item.pageKey ? { ...item, pageKey } : item);
+      floatingImagesRef.current = next;
+      setFloatingImages(next);
+      pushEditorHistory('assign-recovered-overlay', { floatingImages: next });
+    }
+    setIsDirty(true);
+  }, [doc, pushEditorHistory, setIsDirty]);
 
   // Keep rapid field input and signature gestures in chronological order.
   const queueNativeEdit = useCallback((source: PDFDocumentData, apply: (isCurrent: () => boolean) => Promise<void>): Promise<void> => {
     return documentOwnerRef.current.enqueue(source, () => annotationCommitPendingRef.current, apply);
   }, []);
+
+  const commitFormFieldDraft = useCallback(async (): Promise<boolean> => {
+    if (formComposingRef.current) { setError('Finish composing the form field before continuing.'); return false; }
+    if (!doc || !engineRef.current) return !formDraftControllerRef.current.get();
+    const engine = engineRef.current;
+    try {
+      await formDraftControllerRef.current.commit(async draft => {
+        await queueNativeEdit(doc, async isCurrent => {
+          const pageIndex = doc.pages.findIndex(page => page.ref.toKey() === draft.pageKey);
+          if (pageIndex < 0) throw new Error('The form field page is no longer available. Your draft is preserved.');
+          const current = engine.detectFormFieldsOnPage(doc, pageIndex).find(field => field.ref.toKey() === draft.fieldKey);
+          if (!current) throw new Error('The form field is no longer available. Your draft is preserved.');
+          if (!hasPendingFormFieldDraft(current, draft.value)) return;
+          let beforeThumbnails: FormThumbnailSnapshot | null = null;
+          try { beforeThumbnails = captureFormThumbnailSnapshot(doc); } catch { /* Rebuild all thumbnails if the snapshot is unsafe. */ }
+          const editor = new SessionDocumentEditor();
+          await editor.edit(doc, 'form-value', async staged => {
+            const widget = engine.detectFormFieldsOnPage(staged, pageIndex).find(field => field.ref.toKey() === draft.fieldKey);
+            if (!widget) throw new Error('Form field is unavailable');
+            if (widget.fieldType === 'Btn') engine.setButtonFieldValue(staged, widget, draft.value === 'true' || draft.value === 'Yes' || draft.value === 'On');
+            else if (widget.fieldType === 'Ch') engine.setChoiceFieldValue(staged, widget, widget.choiceFlags & (1 << 21) ? decodeMultiChoiceDraft(draft.value) : draft.value);
+            else engine.setFormFieldValue(staged, widget, draft.value);
+          }, { isCurrent });
+          pushEditorHistory('form-value', undefined, pageIndex, false, editor);
+          const fields = engine.detectFormFieldsOnPage(doc, pageIndex);
+          if (currentPageRef.current === pageIndex) {
+            setFormFields(fields);
+            setSelectedFormField(selected => selected?.ref.toKey() === draft.fieldKey
+              ? fields.find(field => field.ref.toKey() === draft.fieldKey) ?? selected : selected);
+          }
+          setIsDirty(true);
+          setRenderKey(k => k + 1);
+          let changedPages: number[] | null = null;
+          try { if (beforeThumbnails) changedPages = changedFormThumbnailPages(beforeThumbnails, captureFormThumbnailSnapshot(doc)); } catch { /* Fall back to a full rebuild. */ }
+          if (changedPages === null) setThumbnailKey(k => k + 1);
+          else if (changedPages.length) {
+            try {
+              const pageKeys = doc.pages.map(page => page.ref.toKey());
+              const result = await thumbnailCoordinator.current.refresh(doc, pageKeys, changedPages, async index => {
+                const res = await engine.renderPage(doc, index, { scale: 0.15, renderText: true, renderPaths: true, renderImages: true, renderWidgets: true });
+                return res.canvas.toDataURL('image/jpeg', 0.6);
+              }, isCurrent, () => doc.pages.map(page => page.ref.toKey()));
+              if (result.status === 'updated') setThumbnails(result.thumbnails);
+              else if (result.status === 'rebuild' && isCurrent()) setThumbnailKey(k => k + 1);
+            } catch (error) {
+              console.warn('[Editor] Form thumbnail refresh failed:', error);
+              if (isCurrent()) setThumbnailKey(k => k + 1);
+            }
+          }
+        });
+      });
+      return true;
+    } catch (error) {
+      setError(error instanceof Error ? error.message : 'Form value edit failed');
+      return false;
+    }
+  }, [doc, queueNativeEdit, pushEditorHistory, setIsDirty, setThumbnailKey]);
+
+  const handleFormFieldDraftChange = useCallback((value: string) => {
+    if (!doc || !selectedFormField || !doc.pages[currentPage]) return;
+    formDraftControllerRef.current.set({ pageKey: doc.pages[currentPage].ref.toKey(), fieldKey: selectedFormField.ref.toKey(), value });
+    setFormFieldDraft(value);
+    setIsDirty(true);
+  }, [doc, selectedFormField, currentPage, setIsDirty]);
+
+  const handleFormFieldChange = useCallback((value: string) => {
+    handleFormFieldDraftChange(value);
+    void commitFormFieldDraft();
+  }, [handleFormFieldDraftChange, commitFormFieldDraft]);
+
+  const handleFormFieldSelect = useCallback(async (field: AcroFormWidget) => {
+    if (!await commitFormFieldDraft()) return;
+    if (!doc || !engineRef.current) return;
+    const latest = engineRef.current.detectFormFieldsOnPage(doc, currentPageRef.current)
+      .find(candidate => candidate.ref.toKey() === field.ref.toKey());
+    if (!latest) { setError('The form field is no longer available.'); return; }
+    setSelectedFormField(latest);
+    setFormFieldDraft(latest.fieldType === 'Btn' ? (isButtonWidgetChecked(latest) ? 'Yes' : 'Off')
+      : latest.fieldType === 'Ch' && (latest.choiceFlags & (1 << 21))
+        ? encodeMultiChoiceDraft(Array.isArray(latest.value) ? latest.value : typeof latest.value === 'string' ? [latest.value] : [])
+        : typeof latest.value === 'string' ? latest.value : '');
+    setActiveTool('select');
+  }, [doc, commitFormFieldDraft]);
 
   const commitSignatureChange = useCallback(async (
     update: (current: VisualSignature[]) => VisualSignature[],
@@ -505,9 +708,9 @@ export default function EditorPage() {
           }
           for (const signature of next) {
             if (previous.includes(signature)) continue;
-            const entry = getSignatureLibrary().get(signature.appearanceId);
-            if (!entry) throw new Error('Signature appearance is unavailable');
-            await placeVisualSignature(staged, signature, entry.imageDataUrl);
+            const image = signature.appearanceImageDataUrl ?? getSignatureLibrary().get(signature.appearanceId)?.imageDataUrl;
+            if (!image) throw new Error('Signature appearance is unavailable');
+            await placeVisualSignature(staged, signature, image);
           }
         }, { isCurrent });
         signaturesRef.current = next;
@@ -522,7 +725,7 @@ export default function EditorPage() {
       setError(error instanceof Error ? error.message : 'Signature edit failed');
       return false;
     }
-  }, [doc, pushEditorHistory, queueNativeEdit]);
+  }, [doc, pushEditorHistory, queueNativeEdit, setThumbnailKey]);
 
   const pushSignatureSnapshot = useCallback((next: VisualSignature[], label: string, editor?: SessionDocumentEditor) => {
     setSignatures(next);
@@ -539,9 +742,12 @@ export default function EditorPage() {
     if (!doc || !engineRef.current) return;
     const engine = engineRef.current;
     if (!restoredDocument) await restoreHistoryGraph(doc, entry, engine);
-    const paths = parseOverlaySnapshot<DrawnPath[]>(entry.overlays.drawnPathsJson);
-    const texts = parseOverlaySnapshot<FloatingText[]>(entry.overlays.floatingTextsJson);
-    const images = parseOverlaySnapshot<FloatingImage[]>(entry.overlays.floatingImagesJson);
+    const restoredOverlays = restoreOverlayPages({
+      drawnPaths: parseOverlaySnapshot<DrawnPath[]>(entry.overlays.drawnPathsJson),
+      floatingTexts: parseOverlaySnapshot<FloatingText[]>(entry.overlays.floatingTextsJson),
+      floatingImages: parseOverlaySnapshot<FloatingImage[]>(entry.overlays.floatingImagesJson),
+    }, doc.pages.length === 1 ? doc.pages[0].ref.toKey() : null);
+    const { drawnPaths: paths, floatingTexts: texts, floatingImages: images } = restoredOverlays;
     setDrawnPaths(paths);
     drawnPathsRef.current = paths;
     setFloatingTexts(texts);
@@ -559,7 +765,7 @@ export default function EditorPage() {
       const page = pageKey ? doc.pages.find(candidate => candidate.ref.toKey() === pageKey) : doc.pages[entry.pageIndex];
       if (page) {
         const content = engine.getPageContentBytes(page, doc.objects);
-        const { displayList } = engine.interpretPage(content, page, doc.objects);
+        const { displayList } = engine.interpretPage(content, page, doc.objects, new engine.OptionalContentVisibility(doc.catalog, doc.objects));
         const items = displayList.filter(item => isSelectableDisplayItem(item, page.mediaBox)) as (ImageItem | PathItem)[];
         setDisplayItems(items);
         spatialIndexRef.current = buildDisplayListIndex(items, page.mediaBox);
@@ -575,11 +781,11 @@ export default function EditorPage() {
     setIsDirty(true);
     const stablePageIndex = pageKey ? doc.pages.findIndex((page) => page.ref.toKey() === pageKey) : entry.pageIndex;
     const nextPage = stablePageIndex >= 0 ? stablePageIndex : Math.min(entry.pageIndex, doc.pages.length - 1);
-    if (nextPage !== currentPage) setCurrentPage(nextPage);
+    if (nextPage !== currentPage) changePage(nextPage);
     syncTxState();
     setRenderKey((k) => k + 1);
     setThumbnailKey((k) => k + 1);
-  }, [doc, currentPage, syncTxState]);
+  }, [doc, currentPage, syncTxState, setThumbnailKey]);
 
   const bumpRender = useCallback(() => {
     setIsDirty(true);
@@ -773,51 +979,84 @@ export default function EditorPage() {
 
   // Warn before leaving with unsaved edits
   useEffect(() => {
-    if (!isDirty) return;
     const handler = (e: BeforeUnloadEvent) => {
+      if (!isDirtyRef.current && !editingLineRef.current && !floatingTextEditStartRef.current &&
+          !isDrawing && currentDrawPath.current.length === 0 && !linkPopoverMode &&
+          !hasPendingFormFieldDraft(selectedFormField, formFieldDraft) && !isSaving &&
+          !securityBusyRef.current && !cryptoSignBusy && !searchBusy && !annotationCommitPendingRef.current &&
+          documentOwnerRef.current.getPendingCount() === 0) return;
       e.preventDefault();
       e.returnValue = '';
     };
     window.addEventListener('beforeunload', handler);
     return () => window.removeEventListener('beforeunload', handler);
-  }, [isDirty]);
+  }, [cryptoSignBusy, formFieldDraft, isDrawing, isSaving, linkPopoverMode, searchBusy, selectedFormField]);
 
   // Debounced IndexedDB session autosave (PDF bytes + overlay JSON)
   useEffect(() => {
-    if (!isDirty || !doc || !engineRef.current || isLoading) return;
+    if (!isDirty || !doc || !engineRef.current || isLoading || isSaving || securityBusy || searchBusy || cryptoSignBusy) return;
     const engine = engineRef.current;
     const lease = documentOwnerRef.current.lease(doc);
+    const generation = captureEditorSessionGeneration();
+    const editRevision = editRevisionRef.current;
     let cancelled = false;
-    const isCurrent = () => !cancelled && lease.isCurrent();
+    const isCurrent = () => !cancelled && !securityBusyRef.current &&
+      editRevisionRef.current === editRevision && lease.isCurrent();
     const timer = setTimeout(() => {
       void (async () => {
         try {
-          const bytes = await engine.saveDocument(doc, 'quick');
+          await annotationCommitPendingRef.current;
+          await documentOwnerRef.current.whenIdle();
+          if (!isCurrent()) return;
+          let bytes: Uint8Array;
+          let signedSnapshot: string | undefined;
+          try {
+            bytes = await engine.saveDocument(doc, 'quick');
+          } catch (error) {
+            if (!(error instanceof Error) || error.name !== 'SignedDocumentEditError') throw error;
+            // This snapshot is recovery data, never an exported signed PDF.
+            signedSnapshot = await engine.createSignedRecoverySnapshot(doc);
+            bytes = doc.rawBytes.slice();
+          }
           if (!isCurrent()) return;
           const copy = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+          const overlays: EditorSessionOverlay = {
+            drawnPathsJson: JSON.stringify(drawnPathsRef.current),
+            floatingTextsJson: JSON.stringify(floatingTextsRef.current),
+            floatingImagesJson: JSON.stringify(floatingImagesRef.current),
+            signaturesJson: JSON.stringify(signaturesRef.current),
+            currentPage,
+            signedSnapshot,
+            formDraft: formDraftControllerRef.current.get() ?? undefined,
+          };
+          const protectedDocument = engine.securityEngine.isEncrypted(doc) || !!doc.decryptedFromEncrypted;
+          let protectedOverlays: EditorSessionRecord['protectedOverlays'];
+          if (protectedDocument) {
+            const password = recoveryPasswordRef.current;
+            if (!password) throw new Error('Protected recovery requires a non-empty password. Earlier local recovery may be unprotected; download your changes before leaving.');
+            const savedDocument = await engine.parsePDF(new Uint8Array(copy));
+            if (!engine.securityEngine.isEncrypted(savedDocument)) throw new Error('Protected recovery could not be encrypted. Download your changes before leaving.');
+            protectedOverlays = await encryptRecoveryOverlay(overlays, password, copy);
+          }
+          if (!isCurrent()) return;
           await saveEditorSession({
             bytes: copy,
             fileName,
             updatedAt: Date.now(),
-            overlays: {
-              drawnPathsJson: JSON.stringify(drawnPathsRef.current),
-              floatingTextsJson: JSON.stringify(floatingTextsRef.current),
-              floatingImagesJson: JSON.stringify(floatingImagesRef.current),
-              signaturesJson: JSON.stringify(signaturesRef.current),
-              currentPage,
-            },
-          }, isCurrent);
+            overlays: protectedDocument
+              ? { drawnPathsJson: '[]', floatingTextsJson: '[]', floatingImagesJson: '[]', signaturesJson: '[]', currentPage: 0 }
+              : overlays,
+            protectedOverlays,
+          }, isCurrent, generation);
         } catch (e) {
           if (!isCurrent()) return;
           console.warn('[Editor] Session autosave failed:', e);
-          if (e instanceof Error && e.name === 'SignedDocumentEditError') {
-            setError(`Session autosave failed: ${e.message}`);
-          }
+          setError(`Session autosave failed: ${e instanceof Error ? e.message : String(e)}`);
         }
       })();
     }, 2500);
     return () => { cancelled = true; clearTimeout(timer); };
-  }, [isDirty, doc, fileName, currentPage, isLoading, drawnPaths, floatingTexts, floatingImages, signatures, renderKey]);
+  }, [isDirty, doc, fileName, currentPage, isLoading, isSaving, securityBusy, searchBusy, cryptoSignBusy, drawnPaths, floatingTexts, floatingImages, signatures, renderKey, formFieldDraft]);
 
   // Caret blinking
   const caretVisibleRef = useRef(true);
@@ -840,22 +1079,49 @@ export default function EditorPage() {
         };
         dirty?: boolean;
         originalUpload?: boolean;
+        formDraft?: RecoveredFormDraft;
       },
     ) {
-      const pageIndex = Math.max(0, Math.min(opts?.pageIndex ?? 0, parsed.pages.length - 1));
-      const overlays = opts?.overlays ?? {
+      const recoveredForm = opts?.formDraft
+        ? resolveRecoveredFormDraft(opts.formDraft, parsed.pages, index => engine.detectFormFieldsOnPage(parsed, index))
+        : null;
+      const pageIndex = recoveredForm?.pageIndex ?? Math.max(0, Math.min(opts?.pageIndex ?? 0, parsed.pages.length - 1));
+      const savedOverlays = opts?.overlays ?? {
         drawnPaths: [],
         floatingTexts: [],
         floatingImages: [],
         signatures: [],
       };
+      const page = parsed.pages[pageIndex];
+      const overlays = { ...savedOverlays, ...restoreOverlayPages(savedOverlays, parsed.pages.length === 1 ? page.ref.toKey() : null) };
+      const initial = await normalizePageContent(parsed, page, engine);
+      const initialBytes = initial.bytes;
+      if (initial.warning) setError(initial.warning);
+      const initialHistory = captureHistoryEntry(
+        parsed,
+        pageIndex,
+        initialBytes,
+        overlays,
+        'initial',
+      );
+      if (cancelled) return;
+      // Publish only after the recovered graph has initialized successfully.
       // Recovered sessions and decrypted documents are not pristine uploads.
       uploadBytesRef.current = opts?.originalUpload === true && !opts.dirty
         ? parsed.rawBytes : null;
       hasEditedRef.current = uploadBytesRef.current === null;
+      sessionEditorRef.current = new SessionDocumentEditor();
+      historyRef.current.seed(initialHistory);
       setDoc(parsed);
       setTotalPages(parsed.pages.length);
-      setCurrentPage(pageIndex);
+      changePage(pageIndex);
+      if (recoveredForm && opts?.formDraft) {
+        formDraftControllerRef.current.set(opts.formDraft);
+        setFormFields(engine.detectFormFieldsOnPage(parsed, recoveredForm.pageIndex));
+        setSelectedFormField(recoveredForm.field);
+        setFormFieldDraft(opts.formDraft.value);
+        setActiveTool('select');
+      }
       setDrawnPaths(overlays.drawnPaths);
       drawnPathsRef.current = overlays.drawnPaths;
       setFloatingTexts(overlays.floatingTexts);
@@ -864,25 +1130,12 @@ export default function EditorPage() {
       floatingImagesRef.current = overlays.floatingImages;
       setSignatures(overlays.signatures);
       signaturesRef.current = overlays.signatures;
-      const page = parsed.pages[pageIndex];
-      const rawInitialBytes = engine.getPageContentBytes(page, parsed.objects);
-      const initialBytes = engine.explodeTJGaps(rawInitialBytes, page, parsed.objects);
-      if (initialBytes !== rawInitialBytes) {
-        await engine.updatePageContent(page.contentRefs, initialBytes, parsed.objects);
-      }
-      sessionEditorRef.current = new SessionDocumentEditor();
-      historyRef.current.seed(captureHistoryEntry(
-        parsed,
-        pageIndex,
-        initialBytes,
-        overlays,
-        'initial',
-      ));
       syncTxState();
       setIsDirty(!!opts?.dirty);
       setNeedsPassword(false);
       setPasswordError(null);
       pendingEncryptedDocRef.current = null;
+      pendingRecoveryRef.current = null;
       setIsLoading(false);
     }
 
@@ -899,25 +1152,75 @@ export default function EditorPage() {
         // Prefer dirty session recovery when available
         const session = await loadEditorSession();
         if (session && session.bytes?.byteLength) {
+          pendingRecoveryRef.current = session;
           try {
             setFileName(session.fileName || stored.fileName);
             const parsed = await engine.parsePDF(new Uint8Array(session.bytes));
             if (cancelled) return;
             if (!engine.securityEngine.isEncrypted(parsed)) {
-              await finishLoad(parsed, engine, {
-                pageIndex: session.overlays?.currentPage ?? 0,
+              if (session.protectedOverlays) throw new Error('Protected recovery is missing its encrypted PDF.');
+              const original = await engine.parsePDF(new Uint8Array(stored.bytes));
+              if (engine.securityEngine.isEncrypted(original)) {
+                throw new Error('Unprotected recovery cannot be opened as a protected PDF.');
+              }
+              if (cancelled) return;
+              const saved = parseRecoveryOverlay(session.overlays);
+              const restored = saved.signedSnapshot
+                ? await engine.restoreSignedRecoverySnapshot(parsed, saved.signedSnapshot)
+                : parsed;
+              if (cancelled) return;
+              if (saved.currentPage >= restored.pages.length) throw new Error('Recovery page is out of range.');
+              await finishLoad(restored, engine, {
+                pageIndex: saved.currentPage,
+                formDraft: saved.formDraft,
                 overlays: {
-                  drawnPaths: parseOverlaySnapshot(session.overlays?.drawnPathsJson || '[]'),
-                  floatingTexts: parseOverlaySnapshot(session.overlays?.floatingTextsJson || '[]'),
-                  floatingImages: parseOverlaySnapshot(session.overlays?.floatingImagesJson || '[]'),
-                  signatures: parseOverlaySnapshot(session.overlays?.signaturesJson || '[]'),
+                  drawnPaths: saved.drawnPaths as DrawnPath[],
+                  floatingTexts: saved.floatingTexts as FloatingText[],
+                  floatingImages: saved.floatingImages as FloatingImage[],
+                  signatures: saved.signatures as VisualSignature[],
                 },
                 dirty: true,
               });
               return;
             }
+            pendingEncryptedDocRef.current = parsed;
+            // Protected overlays must be unlocked before decrypting the PDF;
+            // a failed recovery password must leave both records intact.
+            if (!session.protectedOverlays) {
+              const saved = parseRecoveryOverlay(session.overlays);
+              if (saved.signedSnapshot) throw new Error('Protected signed recovery is not encrypted.');
+              if (saved.currentPage >= parsed.pages.length) throw new Error('Recovery page is out of range.');
+              let opened: Awaited<ReturnType<typeof engine.securityEngine.open>> | null = null;
+              try {
+                opened = await engine.securityEngine.open(parsed, '');
+              } catch {
+                // Prompt for the password; preserve the recovered session.
+              }
+              if (opened) {
+                if (cancelled) return;
+                recoveryPasswordRef.current = '';
+                await finishLoad(opened.doc, engine, {
+                  pageIndex: saved.currentPage,
+                  overlays: {
+                    drawnPaths: saved.drawnPaths as DrawnPath[],
+                    floatingTexts: saved.floatingTexts as FloatingText[],
+                    floatingImages: saved.floatingImages as FloatingImage[],
+                    signatures: saved.signatures as VisualSignature[],
+                  },
+                  dirty: true,
+                });
+                setError('This older recovery contains unprotected local data. Download your changes, then discard the local copy. Automatic protected recovery requires a non-empty password.');
+                return;
+              }
+            }
+            setNeedsPassword(true);
+            setIsLoading(false);
+            return;
           } catch (sessErr) {
-            console.warn('[Editor] Session restore failed, falling back to upload:', sessErr);
+            console.warn('[Editor] Session restore failed:', sessErr);
+            setError('Recovery could not be opened. The saved recovery data has been preserved.');
+            setIsLoading(false);
+            return;
           }
         }
 
@@ -931,6 +1234,7 @@ export default function EditorPage() {
           try {
             const opened = await engine.securityEngine.open(parsed, '');
             if (cancelled) return;
+            recoveryPasswordRef.current = '';
             await finishLoad(opened.doc, engine);
             return;
           } catch {
@@ -961,30 +1265,72 @@ export default function EditorPage() {
 
     setIsVerifyingPassword(true);
     setPasswordError(null);
+    const session = pendingRecoveryRef.current;
     try {
-      const opened = await engine.securityEngine.open(pending, password);
-      setDoc(opened.doc);
-      setTotalPages(opened.doc.pages.length);
-      setCurrentPage(0);
-      const page0 = opened.doc.pages[0];
-      const rawInitialBytes = engine.getPageContentBytes(page0, opened.doc.objects);
-      const initialBytes = engine.explodeTJGaps(rawInitialBytes, page0, opened.doc.objects);
-      if (initialBytes !== rawInitialBytes) {
-        await engine.updatePageContent(page0.contentRefs, initialBytes, opened.doc.objects);
+      const savedOverlays = session?.protectedOverlays
+        ? await decryptRecoveryOverlay(session.protectedOverlays, password, session.bytes)
+        : session?.overlays;
+      const saved = savedOverlays ? parseRecoveryOverlay(savedOverlays) : null;
+      if (saved?.signedSnapshot && !session?.protectedOverlays) {
+        throw new Error('Protected signed recovery is not encrypted.');
       }
-      sessionEditorRef.current = new SessionDocumentEditor();
-      historyRef.current.seed(captureHistoryEntry(
-        opened.doc,
-        0,
+      const requestedPageIndex = saved?.currentPage ?? 0;
+      const opened = await engine.securityEngine.open(pending, password);
+      const restored = saved?.signedSnapshot
+        ? await engine.restoreSignedRecoverySnapshot(opened.doc, saved.signedSnapshot)
+        : opened.doc;
+      if (requestedPageIndex >= restored.pages.length) throw new Error('Recovery page is out of range.');
+      const recoveredForm = saved?.formDraft
+        ? resolveRecoveredFormDraft(saved.formDraft, restored.pages, index => engine.detectFormFieldsOnPage(restored, index))
+        : null;
+      const pageIndex = recoveredForm?.pageIndex ?? requestedPageIndex;
+      const savedPageOverlays = {
+        drawnPaths: (saved?.drawnPaths ?? []) as DrawnPath[],
+        floatingTexts: (saved?.floatingTexts ?? []) as FloatingText[],
+        floatingImages: (saved?.floatingImages ?? []) as FloatingImage[],
+        signatures: (saved?.signatures ?? []) as VisualSignature[],
+      };
+      const page = restored.pages[pageIndex];
+      const overlays = { ...savedPageOverlays, ...restoreOverlayPages(savedPageOverlays, restored.pages.length === 1 ? page.ref.toKey() : null) };
+      const initial = await normalizePageContent(restored, page, engine);
+      const initialBytes = initial.bytes;
+      if (initial.warning) setError(initial.warning);
+      const initialHistory = captureHistoryEntry(
+        restored,
+        pageIndex,
         initialBytes,
-        { drawnPaths: [], floatingTexts: [], floatingImages: [], signatures: [] },
+        overlays,
         'initial',
-      ));
+      );
+      recoveryPasswordRef.current = password;
+      sessionEditorRef.current = new SessionDocumentEditor();
+      historyRef.current.seed(initialHistory);
+      setDoc(restored);
+      setTotalPages(restored.pages.length);
+      changePage(pageIndex);
+      if (recoveredForm && saved?.formDraft) {
+        formDraftControllerRef.current.set(saved.formDraft);
+        setFormFields(engine.detectFormFieldsOnPage(restored, recoveredForm.pageIndex));
+        setSelectedFormField(recoveredForm.field);
+        setFormFieldDraft(saved.formDraft.value);
+        setActiveTool('select');
+      }
+      setDrawnPaths(overlays.drawnPaths);
+      setFloatingTexts(overlays.floatingTexts);
+      setFloatingImages(overlays.floatingImages);
+      setSignatures(overlays.signatures);
       syncTxState();
+      setIsDirty(!!session);
+      if (session && !session.protectedOverlays) {
+        setError('This older recovery contains unprotected local data. Keep the editor open until protected recovery is saved, or download your changes and discard the local copy.');
+      }
       setNeedsPassword(false);
       pendingEncryptedDocRef.current = null;
+      pendingRecoveryRef.current = null;
     } catch (e) {
-      setPasswordError(e instanceof Error ? e.message : 'Incorrect password');
+      setPasswordError(session?.protectedOverlays
+        ? 'Could not unlock recovery. Use the same password used when it was saved; your recovery is preserved.'
+        : e instanceof Error ? e.message : 'Incorrect password');
     } finally {
       setIsVerifyingPassword(false);
     }
@@ -994,21 +1340,18 @@ export default function EditorPage() {
   useEffect(() => {
     if (!doc || !engineRef.current) return;
     let cancelled = false;
+    const generation = thumbnailCoordinator.current.beginFull();
+    const pageKeys = doc.pages.map(page => page.ref.toKey());
 
-    async function generateThumbnails() {
+    async function refreshThumbnails() {
       setIsGeneratingThumbnails(true);
       const engine = engineRef.current!;
-      const thumbs: string[] = [];
-
       try {
-        for (let i = 0; i < doc!.pages.length; i++) {
-          if (cancelled) break;
-          // Render at 15% scale for a quick thumbnail
-          const res = await engine.renderPage(doc!, i, { scale: 0.15, renderText: true, renderPaths: true, renderImages: true });
-          if (cancelled) break;
-          thumbs.push(res.canvas.toDataURL('image/jpeg', 0.6));
-        }
-        if (!cancelled) setThumbnails(thumbs);
+        const thumbs = await generateThumbnails(doc!.pages.length, async i => {
+          const res = await engine.renderPage(doc!, i, { scale: 0.15, renderText: true, renderPaths: true, renderImages: true, renderWidgets: true });
+          return res.canvas.toDataURL('image/jpeg', 0.6);
+        }, () => cancelled);
+        if (thumbs && !cancelled && thumbnailCoordinator.current.finishFull(generation, doc!, pageKeys, thumbs, doc!.pages.map(page => page.ref.toKey()))) setThumbnails(thumbs);
       } catch (e) {
         console.error('[Editor] Thumbnail generation failed:', e);
       } finally {
@@ -1016,8 +1359,8 @@ export default function EditorPage() {
       }
     }
 
-    generateThumbnails();
-    return () => { cancelled = true; };
+    refreshThumbnails();
+    return () => { cancelled = true; thumbnailCoordinator.current.invalidate(); };
   }, [doc, thumbnailKey]);
 
   // Reset page-local selection before rendering a different document or page.
@@ -1064,20 +1407,19 @@ export default function EditorPage() {
 
     async function render() {
       setIsRendering(true);
+      setPageRenderError(null);
       try {
         const engine = engineRef.current!;
         const editablePage = doc!.pages[currentPage];
-        const rawBytes = engine.getPageContentBytes(editablePage, doc!.objects);
-        const normalizedBytes = engine.explodeTJGaps(rawBytes, editablePage, doc!.objects);
-        if (normalizedBytes !== rawBytes) {
-          await engine.updatePageContent(editablePage.contentRefs, normalizedBytes, doc!.objects);
-        }
+        const normalized = await normalizePageContent(doc!, editablePage, engine);
+        if (normalized.warning && !cancelled) setError(normalized.warning);
         const hidden = new Map(erasedAnnotationsRef.current);
         for (const ref of findVisualSignatureRefs(doc!, new Set(signaturesRef.current.map(sig => sig.id))).values()) {
           hidden.set(ref.toKey(), ref);
         }
         const renderDoc = previewMarkupRemoval(doc!, currentPage, hidden);
-        const result = await engine.renderPage(renderDoc, currentPage, { scale });
+        const dpr = window.devicePixelRatio || 1;
+        const result = await engine.renderPage(renderDoc, currentPage, { scale, devicePixelRatio: dpr });
         if (cancelled) return;
         setRenderResult(result);
 
@@ -1085,7 +1427,7 @@ export default function EditorPage() {
         try {
           const pageData = doc!.pages[currentPage];
           const cBytes = engine.getPageContentBytes(pageData, doc!.objects);
-          const interpreted = engine.interpretPage(cBytes, pageData, doc!.objects);
+          const interpreted = engine.interpretPage(cBytes, pageData, doc!.objects, new engine.OptionalContentVisibility(doc!.catalog, doc!.objects));
           const pageBounds = {
             x: pageData.mediaBox.x,
             y: pageData.mediaBox.y,
@@ -1222,11 +1564,29 @@ export default function EditorPage() {
             overlay.style.width = result.canvas.style.width;
             overlay.style.height = result.canvas.style.height;
           }
+          setRenderedPage({ doc: doc!, page: currentPage, scale, dpr, revision: renderKey, retry: renderRetry });
         }
       } catch (e) {
         if (cancelled) return;
         console.error('[Editor] Render failed:', e);
-        setError(`Render failed: ${e instanceof Error ? e.message : String(e)}`);
+        const message = `Render failed: ${e instanceof Error ? e.message : String(e)}`;
+        setError(message);
+        setPageRenderError(message);
+        setRenderedPage(null);
+        setRenderResult(null);
+        setDisplayItems([]);
+        setStrokePaths([]);
+        setFormFields([]);
+        setPdfSignatureFields([]);
+        setDetectedTables([]);
+        setPageLinks([]);
+        spatialIndexRef.current = null;
+        canvasContainerRef.current?.querySelectorAll('canvas.pdf-canvas').forEach(canvas => canvas.remove());
+        pdfCanvasRef.current = null;
+        if (overlayRef.current) {
+          overlayRef.current.width = 0;
+          overlayRef.current.height = 0;
+        }
       }
       setIsRendering(false);
     }
@@ -1234,7 +1594,7 @@ export default function EditorPage() {
     render();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [doc, currentPage, scale, renderKey]);
+  }, [doc, currentPage, scale, renderKey, renderRetry]);
 
   // ── Draw overlay (caret, freehand paths) — NO boxes or highlights ──
   const drawOverlay = useCallback(() => {
@@ -1500,6 +1860,10 @@ export default function EditorPage() {
       ctx.scale(dpr, dpr);
       ctx.lineJoin = 'round';
       for (const path of drawnPaths) {
+        if (path.pageKey !== page.ref.toKey()) continue;
+        ctx.save();
+        const pathScale = scale / (path.captureScale ?? scale);
+        ctx.scale(pathScale, pathScale);
         const kind = path.kind ?? 'freehand';
         if (kind !== 'freehand' && path.start && path.end) {
           ctx.globalCompositeOperation = 'source-over';
@@ -1539,10 +1903,11 @@ export default function EditorPage() {
             ctx.ellipse(cx, cy, Math.max(rx, 0.5), Math.max(ry, 0.5), 0, 0, Math.PI * 2);
             ctx.stroke();
           }
+          ctx.restore();
           continue;
         }
 
-        if (path.points.length < 2) continue;
+        if (path.points.length < 2) { ctx.restore(); continue; }
 
         ctx.beginPath();
         if (path.type === 'highlight') {
@@ -1563,6 +1928,7 @@ export default function EditorPage() {
           ctx.lineTo(path.points[i].x, path.points[i].y);
         }
         ctx.stroke();
+        ctx.restore();
       }
       ctx.restore();
     }
@@ -1686,10 +2052,10 @@ export default function EditorPage() {
     }
   }, [doc, currentPage, setEditingLine, setEditAnchorLine, setTypingStyle, renderResult, strokePaths, detectedTables]);
 
-  const prepareExportText = useCallback(async (text: string, fontNames?: string[], targetDoc = doc) => {
+  const prepareExportText = useCallback(async (text: string, fontNames?: string[], targetDoc = doc, pageIndex = currentPage) => {
     const engine = engineRef.current;
     if (!targetDoc || !engine) return;
-    const page = targetDoc.pages[currentPage];
+    const page = targetDoc.pages[pageIndex];
     const runs = (fontNames?.length ? fontNames.map(name => engine.loadFontForName(name, page, targetDoc.objects)) : [null])
       .map(fontData => ({ text, fontData }));
     // Coverage in another subset does not imply the contextual font has that CID.
@@ -1697,6 +2063,18 @@ export default function EditorPage() {
     try { await engine.prepareTextForExport(targetDoc.objects, runs); }
     finally { setLoadingFont(false); }
   }, [doc, currentPage]);
+
+  const prepareOverlayText = useCallback(async () => {
+    if (!doc) return;
+    const groups = pageOverlayGroups({
+      drawnPaths: drawnPathsRef.current,
+      floatingTexts: floatingTextsRef.current,
+      floatingImages: floatingImagesRef.current,
+    }, doc.pages.map(page => page.ref.toKey()));
+    for (const [pageIndex, group] of groups) {
+      await prepareExportText(group.floatingTexts.map(text => text.text).join('\n'), undefined, doc, pageIndex);
+    }
+  }, [doc, prepareExportText]);
 
   // ── Text edit submit — surgical in-place line edit (preserve positions) ──
   const handleEditSubmit = useCallback(async (closeEdit: boolean = true): Promise<boolean> => {
@@ -1764,6 +2142,7 @@ export default function EditorPage() {
             renderResult?.documentFlow,
             {
               oldText: initialRunTextRef.current || targetLine.text,
+              optionalContent: new engine.OptionalContentVisibility(doc.catalog, doc.objects),
               caretAfter,
               skipResidualCorrection: pendingStyles.some(p => p.patch.fontSize != null),
               fontSizeOverrides: fontSizeOverrides.length > 0 ? fontSizeOverrides : undefined,
@@ -1818,7 +2197,7 @@ export default function EditorPage() {
           const refreshStyleLine = () => {
             try {
               const freshBytes = engine.getPageContentBytes(page, doc.objects);
-              const interpreted = engine.interpretPage(freshBytes, page, doc.objects);
+              const interpreted = engine.interpretPage(freshBytes, page, doc.objects, new engine.OptionalContentVisibility(doc.catalog, doc.objects));
               const flow = engine.buildDocumentFlow(interpreted.textRuns);
               styleLine =
                 flow.lines.find((l: TextLine) => l.text === commitText) ??
@@ -1915,7 +2294,7 @@ export default function EditorPage() {
           if (packDeltaSpaces <= 0) {
             try {
               const packBytes = engine.getPageContentBytes(page, doc.objects);
-              const interpreted = engine.interpretPage(packBytes, page, doc.objects);
+              const interpreted = engine.interpretPage(packBytes, page, doc.objects, new engine.OptionalContentVisibility(doc.catalog, doc.objects));
               const flow = engine.buildDocumentFlow(interpreted.textRuns);
               const normalizeDashes = (t: string) => t.replace(/[\u2013\u2014\u2212]/g, '-');
               const commitNorm = normalizeDashes(commitText);
@@ -1931,7 +2310,7 @@ export default function EditorPage() {
               if (packLine && !mergedWithNeighbour && packLine.segments.length > 1) {
                 const packed = engine.correctLineResidualGaps(
                   packBytes, page, doc.objects, packLine,
-                  { gapSourceLine: targetLine },
+                  { gapSourceLine: targetLine, optionalContent: new engine.OptionalContentVisibility(doc.catalog, doc.objects) },
                 );
                 if (packed.corrections.length > 0) {
                   await engine.updatePageContent(page.contentRefs, packed.bytes, doc.objects);
@@ -1973,7 +2352,7 @@ export default function EditorPage() {
     } finally {
       if (lease.isCurrent()) setIsSaving(false);
     }
-  }, [editingLine, editText, editOffsetCss, scale, doc, currentPage, setEditingLine, setEditAnchorLine, setTypingStyle, renderResult, pushEditorHistory, showUnsupportedGlyphWarning, prepareExportText]);
+  }, [editingLine, editText, editOffsetCss, scale, doc, currentPage, setEditingLine, setEditAnchorLine, setTypingStyle, renderResult, pushEditorHistory, showUnsupportedGlyphWarning, prepareExportText, setThumbnailKey]);
 
   // ── Edit cancel — discard overlay only; PDF untouched until commit ──
   const handleEditCancel = useCallback(async () => {
@@ -1998,6 +2377,7 @@ export default function EditorPage() {
   // ── Undo ──
   const handleUndo = useCallback(async () => {
     if (!doc || !engineRef.current || historyBusyRef.current) return;
+    if (!await commitFormFieldDraft() || historyBusyRef.current) return;
     historyBusyRef.current = true;
     try {
       await queueNativeEdit(doc, async isCurrent => {
@@ -2023,10 +2403,11 @@ export default function EditorPage() {
       historyBusyRef.current = false;
       syncTxState();
     }
-  }, [doc, currentPage, applyHistoryEntry, syncTxState, selectedDisplayItem, selectedSignatureId, queueNativeEdit]);
+  }, [doc, currentPage, applyHistoryEntry, syncTxState, selectedDisplayItem, selectedSignatureId, queueNativeEdit, commitFormFieldDraft]);
 
   const handleRedo = useCallback(async () => {
     if (!doc || !engineRef.current || historyBusyRef.current) return;
+    if (!await commitFormFieldDraft() || historyBusyRef.current) return;
     historyBusyRef.current = true;
     try {
       await queueNativeEdit(doc, async isCurrent => {
@@ -2053,13 +2434,7 @@ export default function EditorPage() {
       historyBusyRef.current = false;
       syncTxState();
     }
-  }, [doc, currentPage, applyHistoryEntry, syncTxState, selectedDisplayItem, selectedSignatureId, queueNativeEdit]);
-
-  const handleFormFieldSelect = useCallback((field: AcroFormWidget) => {
-    setSelectedFormField(field);
-    setFormFieldDraft(typeof field.value === 'string' ? field.value : '');
-    setActiveTool('select');
-  }, []);
+  }, [doc, currentPage, applyHistoryEntry, syncTxState, selectedDisplayItem, selectedSignatureId, queueNativeEdit, commitFormFieldDraft]);
 
   /** Place active library signature into a PDF /FT Sig field (writes /AP). */
   const placeLibrarySignatureIntoField = useCallback(async (field: SignatureField) => {
@@ -2081,6 +2456,7 @@ export default function EditorPage() {
         x: field.rect.x + field.rect.width / 2,
         y: field.rect.y + field.rect.height / 2,
         appearanceId: entry.id,
+        appearanceImageDataUrl: entry.imageDataUrl,
         appearanceType:
           entry.source === 'draw' ? 'drawn' : entry.source === 'typed' ? 'typed' : 'uploaded',
         width: field.rect.width,
@@ -2128,7 +2504,7 @@ export default function EditorPage() {
       console.error('[Editor] Place signature in field failed:', err);
       setError(`Place signature failed: ${err instanceof Error ? err.message : String(err)}`);
     }
-  }, [doc, activeLibraryId, currentPage, pushEditorHistory, queueNativeEdit]);
+  }, [doc, activeLibraryId, currentPage, pushEditorHistory, queueNativeEdit, setThumbnailKey]);
 
   const refreshCertificateIdentities = useCallback(() => {
     const mgr = getCertificateManager();
@@ -2208,7 +2584,8 @@ export default function EditorPage() {
         refreshMultiSigPanel();
         setRenderKey(k => k + 1);
         setThumbnailKey(k => k + 1);
-        if (signed.result.timestampError) console.warn('[Editor] Timestamp fallback:', signed.result.timestampError);
+        const timestampWarning = timestampFallbackMessage(signed.result.timestampError);
+        if (timestampWarning) setError(timestampWarning);
       });
     } catch (err) {
       console.error('[Editor] Cryptographic sign failed:', err);
@@ -2217,14 +2594,26 @@ export default function EditorPage() {
       cryptoSignBusyRef.current = false;
       setCryptoSignBusy(false);
     }
-  }, [doc, selectedPdfSigFieldId, selectedCertificateId, currentPage, enableTimestamp, pushSignatureSnapshot, activeLibraryId, queueNativeEdit, refreshMultiSigPanel]);
+  }, [doc, selectedPdfSigFieldId, selectedCertificateId, currentPage, enableTimestamp, pushSignatureSnapshot, activeLibraryId, queueNativeEdit, refreshMultiSigPanel, setThumbnailKey]);
+
+  useEffect(() => {
+    if (!originalIsCurrentRef.current) setValidationReport(null);
+  }, [doc, isDirty, renderKey, thumbnailKey, drawnPaths, floatingTexts, floatingImages, signatures]);
 
   const handleValidateSignatures = useCallback(async () => {
     if (!doc) return;
+    if (!originalIsCurrentRef.current) {
+      setValidationReport(null);
+      setError('Reopen the saved PDF before validating signatures; the current editor state may differ from the saved bytes.');
+      return;
+    }
+    const lease = documentOwnerRef.current.lease(doc);
     setValidationBusy(true);
     try {
-      const report = await validateDocumentSignatures(doc, { allowSelfSigned: true });
-      setValidationReport(report);
+      const report = await validateDocumentSignatures(doc);
+      if (originalIsCurrentRef.current && lease.isCurrent()) {
+        setValidationReport(report);
+      }
       refreshMultiSigPanel();
     } catch (err) {
       setError(`Validation failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -2244,225 +2633,201 @@ export default function EditorPage() {
     }
   }, [doc, refreshMultiSigPanel]);
 
-  const handleFormFieldChange = useCallback(async (value: string) => {
-    setFormFieldDraft(value);
-    if (!doc || !selectedFormField || !engineRef.current) return;
-    const engine = engineRef.current;
-    const key = selectedFormField.ref.toKey();
-    try {
-      await queueNativeEdit(doc, async isCurrent => {
-        const editor = new SessionDocumentEditor();
-        await editor.edit(doc, 'form-value', async staged => {
-          const widget = engine.detectFormFieldsOnPage(staged, currentPage).find(field => field.ref.toKey() === key);
-          if (!widget) throw new Error('Form field is unavailable');
-          if (widget.fieldType === 'Btn') {
-            engine.setButtonFieldValue(staged, widget, value === 'true' || value === 'Yes' || value === 'On');
-          } else if (widget.fieldType === 'Ch') {
-            engine.setChoiceFieldValue(staged, widget, value);
-          } else {
-            engine.setFormFieldValue(staged, widget, value);
-          }
-        }, { isCurrent });
-        pushEditorHistory('form-value', undefined, undefined, false, editor);
-        const fields = engine.detectFormFieldsOnPage(doc, currentPage);
-        setFormFields(fields);
-        setSelectedFormField(selected => selected?.ref.toKey() === key
-          ? fields.find(field => field.ref.toKey() === key) ?? null : selected);
-        setIsDirty(true);
-        setRenderKey(k => k + 1);
-        setThumbnailKey(k => k + 1);
-      });
-    } catch (error) {
-      setError(error instanceof Error ? error.message : 'Form value edit failed');
-    }
-  }, [doc, selectedFormField, currentPage, pushEditorHistory, queueNativeEdit]);
-
   // ── Document-wide search effect ──
+  const searchCommitRef = useRef(commitFormFieldDraft);
+  useLayoutEffect(() => { searchCommitRef.current = commitFormFieldDraft; }, [commitFormFieldDraft]);
+  const searchIndexRef = useRef(new DocumentSearchIndex());
   useEffect(() => {
     let cancelled = false;
-    // Allow the input to paint and cancel a stale query before scanning the PDF.
+    // Let the input paint, and make a newer query cancel any running scan.
     const timer = window.setTimeout(() => {
       if (!doc || !engineRef.current || !findText.trim()) {
+        if (!doc) searchIndexRef.current.clear();
         setSearchResults([]);
         updateActiveMatchIndex(0);
+        lastSearchRef.current = { doc, query: '', caseSensitive };
         return;
       }
-
       const query = findText.trim();
-      const lowerQuery = caseSensitive ? query : query.toLowerCase();
       const engine = engineRef.current;
-      const matches: SearchMatch[] = [];
-
-      for (let p = 0; p < doc.pages.length; p++) {
-        if (cancelled) return;
-        const page = doc.pages[p];
-        try {
-          const bytes = engine.getPageContentBytes(page, doc.objects);
-          const interpreted = engine.interpretPage(bytes, page, doc.objects);
-
-          for (const run of interpreted.textRuns) {
-            const text = run.text;
-            const textToSearch = caseSensitive ? text : text.toLowerCase();
-            let idx = 0;
-            while ((idx = textToSearch.indexOf(lowerQuery, idx)) !== -1) {
-              const endIdx = idx + query.length;
-              let pdfX = run.x;
-              let pdfWidth = run.width;
-
-              if (run.glyphs && run.glyphs.length === run.text.length) {
-                const startG = run.glyphs[idx];
-                const endG = run.glyphs[endIdx - 1];
-                if (startG && endG) {
-                  pdfX = startG.x;
-                  pdfWidth = (endG.x + endG.width) - startG.x;
-                }
-              } else if (run.text.length > 0) {
-                const charW = run.width / run.text.length;
-                pdfX = run.x + idx * charW;
-                pdfWidth = query.length * charW;
-              }
-
-              matches.push({
-                id: `m-${p}-${idx}-${matches.length}`,
-                pageIndex: p,
-                pdfX,
-                pdfY: run.y,
-                pdfWidth: Math.max(pdfWidth, 3),
-                pdfHeight: run.height || run.fontSize || 12,
-                matchedText: text.substring(idx, endIdx),
-                runText: text,
-              });
-
-              idx += Math.max(query.length, 1);
-            }
-          }
-        } catch (e) {
-          console.warn(`[Search] Error on page ${p}:`, e);
-        }
-      }
-
-      if (!cancelled) {
-        setSearchResults(matches);
-        if (matches.length > 0) {
-          const prev = activeMatchIndexRef.current;
-          const nextIdx = prev >= 0 && prev < matches.length ? prev : 0;
-          updateActiveMatchIndex(nextIdx);
-          if (matches[nextIdx].pageIndex !== currentPage) {
-            setCurrentPage(matches[nextIdx].pageIndex);
-          }
-        } else {
+      const previousSearch = lastSearchRef.current;
+      const newSearch = !previousSearch || previousSearch.doc !== doc ||
+        previousSearch.query !== query || previousSearch.caseSensitive !== caseSensitive;
+      const isLive = () => !cancelled && documentOwnerRef.current.lease(doc).isCurrent();
+      const pageBeforeSearch = currentPageRef.current;
+      setSearchResults([]);
+      void searchLatestDocument(doc, query, caseSensitive, searchIndexRef.current, engine,
+        () => `${editRevisionRef.current}:${renderKey}`, isLive, async () => {
+          if (!newSearch) return true;
+          return searchCommitRef.current();
+        }, undefined, undefined, matches => {
+          if (!isLive()) return;
+          lastSearchRef.current = { doc, query, caseSensitive };
+          setSearchResults(matches);
+          if (matches.length > 0) {
+            const prev = activeMatchIndexRef.current;
+            const nextIdx = !newSearch && prev >= 0 && prev < matches.length ? prev : 0;
+            updateActiveMatchIndex(nextIdx);
+            if (newSearch && currentPageRef.current === pageBeforeSearch) changePage(matches[nextIdx].pageIndex);
+          } else updateActiveMatchIndex(0);
+        })
+        .catch(error => {
+          if (!isLive()) return;
+          console.warn('[Search] Unable to inspect document:', error);
+          lastSearchRef.current = null;
+          setSearchResults([]);
           updateActiveMatchIndex(0);
-        }
-      }
+          setError(error instanceof SearchPageError || error instanceof SearchChangedError
+            ? error.message : 'Search could not safely inspect the document.');
+        });
     }, 0);
+    return () => { cancelled = true; window.clearTimeout(timer); };
+  }, [findText, caseSensitive, doc, renderKey, updateActiveMatchIndex]);
 
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timer);
-    };
-  }, [findText, caseSensitive, doc, renderKey, currentPage, updateActiveMatchIndex]);
-
-  const handleNextMatch = useCallback(() => {
-    if (searchResults.length === 0) return;
+  const handleNextMatch = useCallback(async () => {
+    if (searchResults.length === 0 || !await commitFormFieldDraft()) return;
     const nextIdx = (activeMatchIndex + 1) % searchResults.length;
     updateActiveMatchIndex(nextIdx);
     const targetPage = searchResults[nextIdx].pageIndex;
     if (targetPage !== currentPage) {
-      setCurrentPage(targetPage);
+      changePage(targetPage);
     }
-  }, [searchResults, activeMatchIndex, currentPage, updateActiveMatchIndex]);
+  }, [searchResults, activeMatchIndex, currentPage, updateActiveMatchIndex, commitFormFieldDraft]);
 
-  const handlePrevMatch = useCallback(() => {
-    if (searchResults.length === 0) return;
+  const handlePrevMatch = useCallback(async () => {
+    if (searchResults.length === 0 || !await commitFormFieldDraft()) return;
     const prevIdx = (activeMatchIndex - 1 + searchResults.length) % searchResults.length;
     updateActiveMatchIndex(prevIdx);
     const targetPage = searchResults[prevIdx].pageIndex;
     if (targetPage !== currentPage) {
-      setCurrentPage(targetPage);
+      changePage(targetPage);
     }
-  }, [searchResults, activeMatchIndex, currentPage, updateActiveMatchIndex]);
+  }, [searchResults, activeMatchIndex, currentPage, updateActiveMatchIndex, commitFormFieldDraft]);
 
   const handleReplaceCurrent = useCallback(async () => {
-    if (!doc || !engineRef.current || searchResults.length === 0 || !findText.trim()) return;
+    if (!renderReadyRef.current) { setError('The current page is not available for editing.'); return; }
+    if (!doc || !engineRef.current || searchBusyRef.current || searchResults.length === 0 || !findText.trim()) return;
     const currentMatch = searchResults[activeMatchIndex];
     if (!currentMatch) return;
+    try { if (currentMatch.source !== 'cross-run') assertCurrentReplaceSupported(currentMatch); }
+    catch (error) { setError(error instanceof Error ? error.message : String(error)); return; }
+    const lastSearch = lastSearchRef.current;
+    if (!lastSearch || lastSearch.doc !== doc || lastSearch.query !== findText.trim() || lastSearch.caseSensitive !== caseSensitive) {
+      setError('Search results changed. Wait for the updated matches before replacing.');
+      return;
+    }
 
+    searchBusyRef.current = true;
     setSearchBusy(true);
     try {
       const engine = engineRef.current;
-      const page = doc.pages[currentMatch.pageIndex];
-      const bytes = engine.getPageContentBytes(page, doc.objects);
-      const result = engine.findAndReplace(bytes, page, doc.objects, findText, replaceText, caseSensitive);
-      if (result.newContentBytes) {
-        await engine.updatePageContent(page.contentRefs, result.newContentBytes, doc.objects);
-        setIsDirty(true);
-        setRenderKey(k => k + 1);
-      }
+      await queueNativeEdit(doc, async isCurrent => {
+        const editor = new SessionDocumentEditor();
+        let replacedCount = 0;
+        await editor.edit(doc, 'replace-current', async staged => {
+          const page = staged.pages[currentMatch.pageIndex];
+          if (!page || page.ref.toKey() !== currentMatch.pageKey) throw new Error('The selected search match changed. Search again before replacing it.');
+          if (currentMatch.source === 'cross-run') {
+            replacedCount = await replaceSearchMatches(staged, findText.trim(), replaceText, caseSensitive, engine, currentMatch);
+            return;
+          }
+          assertCurrentReplaceSupported(currentMatch);
+          const bytes = engine.getPageContentBytes(page, staged.objects);
+          const result = engine.findAndReplace(bytes, page, staged.objects, findText.trim(), replaceText, caseSensitive, {
+            runIndex: currentMatch.runIndex, start: currentMatch.start, end: currentMatch.end, runText: currentMatch.runText,
+          }, new engine.OptionalContentVisibility(staged.catalog, staged.objects));
+          replacedCount = result.replacedCount;
+          if (replacedCount) await engine.updatePageContent(page.contentRefs, result.newContentBytes, staged.objects);
+        }, { isCurrent });
+        if (replacedCount && isCurrent()) {
+          pushEditorHistory('replace-current', undefined, currentMatch.pageIndex, false, editor);
+          setRenderKey(k => k + 1);
+          setThumbnailKey(k => k + 1);
+        }
+      });
     } catch (err) {
       console.error('[Search] Replace current error:', err);
+      setError(`Replace failed: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
+      searchBusyRef.current = false;
       setSearchBusy(false);
     }
-  }, [doc, searchResults, activeMatchIndex, findText, replaceText, caseSensitive]);
+  }, [doc, searchResults, activeMatchIndex, findText, replaceText, caseSensitive, queueNativeEdit, pushEditorHistory, setThumbnailKey]);
 
   const handleReplaceAll = useCallback(async () => {
-    if (!doc || !engineRef.current || !findText.trim()) return;
+    if (!renderReadyRef.current) { setError('The current page is not available for editing.'); return; }
+    if (!doc || !engineRef.current || searchBusyRef.current || !findText.trim()) return;
+    searchBusyRef.current = true;
     setSearchBusy(true);
     try {
       const engine = engineRef.current;
-      let replacedCount = 0;
-      for (let p = 0; p < doc.pages.length; p++) {
-        const page = doc.pages[p];
-        const bytes = engine.getPageContentBytes(page, doc.objects);
-        const result = engine.findAndReplace(bytes, page, doc.objects, findText, replaceText, caseSensitive);
-        if (result.newContentBytes) {
-          await engine.updatePageContent(page.contentRefs, result.newContentBytes, doc.objects);
-          replacedCount++;
+      await queueNativeEdit(doc, async isCurrent => {
+        const editor = new SessionDocumentEditor();
+        let replacedCount = 0;
+        await editor.edit(doc, 'replace-all', async staged => {
+          replacedCount = await replaceSearchMatches(staged, findText.trim(), replaceText, caseSensitive, engine);
+        }, { isCurrent });
+        if (replacedCount && isCurrent()) {
+          pushEditorHistory('replace-all', undefined, undefined, false, editor);
+          setRenderKey(k => k + 1);
+          setThumbnailKey(k => k + 1);
         }
-      }
-      if (replacedCount > 0) {
-        setIsDirty(true);
-        setRenderKey(k => k + 1);
-      }
+      });
     } catch (err) {
       console.error('[Search] Replace all error:', err);
+      setError(`Replace all failed: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
+      searchBusyRef.current = false;
       setSearchBusy(false);
     }
-  }, [doc, findText, replaceText, caseSensitive]);
+  }, [doc, findText, replaceText, caseSensitive, queueNativeEdit, pushEditorHistory, setThumbnailKey]);
 
+  const ocrBusyRef = useRef(false);
   const handleRecognizeText = useCallback(async () => {
-    if (!doc || !engineRef.current || !pdfCanvasRef.current) return;
+    if (!doc || !engineRef.current || !pdfCanvasRef.current || ocrBusyRef.current) return;
+    if (!renderReadyRef.current) { setError('Wait for the current page to finish rendering.'); return; }
+    const page = doc.pages[currentPage];
+    if (!page) return;
+    if (!supportsOcrPageGeometry(page)) {
+      setError('OCR is not supported for rotated, cropped, or offset pages.');
+      return;
+    }
+    const lease = documentOwnerRef.current.lease(doc);
+    const engine = engineRef.current;
+    const revision = editRevisionRef.current;
+    ocrBusyRef.current = true;
     try {
+      // The canvas and its geometry must be captured before any asynchronous work.
+      const image = canvasToImageData(pdfCanvasRef.current);
       setIsSaving(true);
       setError(null);
-      const { createDefaultOcrAdapter, canvasToImageData, mapOcrWordsToPdf } = await import('@/lib/ocr/adapter');
-      const adapter = createDefaultOcrAdapter();
-      const canvas = pdfCanvasRef.current;
-      const imageData = canvasToImageData(canvas);
-      const words = await adapter.recognize(imageData);
-      const page = doc.pages[currentPage];
-      const dpr = window.devicePixelRatio || 1;
-      const mapped = mapOcrWordsToPdf(words, page.mediaBox.height, scale, page.mediaBox.y, dpr);
-      if (mapped.length > 0) {
-        await engineRef.current.insertInvisibleTextLayer(doc, currentPage, mapped);
-        setIsDirty(true);
-        setRenderKey(k => k + 1);
-        setError(null);
-        // Brief success via status — reuse error toast style as info
-        console.log(`[OCR] Inserted ${mapped.length} words as invisible text`);
-      } else {
+      const result = await runOcrOperation({
+        doc, pageKey: page.ref.toKey(), pageHeight: page.mediaBox.height,
+        mediaBoxY: page.mediaBox.y, scale, dpr: renderedPage!.dpr, image,
+        isCurrent: lease.isCurrent, revision, getRevision: () => editRevisionRef.current,
+        createAdapter: async () => (await import('@/lib/ocr/adapter')).createDefaultOcrAdapter(),
+        enqueue: apply => queueNativeEdit(doc, apply),
+        insert: (staged, index, words) => engine.insertInvisibleTextLayer(staged, index, words),
+        committed: (editor, index) => {
+          pushEditorHistory('ocr', undefined, index, false, editor);
+          setRenderKey(k => k + 1);
+          setThumbnailKey(k => k + 1);
+        },
+      });
+      if (lease.isCurrent() && result === 'empty') {
         setError('OCR found no text on this page. Try a clearer scan or higher zoom.');
       }
     } catch (e) {
-      setError(`OCR failed: ${e instanceof Error ? e.message : String(e)}`);
+      if (lease.isCurrent()) setError(`OCR failed: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
+      ocrBusyRef.current = false;
       setIsSaving(false);
     }
-  }, [doc, currentPage, scale]);
+  }, [doc, currentPage, scale, renderedPage, queueNativeEdit, pushEditorHistory, setThumbnailKey]);
 
   const handleFlattenForms = useCallback(async () => {
     if (!doc || !engineRef.current || formFields.length === 0) return;
+    if (!await commitFormFieldDraft()) return;
     try {
       setIsSaving(true);
       const engine = engineRef.current;
@@ -2485,7 +2850,7 @@ export default function EditorPage() {
     } finally {
       setIsSaving(false);
     }
-  }, [doc, currentPage, formFields, pushEditorHistory, queueNativeEdit]);
+  }, [doc, currentPage, formFields, pushEditorHistory, queueNativeEdit, commitFormFieldDraft, setThumbnailKey]);
 
   const handleDuplicateLineBelow = useCallback(async () => {
     const line = editAnchorLineRef.current ?? selectedLine ?? editingLine;
@@ -2576,6 +2941,7 @@ export default function EditorPage() {
   // ── Global keyboard shortcuts for undo/redo (skip while editing text) ──
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      if (closeDialogOpen || closeOperationRef.current || downloadOperationRef.current) return;
       const target = e.target as HTMLElement | null;
       const inTextEdit =
         !!editingLineRef.current ||
@@ -2593,7 +2959,7 @@ export default function EditorPage() {
     };
     document.addEventListener('keydown', handler);
     return () => document.removeEventListener('keydown', handler);
-  }, [handleUndo, handleRedo]);
+  }, [handleUndo, handleRedo, closeDialogOpen]);
 
   const resolveLinkDisplay = useCallback((link: import('@/engine/browser-core').PageLinkInfo) => {
     const lines = renderResult?.textLines ?? [];
@@ -2647,7 +3013,7 @@ export default function EditorPage() {
         const formHit = engineRef.current.hitTestFormField(formFields, pdfX, pdfY);
         if (formHit) {
           if (editingLine && !await handleEditSubmit(false)) return;
-          handleFormFieldSelect(formHit);
+          await handleFormFieldSelect(formHit);
           return;
         }
       }
@@ -2656,7 +3022,7 @@ export default function EditorPage() {
       if ((e.ctrlKey || e.metaKey) && engineRef.current) {
         const linkHit = engineRef.current.hitTestPageLink(doc, currentPage, pdfX, pdfY);
         if (linkHit?.url) {
-          window.open(linkHit.url, '_blank', 'noopener,noreferrer');
+          if (openDocumentLink(linkHit.url) === 'blocked') setError('This document link cannot be opened safely.');
           return;
         }
       }
@@ -2766,6 +3132,7 @@ export default function EditorPage() {
 
       const newBox: FloatingText = {
         id: Math.random().toString(36).substr(2, 9),
+        pageKey: page.ref.toKey(),
         pdfX,
         pdfY,
         text: 'New Text',
@@ -2843,7 +3210,7 @@ export default function EditorPage() {
       setSelectedSignatureId(null);
       setSelectedPdfSigFieldId(null);
     }
-  }, [renderResult, doc, currentPage, scale, activeTool, editingLine, handleEditSubmit, beginEditSession, displayItems, textFontSize, textColor, textFontFamily, highlightColor, formFields, handleFormFieldSelect, linksHighlighted, linkPopoverMode, resolveLinkDisplay, pdfSignatureFields, placeLibrarySignatureIntoField, pushEditorHistory]);
+  }, [renderResult, doc, currentPage, scale, activeTool, editingLine, handleEditSubmit, beginEditSession, displayItems, textFontSize, textColor, textFontFamily, highlightColor, formFields, handleFormFieldSelect, linksHighlighted, linkPopoverMode, resolveLinkDisplay, pdfSignatureFields, placeLibrarySignatureIntoField, pushEditorHistory, setThumbnailKey]);
 
   // Double-click in select mode → enter text edit
   const handleCanvasDoubleClick = useCallback((e: React.MouseEvent) => {
@@ -2923,6 +3290,7 @@ export default function EditorPage() {
       x: pdfX,
       y: pdfY,
       appearanceId: entry.id,
+      appearanceImageDataUrl: entry.imageDataUrl,
       appearanceType:
         entry.source === 'draw' ? 'drawn' : entry.source === 'typed' ? 'typed' : 'uploaded',
       width: w,
@@ -2943,6 +3311,14 @@ export default function EditorPage() {
       const newPaths: DrawnPath[] = [];
       let modified = false;
       for (const path of prev) {
+        if (path.pageKey !== doc?.pages[currentPage]?.ref.toKey()) {
+          newPaths.push(path);
+          continue;
+        }
+        const ratio = (path.captureScale ?? scale) / scale;
+        const pathX = x * ratio;
+        const pathY = y * ratio;
+        const pathRadius = eraserRadius * ratio;
         const kind = path.kind ?? 'freehand';
         if (kind !== 'freehand' && path.start && path.end) {
           // Hit-test shapes by proximity to geometry
@@ -2952,16 +3328,16 @@ export default function EditorPage() {
             const dx = end.x - start.x;
             const dy = end.y - start.y;
             const len2 = dx * dx + dy * dy;
-            let t = len2 < 1e-8 ? 0 : ((x - start.x) * dx + (y - start.y) * dy) / len2;
+            let t = len2 < 1e-8 ? 0 : ((pathX - start.x) * dx + (pathY - start.y) * dy) / len2;
             t = Math.max(0, Math.min(1, t));
-            const dist = Math.hypot(x - (start.x + t * dx), y - (start.y + t * dy));
-            hit = dist <= eraserRadius;
+            const dist = Math.hypot(pathX - (start.x + t * dx), pathY - (start.y + t * dy));
+            hit = dist <= pathRadius;
           } else {
-            const minX = Math.min(path.start.x, path.end.x) - eraserRadius;
-            const maxX = Math.max(path.start.x, path.end.x) + eraserRadius;
-            const minY = Math.min(path.start.y, path.end.y) - eraserRadius;
-            const maxY = Math.max(path.start.y, path.end.y) + eraserRadius;
-            hit = x >= minX && x <= maxX && y >= minY && y <= maxY;
+            const minX = Math.min(path.start.x, path.end.x) - pathRadius;
+            const maxX = Math.max(path.start.x, path.end.x) + pathRadius;
+            const minY = Math.min(path.start.y, path.end.y) - pathRadius;
+            const maxY = Math.max(path.start.y, path.end.y) + pathRadius;
+            hit = pathX >= minX && pathX <= maxX && pathY >= minY && pathY <= maxY;
           }
           if (hit) {
             modified = true;
@@ -2974,9 +3350,9 @@ export default function EditorPage() {
 
         let currentSubPath: { x: number, y: number }[] = [];
         for (const p of path.points) {
-          const dx = p.x - x;
-          const dy = p.y - y;
-          if (Math.sqrt(dx * dx + dy * dy) > eraserRadius) {
+          const dx = p.x - pathX;
+          const dy = p.y - pathY;
+          if (Math.sqrt(dx * dx + dy * dy) > pathRadius) {
             currentSubPath.push(p);
           } else {
             if (currentSubPath.length > 0) {
@@ -3008,7 +3384,7 @@ export default function EditorPage() {
       const { pdfX, pdfY } = canvasToPdf(
         x, y, scale,
         renderResult.pageWidth, renderResult.pageHeight,
-        mediaBox.x, mediaBox.y,
+        mediaBox.x, mediaBox.y, page.rotate, page.cropBox.x, page.cropBox.y,
       );
       const pdfRadius = eraserRadius / scale;
       const { transactional, legacy } = collectDrawingRemovals(doc, currentPage, (dict, objects) =>
@@ -3049,22 +3425,22 @@ export default function EditorPage() {
     return removed;
   }, [applyEraser, eraserSize]);
 
-  const buildDrawingAnnotations = useCallback((paths: DrawnPath[]): Annotation[] => {
+  const buildDrawingAnnotations = useCallback((paths: DrawnPath[], pageIndex = currentPage): Annotation[] => {
     if (!doc) return [];
-    const page = doc.pages[currentPage];
+    const page = doc.pages[pageIndex];
     const annotations: Annotation[] = [];
-    const pageHeight = renderResult?.pageHeight || page.mediaBox.height;
-
-    const toPdf = (cx: number, cy: number) => canvasToPdf(
-      cx, cy, scale,
-      renderResult?.pageWidth || page.mediaBox.width,
-      pageHeight,
-      page.mediaBox.x, page.mediaBox.y,
-    );
+    const rotated = ((page.rotate % 180) + 180) % 180 !== 0;
+    const pageWidth = rotated ? page.cropBox.height : page.cropBox.width;
+    const pageHeight = rotated ? page.cropBox.width : page.cropBox.height;
 
     for (const p of paths) {
+      const pathScale = p.captureScale ?? scale;
+      const toPdf = (cx: number, cy: number) => canvasToPdf(
+        cx, cy, pathScale, pageWidth, pageHeight,
+        page.mediaBox.x, page.mediaBox.y, page.rotate, page.cropBox.x, page.cropBox.y,
+      );
       const kind = p.kind ?? 'freehand';
-      const lw = p.size / scale;
+      const lw = p.size / pathScale;
       const rgb = hexToRGB(p.color);
 
       let annotation: Annotation | null = null;
@@ -3143,7 +3519,7 @@ export default function EditorPage() {
       if (annotation) annotations.push(annotation);
     }
     return annotations;
-  }, [doc, currentPage, renderResult, scale]);
+  }, [doc, currentPage, scale]);
 
   const commitDrawPath = useCallback(async (path: DrawnPath, label: string) => {
     if (!doc || !engineRef.current) return;
@@ -3175,9 +3551,9 @@ export default function EditorPage() {
     });
     annotationCommitPendingRef.current = commit;
     await commit;
-  }, [doc, currentPage, buildDrawingAnnotations, pushEditorHistory]);
+  }, [doc, currentPage, buildDrawingAnnotations, pushEditorHistory, setThumbnailKey]);
 
-  // ── Commit drawings, texts, and images to PDF ──
+  // ── Commit drawings, texts, and images to their owning PDF pages ──
   const commitDrawingsToPdf = useCallback(async (pathsToCommit?: DrawnPath[], textsToCommit?: FloatingText[], imagesToCommit?: FloatingImage[]) => {
     if (!doc || !engineRef.current) return;
     const lease = documentOwnerRef.current.lease(doc);
@@ -3188,107 +3564,93 @@ export default function EditorPage() {
     await documentOwnerRef.current.whenIdle();
     requireCurrent();
     const paths = pathsToCommit ?? drawnPathsRef.current;
-    const fTexts = textsToCommit ?? floatingTextsRef.current;
-    const fImages = imagesToCommit || floatingImages;
-    const pageSignatures = signaturesRef.current.filter(signature => signature.pageIndex === currentPage);
-    if (paths.length === 0 && fTexts.length === 0 && fImages.length === 0 && pageSignatures.length === 0) return;
-    const nativeSignatures = findVisualSignatureRefs(doc, new Set(pageSignatures.map(signature => signature.id)));
-    const uncommittedSignatures = pageSignatures.filter(signature => !nativeSignatures.has(signature.id));
+    const texts = textsToCommit ?? floatingTextsRef.current;
+    const images = imagesToCommit ?? floatingImagesRef.current;
+    const pageKeys = doc.pages.map(page => page.ref.toKey());
+    const groups = pageOverlayGroups({ drawnPaths: paths, floatingTexts: texts, floatingImages: images }, pageKeys);
+    const signatures = signaturesRef.current;
+    const pathsUnchanged = snapshotOverlayItems(paths);
+    const textsUnchanged = snapshotOverlayItems(texts);
+    const imagesUnchanged = snapshotOverlayItems(images);
+    const signaturesUnchanged = snapshotOverlayItems(signatures);
+    const isCommitCurrent = () => lease.isCurrent() &&
+      pathsUnchanged(drawnPathsRef.current) && textsUnchanged(floatingTextsRef.current) &&
+      imagesUnchanged(floatingImagesRef.current) && signaturesUnchanged(signaturesRef.current);
+    const nativeSignatures = findVisualSignatureRefs(doc, new Set(signatures.map(signature => signature.id)));
+    const uncommittedSignatures = signatures.filter(signature => !nativeSignatures.has(signature.id));
+    for (const signature of signatures) {
+      if (!doc.pages[signature.pageIndex]) throw new Error('A recovered signature has no valid page. Its local recovery is preserved; restore an intact backup before saving.');
+    }
+    for (const signature of uncommittedSignatures) {
+      if (!groups.has(signature.pageIndex)) groups.set(signature.pageIndex, { drawnPaths: [], floatingTexts: [], floatingImages: [] });
+    }
+    if (groups.size === 0) return;
     const engine = engineRef.current;
-    const page = doc.pages[currentPage];
-    // Check every floating box before drawings, fonts, images, or overlay cleanup can mutate state.
-    await prepareExportText(fTexts.map(ft => ft.text).join('\n'));
-    requireCurrent();
-    let currentObjNum = engine.getNextObjNum(doc);
-
-    const annotations = buildDrawingAnnotations(paths);
-    let nativeSession: SessionDocumentEditor | undefined;
-    let nativeCommitted = false;
-    try {
-      if (annotations.length > 0 || fTexts.some(ft => ft.text.trim()) || uncommittedSignatures.length > 0) {
-        nativeSession = new SessionDocumentEditor();
-        await nativeSession.edit(doc, annotations.length > 0 ? 'commit-drawings' : 'add-text-box', async staged => {
-          addDrawingAnnotations(staged, currentPage, annotations);
-          if (fTexts.some(ft => ft.text.trim())) {
-            const stagedPage = staged.pages[currentPage];
-            let bytes = engine.getPageContentBytes(stagedPage, staged.objects);
-            await prepareExportText(fTexts.map(ft => ft.text).join('\n'), undefined, staged);
-            for (const ft of fTexts) {
-              if (!ft.text.trim()) continue;
-              bytes = engine.insertTextRun(
-                bytes, stagedPage, staged.objects,
-                ft.text, ft.pdfX, ft.pdfY, ft.fontSize, hexToRGB(ft.color),
-                { fontFamily: ft.fontFamily, bold: ft.bold, italic: ft.italic, underline: ft.underline, opacity: ft.opacity, width: ft.pdfWidth },
-              );
-            }
-            await engine.updatePageContent(stagedPage.contentRefs, bytes, staged.objects);
-          }
-          for (const signature of uncommittedSignatures) {
-            const entry = getSignatureLibrary().get(signature.appearanceId);
-            if (!entry) throw new Error('Signature appearance is unavailable');
-            await placeVisualSignature(staged, signature, entry.imageDataUrl);
-          }
-        }, { isCurrent: lease.isCurrent });
-        nativeCommitted = true;
-        requireCurrent();
-        currentObjNum = engine.getNextObjNum(doc);
-      }
-      let newContentBytes: Uint8Array;
-      if (fTexts.length > 0 || fImages.length > 0) {
-        const contentBytes = engine.getPageContentBytes(page, doc.objects);
-        newContentBytes = new Uint8Array(contentBytes);
-    
-        for (const fi of fImages) {
-          const { newContentBytes: b } = await engine.insertImageRun(
-            newContentBytes, page, doc.objects,
-            fi.dataUrl, fi.pdfX, fi.pdfY, fi.pdfWidth, fi.pdfHeight,
-            () => {
-              const num = currentObjNum;
-              currentObjNum++;
-              return num;
-            }
-          );
-          requireCurrent();
-          newContentBytes = b;
-        }
-    
-      }
-    
-      await commitThenCleanup(
-        async () => {
-          requireCurrent();
-          if (fTexts.length > 0 || fImages.length > 0) {
-            // Must finish before the caller saves — otherwise Download exports without the new text/images.
-            await engine.updatePageContent(page.contentRefs, newContentBytes, doc.objects);
-            requireCurrent();
-          }
-        },
-        () => {
-          const clearedOverlays = { drawnPaths: [] as DrawnPath[], floatingTexts: [] as FloatingText[], floatingImages: [] as FloatingImage[] };
-          setDrawnPaths([]);
-          drawnPathsRef.current = [];
-          setFloatingTexts([]);
-          floatingTextsRef.current = [];
-          setFloatingImages([]);
-          setActiveFloatingTextId(null);
-          setActiveFloatingImageId(null);
-          const committedSignatureIds = new Set(pageSignatures.map(signature => signature.id));
-          const remainingSignatures = signaturesRef.current.filter((signature) => !committedSignatureIds.has(signature.id));
-          setSignatures(remainingSignatures);
-          signaturesRef.current = remainingSignatures;
-          pushEditorHistory('commit-drawings', { ...clearedOverlays, signatures: remainingSignatures }, undefined, true, nativeSession);
-          setIsDirty(true);
-          setRenderKey(k => k + 1);
-          if (nativeCommitted) setThumbnailKey(k => k + 1);
-        },
-      );
-    } catch (error) {
-      // Keep editable overlays available for retry without duplicating native insertions.
-      if (nativeCommitted && nativeSession && lease.isCurrent()) await nativeSession.undo(doc, lease.isCurrent);
-      throw error;
+    for (const [pageIndex, group] of groups) {
+      await prepareExportText(group.floatingTexts.map(text => text.text).join('\n'), undefined, doc, pageIndex);
+      if (!isCommitCurrent()) throw new Error('Overlays changed during save. Your latest edits remain available; try again.');
     }
 
-  }, [doc, currentPage, drawnPaths, floatingTexts, floatingImages, pushEditorHistory, prepareExportText, buildDrawingAnnotations]);
+    // All pages are staged together: a failure cannot leave a partially baked overlay.
+    const editor = new SessionDocumentEditor();
+    await queueNativeEdit(doc, async isCurrent => editor.edit(doc, 'commit-overlays', async staged => {
+      for (const [pageIndex, group] of groups) {
+        const page = staged.pages[pageIndex];
+        const annotations = buildDrawingAnnotations(group.drawnPaths, pageIndex);
+        if (annotations.length) addDrawingAnnotations(staged, pageIndex, annotations);
+        if (group.floatingTexts.length || group.floatingImages.length) {
+          let bytes = engine.getPageContentBytes(page, staged.objects);
+          await prepareExportText(group.floatingTexts.map(text => text.text).join('\n'), undefined, staged, pageIndex);
+          for (const text of group.floatingTexts) {
+            if (!text.text.trim()) continue;
+            bytes = engine.insertTextRun(bytes, page, staged.objects,
+              text.text, text.pdfX, text.pdfY, text.fontSize, hexToRGB(text.color),
+              { fontFamily: text.fontFamily, bold: text.bold, italic: text.italic,
+                underline: text.underline, opacity: text.opacity, width: text.pdfWidth });
+          }
+          for (const image of group.floatingImages) {
+            let nextObjectNumber = engine.getNextObjNum(staged);
+            const result = await engine.insertImageRun(bytes, page, staged.objects,
+              image.dataUrl, image.pdfX, image.pdfY, image.pdfWidth, image.pdfHeight,
+              () => nextObjectNumber++);
+            bytes = result.newContentBytes;
+          }
+          await engine.updatePageContent(page.contentRefs, bytes, staged.objects);
+        }
+        for (const signature of uncommittedSignatures) {
+          if (signature.pageIndex !== pageIndex) continue;
+          const image = signature.appearanceImageDataUrl ?? getSignatureLibrary().get(signature.appearanceId)?.imageDataUrl;
+          if (!image) throw new Error('Signature appearance is unavailable');
+          await placeVisualSignature(staged, signature, image);
+        }
+      }
+    }, { isCurrent: () => isCurrent() && isCommitCurrent() }));
+    if (!isCommitCurrent()) throw new Error('Overlays changed during save. Your latest edits remain available; try again.');
+
+    const pathIds = new Set(paths.map(path => path.id));
+    const textIds = new Set(texts.map(text => text.id));
+    const imageIds = new Set(images.map(image => image.id));
+    const remaining = {
+      drawnPaths: drawnPathsRef.current.filter(path => !pathIds.has(path.id)),
+      floatingTexts: floatingTextsRef.current.filter(text => !textIds.has(text.id)),
+      floatingImages: floatingImagesRef.current.filter(image => !imageIds.has(image.id)),
+      signatures: signaturesRef.current,
+    };
+    drawnPathsRef.current = remaining.drawnPaths;
+    floatingTextsRef.current = remaining.floatingTexts;
+    floatingImagesRef.current = remaining.floatingImages;
+    signaturesRef.current = remaining.signatures;
+    setDrawnPaths(remaining.drawnPaths);
+    setFloatingTexts(remaining.floatingTexts);
+    setFloatingImages(remaining.floatingImages);
+    setSignatures(remaining.signatures);
+    setActiveFloatingTextId(null);
+    setActiveFloatingImageId(null);
+    pushEditorHistory('commit-drawings', remaining, undefined, true, editor);
+    setIsDirty(true);
+    setRenderKey(k => k + 1);
+    setThumbnailKey(k => k + 1);
+  }, [doc, pushEditorHistory, prepareExportText, buildDrawingAnnotations, queueNativeEdit, setThumbnailKey]);
 
   const strokeShapePreview = useCallback((
     ctx: CanvasRenderingContext2D,
@@ -3336,16 +3698,17 @@ export default function EditorPage() {
     }
   }, []);
 
-  const handleDrawStart = useCallback((e: React.MouseEvent) => {
-    if (activeTool !== 'draw' && activeTool !== 'highlight' && activeTool !== 'erase') return;
-    if (annotationCommitPendingRef.current || historyBusyRef.current) return;
+  const handleDrawStart = useCallback((e: React.PointerEvent) => {
+    if (activeTool !== 'draw' && activeTool !== 'highlight' && activeTool !== 'erase') return false;
+    if (annotationCommitPendingRef.current || historyBusyRef.current) return false;
     const overlay = overlayRef.current;
-    if (!overlay) return;
+    if (!overlay) return false;
 
     const rect = overlay.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
 
+    isDrawingRef.current = true;
     setIsDrawing(true);
     drawDraggedRef.current = false;
     eraseChangedRef.current = false;
@@ -3368,10 +3731,11 @@ export default function EditorPage() {
       shapeEndRef.current = null;
       currentDrawPath.current = [{ x, y }];
     }
+    return true;
   }, [activeTool, applyEraserStroke, drawMode]);
 
-  const handleDrawMove = useCallback((e: React.MouseEvent) => {
-    if (!isDrawing) return;
+  const handleDrawMove = useCallback((e: React.PointerEvent) => {
+    if (!isDrawingRef.current) return;
     const overlay = overlayRef.current;
     if (!overlay) return;
 
@@ -3449,10 +3813,11 @@ export default function EditorPage() {
         ctx.restore();
       }
     }
-  }, [isDrawing, activeTool, drawMode, drawColor, drawSize, highlightColor, highlightSize, applyEraserStroke, strokeShapePreview, drawOverlay]);
+  }, [activeTool, drawMode, drawColor, drawSize, highlightColor, highlightSize, applyEraserStroke, strokeShapePreview, drawOverlay]);
 
-  const handleDrawEnd = useCallback(async () => {
-    if (!isDrawing) return;
+  const handleDrawEnd = useCallback(async (willClick: boolean) => {
+    if (!isDrawingRef.current) return;
+    isDrawingRef.current = false;
     setIsDrawing(false);
     lastErasePosRef.current = null;
 
@@ -3495,6 +3860,8 @@ export default function EditorPage() {
         const end = shapeEndRef.current;
         const newPath: DrawnPath = {
           id: Math.random().toString(36).substr(2, 9),
+          pageKey: doc!.pages[currentPage].ref.toKey(),
+          captureScale: scale,
           type: 'draw',
           kind: drawMode,
           color: drawColor,
@@ -3513,11 +3880,13 @@ export default function EditorPage() {
 
     if (drawDraggedRef.current && currentDrawPath.current.length > 1) {
       // Drag produced a freehand stroke — suppress the trailing click annotation
-      if (activeTool === 'highlight') {
+      if (activeTool === 'highlight' && willClick) {
         skipNextHighlightClickRef.current = true;
       }
       const newPath: DrawnPath = {
         id: Math.random().toString(36).substr(2, 9),
+        pageKey: doc!.pages[currentPage].ref.toKey(),
+        captureScale: scale,
         type: activeTool as PathType,
         kind: 'freehand',
         color: activeTool === 'draw' ? drawColor : highlightColor,
@@ -3529,7 +3898,14 @@ export default function EditorPage() {
     }
     currentDrawPath.current = [];
     drawDraggedRef.current = false;
-  }, [isDrawing, activeTool, drawMode, drawColor, drawSize, highlightColor, highlightSize, pushEditorHistory, doc, currentPage, commitDrawPath]);
+  }, [activeTool, drawMode, drawColor, drawSize, highlightColor, highlightSize, pushEditorHistory, doc, currentPage, scale, commitDrawPath, setThumbnailKey]);
+
+  const drawingPointer = useDrawingPointer({
+    enabled: !spacePanHeld && ['draw', 'highlight', 'erase'].includes(activeTool),
+    start: handleDrawStart,
+    move: handleDrawMove,
+    end: handleDrawEnd,
+  });
 
   const openLinkHover = useCallback((link: import('@/engine/browser-core').PageLinkInfo) => {
     if (linkHoverTimerRef.current) {
@@ -3568,7 +3944,6 @@ export default function EditorPage() {
   }, [linkPopoverMode]);
 
   const handleCanvasMouseMove = useCallback((e: React.MouseEvent) => {
-    handleDrawMove(e);
     if (!linksHighlighted || !doc || !engineRef.current || !renderResult || editingLine) return;
     if (linkPopoverMode === 'edit') return;
     if (['draw', 'highlight', 'erase'].includes(activeTool)) return;
@@ -3592,18 +3967,17 @@ export default function EditorPage() {
       scheduleLinkHoverClose();
     }
   }, [
-    handleDrawMove, linksHighlighted, doc, renderResult, editingLine,
+    linksHighlighted, doc, renderResult, editingLine,
     linkPopoverMode, activeTool, currentPage, scale, openLinkHover, scheduleLinkHoverClose,
   ]);
 
   const handleCanvasMouseLeave = useCallback((e: React.MouseEvent) => {
-    handleDrawEnd();
     const next = e.relatedTarget as HTMLElement | null;
     if (next?.closest?.('[data-link-popover]')) return;
     if (linkPopoverMode === 'hover' && !linkPopoverHoverRef.current) {
       scheduleLinkHoverClose();
     }
-  }, [handleDrawEnd, linkPopoverMode, scheduleLinkHoverClose]);
+  }, [linkPopoverMode, scheduleLinkHoverClose]);
 
   const closeLinkPopover = useCallback(() => {
     if (linkHoverTimerRef.current) {
@@ -3646,7 +4020,8 @@ export default function EditorPage() {
             const nextText = line.text.slice(0, display.start) + linkDisplayDraft + line.text.slice(display.end);
             const page = staged.pages[currentPage];
             const bytes = engine.getPageContentBytes(page, staged.objects);
-            const result = engine.applyLineTextEdit(bytes, page, staged.objects, line, nextText, renderResult?.documentFlow);
+            const result = engine.applyLineTextEdit(bytes, page, staged.objects, line, nextText, renderResult?.documentFlow,
+              { optionalContent: new engine.OptionalContentVisibility(staged.catalog, staged.objects) });
             await engine.updatePageContent(page.contentRefs, result.newContentBytes, staged.objects);
           }
           if (url !== link.url) engine.updatePageLinkUrl(staged, currentPage, link, url);
@@ -3666,6 +4041,7 @@ export default function EditorPage() {
   }, [
     doc, selectedLink, linkDraftUrl, linkDisplayDraft, resolveLinkDisplay,
     currentPage, renderResult, closeLinkPopover, queueNativeEdit, pushEditorHistory,
+    setThumbnailKey,
   ]);
 
   const removeLinkFromPopover = useCallback(async () => {
@@ -3695,7 +4071,7 @@ export default function EditorPage() {
       console.warn('[Editor] Remove link failed:', err);
       setError(`Remove link failed: ${err instanceof Error ? err.message : String(err)}`);
     }
-  }, [doc, selectedLink, currentPage, closeLinkPopover, queueNativeEdit, pushEditorHistory]);
+  }, [doc, selectedLink, currentPage, closeLinkPopover, queueNativeEdit, pushEditorHistory, setThumbnailKey]);
 
   const handleFloatingTextPointerDown = useCallback((e: React.PointerEvent, id: string) => {
     e.stopPropagation();
@@ -3833,17 +4209,21 @@ export default function EditorPage() {
       const img = new window.Image();
       img.onload = async () => {
         if (!lease.isCurrent()) return;
-        // Preserve PNG pixels so transparent images can use an indirect /SMask.
+        // Preserve transparency for PNG and rasterize SVG with its alpha channel.
         const canvas = document.createElement('canvas');
         canvas.width = img.naturalWidth;
         canvas.height = img.naturalHeight;
         const ctx = canvas.getContext('2d');
         if (!ctx) return;
-        ctx.fillStyle = '#ffffff';
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        const isSvg = file.type.toLowerCase() === 'image/svg+xml';
+        if (!isSvg) {
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+        }
         ctx.drawImage(img, 0, 0);
-        const jpegDataUrl = canvas.toDataURL('image/jpeg', 0.92);
-        const imageDataUrlForPdf = file.type === 'image/png' ? dataUrl : jpegDataUrl;
+        const imageDataUrlForPdf = file.type === 'image/png'
+          ? dataUrl
+          : isSvg ? canvas.toDataURL('image/png') : canvas.toDataURL('image/jpeg', 0.92);
 
         // Replace embedded PDF image in-place (same cm / bbox)
         if (replacingEmbeddedImageRef.current && doc && engineRef.current) {
@@ -3892,6 +4272,7 @@ export default function EditorPage() {
 
         const newImg: FloatingImage = {
           id: Math.random().toString(36).substr(2, 9),
+          pageKey: page.ref.toKey(),
           pdfX,
           pdfY,
           pdfWidth,
@@ -3908,7 +4289,7 @@ export default function EditorPage() {
     };
     reader.readAsDataURL(file);
     if (fileInputRef.current) fileInputRef.current.value = '';
-  }, [doc, currentPage, renderResult, pushEditorHistory]);
+  }, [doc, currentPage, renderResult, pushEditorHistory, setThumbnailKey]);
 
   const toEditableImage = useCallback((item: ImageItem): EditableObject => ({
     id: `sel-image-${item.name}`,
@@ -3944,7 +4325,7 @@ export default function EditorPage() {
           const page = staged.pages[currentPage];
           if (!page || page.ref.toKey() !== pageKey) throw new Error('The selected page changed before the image could be moved.');
           const bytes = engine.getPageContentBytes(page, staged.objects);
-          const display = engine.interpretPage(bytes, page, staged.objects).displayList;
+          const display = engine.interpretPage(bytes, page, staged.objects, new engine.OptionalContentVisibility(staged.catalog, staged.objects)).displayList;
           const resolved = resolveSelectedObject(display, before);
           if (!resolved || resolved.type !== 'image') throw new Error('The selected image changed. Select it again.');
           const editable = toEditableImage(resolved);
@@ -3952,7 +4333,7 @@ export default function EditorPage() {
           await applyObjectTransform(staged, currentPage, editable, transformed.ctm);
           const movedBox = { x: resolved.x + pdfDx, y: resolved.y + pdfDy, width: resolved.width, height: resolved.height };
           const updated = engine.getPageContentBytes(page, staged.objects);
-          const after = engine.interpretPage(updated, page, staged.objects).displayList;
+          const after = engine.interpretPage(updated, page, staged.objects, new engine.OptionalContentVisibility(staged.catalog, staged.objects)).displayList;
           moved = findImagePlacement(after, { name: resolved.name, ...movedBox });
           if (!moved) {
             throw new Error('The image could not be safely moved.');
@@ -3973,7 +4354,7 @@ export default function EditorPage() {
     } catch (error) {
       if (lease.isCurrent()) setError(`Move image failed: ${error instanceof Error ? error.message : String(error)}`);
     }
-  }, [doc, currentPage, selectedDisplayItem, toEditableImage, pushEditorHistory, queueNativeEdit]);
+  }, [doc, currentPage, selectedDisplayItem, toEditableImage, pushEditorHistory, queueNativeEdit, setThumbnailKey]);
 
   const handleEmbeddedImageResize = useCallback(async (box: { x: number; y: number; width: number; height: number }) => {
     const engine = engineRef.current;
@@ -3991,12 +4372,12 @@ export default function EditorPage() {
           const stagedPage = staged.pages[currentPage];
           if (!stagedPage || stagedPage.ref.toKey() !== pageKey) throw new Error('The selected page changed before the image could be resized.');
           const bytes = engine.getPageContentBytes(stagedPage, staged.objects);
-          const display = engine.interpretPage(bytes, stagedPage, staged.objects).displayList;
+          const display = engine.interpretPage(bytes, stagedPage, staged.objects, new engine.OptionalContentVisibility(staged.catalog, staged.objects)).displayList;
           const target = resolveSelectedObject(display, item);
           if (!target || target.type !== 'image') throw new Error('The selected image changed. Select it again.');
           await applyObjectTransform(staged, currentPage, toEditableImage(target), [box.width, 0, 0, box.height, box.x, box.y]);
           const content = engine.getPageContentBytes(stagedPage, staged.objects);
-          const updated = engine.interpretPage(content, stagedPage, staged.objects).displayList;
+          const updated = engine.interpretPage(content, stagedPage, staged.objects, new engine.OptionalContentVisibility(staged.catalog, staged.objects)).displayList;
           resizedImage = findImagePlacement(updated, { name: target.name, ...box });
           if (!resizedImage) throw new Error('The image could not be safely resized.');
           updatedItems = updated.filter(candidate => isSelectableDisplayItem(candidate, stagedPage.mediaBox)) as (ImageItem | PathItem)[];
@@ -4019,7 +4400,7 @@ export default function EditorPage() {
     } catch (error) {
       if (lease.isCurrent()) setError(`Resize image failed: ${error instanceof Error ? error.message : String(error)}`);
     }
-  }, [doc, currentPage, selectedDisplayItem, toEditableImage, pushEditorHistory, queueNativeEdit]);
+  }, [doc, currentPage, selectedDisplayItem, toEditableImage, pushEditorHistory, queueNativeEdit, setThumbnailKey]);
 
   const handleReplaceEmbeddedImage = useCallback(() => {
     if (selectedDisplayItem?.type !== 'image') return;
@@ -4270,7 +4651,7 @@ export default function EditorPage() {
   }, [editingLine, caretPos, handleEditSubmit, handleEditCancel, handleDuplicateLineBelow]);
 
   const handleHiddenBlur = useCallback(() => {
-    if (!editingLine) return;
+    if (!editingLine || !renderReadyRef.current) return;
     if (blurTimeoutRef.current) {
       clearTimeout(blurTimeoutRef.current);
     }
@@ -4282,7 +4663,7 @@ export default function EditorPage() {
       if (active?.closest?.('[data-keep-text-edit]')) {
         return;
       }
-      if (editingLineRef.current) {
+      if (editingLineRef.current && renderReadyRef.current) {
         handleEditSubmit();
       }
     }, 150);
@@ -4290,8 +4671,9 @@ export default function EditorPage() {
 
   // ── Navigation handlers ──
   const goToPrev = useCallback(async () => {
+    if (!await commitFormFieldDraft()) return;
     try {
-      await prepareExportText(floatingTextsRef.current.map(ft => ft.text).join('\n'));
+      await prepareOverlayText();
       if (editingLineRef.current && !await handleEditSubmit()) return;
       await commitDrawingsToPdf();
     } catch (e) {
@@ -4302,12 +4684,13 @@ export default function EditorPage() {
     }
     closeLinkPopover();
     setLinkCreatePending(false);
-    setCurrentPage(p => Math.max(0, p - 1));
-  }, [commitDrawingsToPdf, closeLinkPopover, handleEditSubmit, showUnsupportedGlyphWarning, prepareExportText]);
+    changePage(p => Math.max(0, p - 1));
+  }, [commitDrawingsToPdf, closeLinkPopover, handleEditSubmit, showUnsupportedGlyphWarning, prepareOverlayText, commitFormFieldDraft]);
 
   const goToNext = useCallback(async () => {
+    if (!await commitFormFieldDraft()) return;
     try {
-      await prepareExportText(floatingTextsRef.current.map(ft => ft.text).join('\n'));
+      await prepareOverlayText();
       if (editingLineRef.current && !await handleEditSubmit()) return;
       await commitDrawingsToPdf();
     } catch (e) {
@@ -4318,8 +4701,8 @@ export default function EditorPage() {
     }
     closeLinkPopover();
     setLinkCreatePending(false);
-    setCurrentPage(p => Math.min(totalPages - 1, p + 1));
-  }, [totalPages, commitDrawingsToPdf, closeLinkPopover, handleEditSubmit, showUnsupportedGlyphWarning, prepareExportText]);
+    changePage(p => Math.min(totalPages - 1, p + 1));
+  }, [totalPages, commitDrawingsToPdf, closeLinkPopover, handleEditSubmit, showUnsupportedGlyphWarning, prepareOverlayText, commitFormFieldDraft]);
 
   const zoomIn = useCallback(() => {
     setScale(s => Math.min(4, Math.round((s + 0.25) * 100) / 100));
@@ -4354,10 +4737,7 @@ export default function EditorPage() {
     return () => viewport.removeEventListener('wheel', onWheel);
   }, [doc, isLoading, currentPage]);
   // ── Watermark Handlers ──
-  const handleWatermarkImageUpload = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
+  const handleWatermarkImageUpload = useCallback((file: File) => {
     setWatermarkImageFile(file);
 
     const reader = new FileReader();
@@ -4399,7 +4779,6 @@ export default function EditorPage() {
       img.src = dataUrl;
     };
     reader.readAsDataURL(file);
-    e.target.value = '';
   }, []);
 
   const handleWatermarkImageClear = useCallback(() => {
@@ -4439,7 +4818,7 @@ export default function EditorPage() {
           layer: watermarkLayer,
           fontName: watermarkFontName,
           fontSize: Math.round(72 * (watermarkSize / 100)),
-          position: watermarkPosition as any,
+          position: watermarkPosition,
           pageIndices
         };
       } else if (watermarkType === 'shape') {
@@ -4478,9 +4857,9 @@ export default function EditorPage() {
           rotation: watermarkRotation,
           tile: watermarkMosaic,
           layer: watermarkLayer,
-          position: watermarkPosition as any,
+          position: watermarkPosition,
           pageIndices
-        } as any;
+        };
       } else {
         if (!watermarkImageBytes || !watermarkImageDims || !watermarkImageFile) {
           setError('Please upload an image first');
@@ -4501,7 +4880,7 @@ export default function EditorPage() {
           rotation: watermarkRotation,
           tile: watermarkMosaic,
           layer: watermarkLayer,
-          position: watermarkPosition as any,
+          position: watermarkPosition,
           pageIndices
         };
       }
@@ -4529,12 +4908,12 @@ export default function EditorPage() {
       console.error('[Editor] Apply watermark failed:', e);
       setError(`Failed to apply watermark: ${e instanceof Error ? e.message : String(e)}`);
     }
-  }, [doc, setDoc, pushEditorHistory, watermarkType, watermarkText, watermarkFontName, watermarkOpacity, watermarkRotation, watermarkSize, watermarkPosition, watermarkMosaic, watermarkPageFrom, watermarkPageTo, watermarkLayer, watermarkColor, watermarkShapeColor, watermarkShapeType, watermarkImageBytes, watermarkImageDims, watermarkImageFile, watermarkBlendMode]);
+  }, [doc, setDoc, pushEditorHistory, watermarkType, watermarkText, watermarkFontName, watermarkOpacity, watermarkRotation, watermarkSize, watermarkPosition, watermarkMosaic, watermarkPageFrom, watermarkPageTo, watermarkLayer, watermarkColor, watermarkShapeColor, watermarkShapeType, watermarkImageBytes, watermarkImageDims, watermarkImageFile, watermarkBlendMode, setThumbnailKey]);
 
   // ── Signature handlers ──
   const resolveSignatureImage = useCallback((sig: VisualSignature): string | null => {
     const entry = getSignatureLibrary().get(sig.appearanceId);
-    return entry?.imageDataUrl ?? null;
+    return sig.appearanceImageDataUrl ?? entry?.imageDataUrl ?? null;
   }, []);
 
   const handleSignatureSelect = useCallback((id: string) => {
@@ -4569,25 +4948,34 @@ export default function EditorPage() {
     pushSignatureSnapshot(next, 'lock-signature');
   }, [pushSignatureSnapshot]);
 
+  const reportSignatureStorageWarning = useCallback(() => {
+    const warning = getSignatureLibrary().consumeStorageWarning();
+    if (warning) setError(warning);
+  }, []);
+
   const handleSignatureCreateSave = useCallback((result: SignatureCreateResult) => {
     const entry = getSignatureLibrary().add({
       ...result.entry,
       favorite: false,
+      sessionOnly: result.storage === 'session',
     });
     refreshSignatureLibrary();
     setActiveLibraryId(entry.id);
-  }, [refreshSignatureLibrary]);
+    reportSignatureStorageWarning();
+  }, [refreshSignatureLibrary, reportSignatureStorageWarning]);
 
   const handleLibraryRename = useCallback((id: string, name: string) => {
     getSignatureLibrary().rename(id, name);
     refreshSignatureLibrary();
-  }, [refreshSignatureLibrary]);
+    reportSignatureStorageWarning();
+  }, [refreshSignatureLibrary, reportSignatureStorageWarning]);
 
   const handleLibraryDelete = useCallback((id: string) => {
-    getSignatureLibrary().delete(id);
-    if (activeLibraryId === id) setActiveLibraryId(null);
+    const deleted = getSignatureLibrary().delete(id);
+    if (deleted && activeLibraryId === id) setActiveLibraryId(null);
     refreshSignatureLibrary();
-  }, [activeLibraryId, refreshSignatureLibrary]);
+    reportSignatureStorageWarning();
+  }, [activeLibraryId, refreshSignatureLibrary, reportSignatureStorageWarning]);
 
   const handleLibraryDuplicate = useCallback((id: string) => {
     const dup = getSignatureLibrary().duplicate(id);
@@ -4595,12 +4983,14 @@ export default function EditorPage() {
       setActiveLibraryId(dup.id);
       refreshSignatureLibrary();
     }
-  }, [refreshSignatureLibrary]);
+    reportSignatureStorageWarning();
+  }, [refreshSignatureLibrary, reportSignatureStorageWarning]);
 
   const handleLibraryFavorite = useCallback((id: string) => {
     getSignatureLibrary().toggleFavorite(id);
     refreshSignatureLibrary();
-  }, [refreshSignatureLibrary]);
+    reportSignatureStorageWarning();
+  }, [refreshSignatureLibrary, reportSignatureStorageWarning]);
 
   const handleScanWatermarks = useCallback(() => {
     if (!doc || !engineRef.current) return;
@@ -4622,6 +5012,7 @@ export default function EditorPage() {
     try {
       const removal = engineRef.current.removeWatermarks(doc, detectedWatermarks);
       console.log('[Editor] Removed watermarks:', removal);
+      if (removal.removed > 0) setIsDirty(true);
       setDoc({ ...doc });
       setRenderKey(k => k + 1);
       setDetectedWatermarks(null);
@@ -4637,22 +5028,42 @@ export default function EditorPage() {
   }, []);
 
   // ── Download / Save ──
-  const handleDownload = useCallback(async () => {
-    if (!doc || !engineRef.current) return;
+  const handleDownload = useCallback(async (): Promise<boolean> => {
+    if (!doc || !engineRef.current || downloadOperationRef.current) return false;
+    if (securityBusyRef.current || searchBusy || cryptoSignBusy) {
+      setError('Wait for the current operation to finish before downloading.');
+      return false;
+    }
+    downloadOperationRef.current = true;
+    const lease = documentOwnerRef.current.lease(doc);
     try {
+      if (!await commitFormFieldDraft()) return false;
       setIsSaving(true);
+      setIsDownloading(true);
       setGlyphWarning(null);
       await annotationCommitPendingRef.current;
       await documentOwnerRef.current.whenIdle();
+      if (formDraftControllerRef.current.get() || linkPopoverMode ||
+          floatingTextEditStartRef.current || isDrawing || currentDrawPath.current.length > 0) {
+        throw new Error('Finish or cancel the current edit before downloading.');
+      }
       const result = await engineRef.current.exportDocument(doc, {
         mode: saveMode,
-        prepare: () => prepareExportText(floatingTextsRef.current.map(ft => ft.text).join('\n')),
+        prepare: () => prepareOverlayText(),
         commitPendingEdit: () => editingLineRef.current ? handleEditSubmit() : undefined,
         flatten: commitDrawingsToPdf,
       });
-      if (result.status === 'cancelled') return;
+      if (result.status === 'cancelled') return false;
       if (result.status === 'error') throw result.error;
       const bytes = result.bytes;
+      if (engineRef.current.securityEngine.isEncrypted(doc) || doc.decryptedFromEncrypted) {
+        const exported = await engineRef.current.parsePDF(new Uint8Array(bytes));
+        if (!engineRef.current.securityEngine.isEncrypted(exported)) {
+          throw new Error('The protected PDF could not be saved with its encryption.');
+        }
+      }
+      const stored = await commitDownloadedPdf(new Uint8Array(bytes).buffer, fileName || 'edited.pdf', lease.isCurrent);
+      if (!stored || !lease.isCurrent()) throw new Error('The document changed before the download could be saved.');
       const blob = new Blob([bytes as unknown as BlobPart], { type: 'application/pdf' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -4661,28 +5072,43 @@ export default function EditorPage() {
       a.click();
       URL.revokeObjectURL(url);
       setIsDirty(false);
+      return true;
     } catch (e) {
+      if (closeOperationRef.current) {
+        setCloseError(e instanceof Error ? e.message : 'Download failed. Your document remains open.');
+      }
       if (!showUnsupportedGlyphWarning(e)) {
         console.error('[Editor] Download failed:', e);
         setError(`Download failed: ${e instanceof Error ? e.message : String(e)}`);
       }
+      return false;
     } finally {
+      downloadOperationRef.current = false;
+      setIsDownloading(false);
       setIsSaving(false);
     }
-  }, [doc, fileName, saveMode, commitDrawingsToPdf, handleEditSubmit, showUnsupportedGlyphWarning, prepareExportText]);
+  }, [doc, fileName, saveMode, commitDrawingsToPdf, handleEditSubmit, showUnsupportedGlyphWarning, prepareOverlayText, selectedFormField, formFieldDraft, linkPopoverMode, isDrawing, searchBusy, cryptoSignBusy, commitFormFieldDraft]);
 
   // ── Compressed Download ──
   const handleCompressedDownload = useCallback(async (opts: CompressedDownloadOptions) => {
     // Resizing also requires re-encoding; Original compression always preserves image bytes.
     if (opts.quality === null) return handleDownload();
-    if (!doc || !engineRef.current) return;
+    if (!doc || !engineRef.current || downloadOperationRef.current) return;
+    if (securityBusyRef.current || searchBusy || cryptoSignBusy) {
+      setError('Wait for the current operation to finish before downloading.');
+      return;
+    }
+    downloadOperationRef.current = true;
+    const lease = documentOwnerRef.current.lease(doc);
     try {
+      if (!await commitFormFieldDraft()) return;
       setIsSaving(true);
+      setIsDownloading(true);
       setError(null);
       setGlyphWarning(null);
       await annotationCommitPendingRef.current;
       await documentOwnerRef.current.whenIdle();
-      await prepareExportText(floatingTextsRef.current.map(ft => ft.text).join('\n'));
+      await prepareOverlayText();
       if (editingLineRef.current && !await handleEditSubmit()) return;
       // Capture pending overlays before committing them; compare exportable
       // objects too, since not every mutation enters history or marks dirty.
@@ -4719,6 +5145,16 @@ export default function EditorPage() {
       const outLen = result.compressedBytes;
       const note = result.message;
 
+      if (engine.securityEngine.isEncrypted(doc) || doc.decryptedFromEncrypted) {
+        const exported = await engine.parsePDF(new Uint8Array(outBytes));
+        if (!engine.securityEngine.isEncrypted(exported)) {
+          throw new Error('The protected PDF could not be saved with its encryption.');
+        }
+      }
+
+      const stored = await commitDownloadedPdf(new Uint8Array(outBytes).buffer, fileName || 'edited.pdf', lease.isCurrent);
+      if (!stored || !lease.isCurrent()) throw new Error('The document changed before the download could be saved.');
+
       console.log('[Compress]', note, {
         method: result.method,
         originalBytes: originalLen,
@@ -4749,16 +5185,71 @@ export default function EditorPage() {
         setError(`Compression failed: ${e instanceof Error ? e.message : String(e)}`);
       }
     } finally {
+      downloadOperationRef.current = false;
+      setIsDownloading(false);
       setIsSaving(false);
     }
-  }, [doc, fileName, handleDownload, commitDrawingsToPdf, handleEditSubmit, showUnsupportedGlyphWarning, prepareExportText]);
+  }, [doc, fileName, handleDownload, commitDrawingsToPdf, handleEditSubmit, showUnsupportedGlyphWarning, prepareOverlayText, searchBusy, cryptoSignBusy, commitFormFieldDraft]);
 
-  const handleClose = useCallback(async () => {
+  const closeDocument = useCallback(async (preserveSavedCopy = false) => {
+    if (!preserveSavedCopy) await clearPdfFromStorage();
+    formDraftControllerRef.current.clear();
     documentOwnerRef.current.replace(null);
-    await clearEditorSession();
-    await clearPdfFromStorage();
+    recoveryPasswordRef.current = null;
     router.push('/');
   }, [router]);
+
+  const handleClose = useCallback(() => {
+    if (closeOperationRef.current || downloadOperationRef.current) return;
+    if (isSaving || securityBusyRef.current || cryptoSignBusy || searchBusy) {
+      setError('Wait for the current operation to finish before closing.');
+      return;
+    }
+    if (pendingRecoveryRef.current && !doc) {
+      // Cancelling the password prompt must preserve the recovery record.
+      router.push('/');
+      return;
+    }
+    closeOperationRef.current = true;
+    setCloseBusy(true);
+    setIsCheckingClose(true);
+    void (async () => {
+      await annotationCommitPendingRef.current;
+      await documentOwnerRef.current.whenIdle();
+      if (isDirtyRef.current || editingLineRef.current || isDrawing || currentDrawPath.current.length > 0 ||
+          floatingTextEditStartRef.current || hasPendingFormFieldDraft(selectedFormField, formFieldDraft) || linkPopoverMode) {
+        setCloseError(null);
+        setCloseDialogOpen(true);
+        return;
+      }
+      // A browser download can be cancelled after it starts; retain the last
+      // saved local PDF unless the user explicitly discards their changes.
+      await closeDocument(true);
+    })().catch((error: unknown) => {
+      setError(`Could not close the document: ${error instanceof Error ? error.message : String(error)}`);
+    }).finally(() => { closeOperationRef.current = false; setCloseBusy(false); setIsCheckingClose(false); });
+  }, [closeDocument, cryptoSignBusy, doc, formFieldDraft, isDrawing, isSaving, linkPopoverMode, router, searchBusy, selectedFormField]);
+
+  const handleCloseChoice = useCallback(async (save: boolean) => {
+    if (closeOperationRef.current) return;
+    closeOperationRef.current = true;
+    setCloseBusy(true);
+    setCloseError(null);
+    try {
+      if (save && !await handleDownload()) {
+        setCloseError(previous => previous ?? 'Download was cancelled or failed. Your document remains open.');
+        return;
+      }
+      await closeDocument(save);
+      setCloseDialogOpen(false);
+    } catch (error) {
+      setCloseError(error instanceof Error ? error.message : 'Could not close the document.');
+      setError(`Could not close the document: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      closeOperationRef.current = false;
+      setCloseBusy(false);
+    }
+  }, [closeDocument, handleDownload]);
 
   // ── Page Operations ──
   const pageSelectionRef = useRef(currentPage);
@@ -4768,17 +5259,20 @@ export default function EditorPage() {
     setTotalPages(nextDoc.pages.length);
     const selected = Math.max(0, Math.min(nextCurrentPage, nextDoc.pages.length - 1));
     pageSelectionRef.current = selected;
-    setCurrentPage(selected);
+    changePage(selected);
     setIsDirty(true);
     setRenderKey((k) => k + 1);
     setThumbnailKey((k) => k + 1);
-  }, [setDoc]);
+  }, [setDoc, setThumbnailKey]);
 
   const commitPageOperation = useCallback(async (
     label: string,
     apply: (staged: PDFDocumentData, selectedPage: number) => Promise<number>,
   ) => {
     if (!doc) return;
+    if (!await commitFormFieldDraft()) throw new Error('Finish the form field edit before changing pages.');
+    // Page deletion and rotation must not detach or reinterpret pending overlays.
+    await commitDrawingsToPdf();
     await queueNativeEdit(doc, async isCurrent => {
       const editor = new SessionDocumentEditor();
       const previousPages = doc.pages.map(page => page.ref.toKey());
@@ -4796,7 +5290,7 @@ export default function EditorPage() {
       refreshAfterPageOp(doc, nextPage);
       pushEditorHistory(label, { signatures }, nextPage, false, editor);
     });
-  }, [doc, queueNativeEdit, refreshAfterPageOp, pushEditorHistory]);
+  }, [doc, queueNativeEdit, refreshAfterPageOp, pushEditorHistory, commitDrawingsToPdf, commitFormFieldDraft]);
 
   const downloadPdfBytes = useCallback((bytes: Uint8Array, name: string) => {
     const blob = new Blob([bytes as unknown as BlobPart], { type: 'application/pdf' });
@@ -4853,53 +5347,85 @@ export default function EditorPage() {
     if (!doc || !engineRef.current) return;
     try {
       const engine = engineRef.current;
+      let changes: Array<{ from: string; to: string }> = [];
       await commitPageOperation('insert-pages', async (staged, selected) => {
         const sourceDoc = await engine.parsePDF(new Uint8Array(await file.arrayBuffer()));
-        engine.insertPagesFromDocument(staged, sourceDoc, staged.pages.length);
+        if (engine.securityEngine.isEncrypted(sourceDoc)) throw new Error('The source PDF is password protected. Unlock and save a copy before merging.');
+        changes = engine.insertPagesFromDocument(staged, sourceDoc, staged.pages.length);
         return selected;
       });
+      setRenamedFields(changes);
     } catch (e) {
       setError(`Failed to merge PDF: ${e instanceof Error ? e.message : String(e)}`);
     }
   }, [doc, commitPageOperation]);
 
-  const handleSplitCurrentPage = useCallback(async () => {
-    if (!doc || !engineRef.current) return;
+  const preparePageDownloads = useCallback(async (pageKeys: string[]): Promise<Uint8Array[] | null> => {
+    if (!doc || !engineRef.current || downloadOperationRef.current) return null;
+    if (securityBusyRef.current || searchBusy || cryptoSignBusy) {
+      throw new Error('Wait for the current operation to finish before downloading.');
+    }
+    downloadOperationRef.current = true;
     try {
+      if (!await commitFormFieldDraft()) return null;
       await annotationCommitPendingRef.current;
       await documentOwnerRef.current.whenIdle();
+      if (formDraftControllerRef.current.get() || linkPopoverMode ||
+          floatingTextEditStartRef.current || isDrawing || currentDrawPath.current.length > 0) {
+        throw new Error('Finish or cancel the current edit before downloading.');
+      }
+      await prepareOverlayText();
+      if (editingLineRef.current && !await handleEditSubmit()) return null;
       await commitDrawingsToPdf();
-      const bytes = await new SessionDocumentEditor().extractPages(doc, [currentPage]);
-      const base = (fileName || 'document').replace(/\.pdf$/i, '');
-      downloadPdfBytes(bytes, `${base}-page-${currentPage + 1}.pdf`);
-    } catch (e) {
-      setError(`Failed to split page: ${e instanceof Error ? e.message : String(e)}`);
+      const revision = editRevisionRef.current;
+      const results: Uint8Array[] = [];
+      await queueNativeEdit(doc, async isCurrent => {
+        const editor = new SessionDocumentEditor();
+        for (const key of pageKeys) {
+          const index = doc.pages.findIndex(page => page.ref.toKey() === key);
+          if (index < 0) throw new Error('A selected page changed before it could be downloaded.');
+          results.push(await editor.extractPages(doc, [index]));
+          if (!isCurrent() || editRevisionRef.current !== revision) {
+            throw new Error('The document changed while preparing the page downloads. Try again.');
+          }
+        }
+      });
+      return results;
+    } finally {
+      downloadOperationRef.current = false;
     }
-  }, [doc, currentPage, fileName, downloadPdfBytes, commitDrawingsToPdf]);
+  }, [doc, selectedFormField, formFieldDraft, linkPopoverMode, isDrawing, searchBusy, cryptoSignBusy,
+    prepareOverlayText, handleEditSubmit, commitDrawingsToPdf, queueNativeEdit, commitFormFieldDraft]);
+
+  const handleSplitCurrentPage = useCallback(async () => {
+    if (!doc || !engineRef.current || !doc.pages[currentPage]) return;
+    const key = doc.pages[currentPage].ref.toKey();
+    try {
+      const results = await preparePageDownloads([key]);
+      if (!results) return;
+      const base = (fileName || 'document').replace(/\.pdf$/i, '');
+      downloadPdfBytes(results[0], `${base}-page-${currentPage + 1}.pdf`);
+    } catch (e) {
+      if (!showUnsupportedGlyphWarning(e)) setError(`Failed to split page: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }, [doc, currentPage, fileName, downloadPdfBytes, preparePageDownloads, showUnsupportedGlyphWarning]);
 
   const handleSplitAllPages = useCallback(async () => {
-    if (!doc || !engineRef.current) return;
-    if (doc.pages.length < 2) return;
-    const ok = window.confirm(
-      `Download ${doc.pages.length} separate PDF files (one per page)?`,
-    );
-    if (!ok) return;
+    if (!doc || !engineRef.current || doc.pages.length < 2) return;
+    const keys = doc.pages.map(page => page.ref.toKey());
+    if (!window.confirm(`Download ${keys.length} separate PDF files (one per page)? Your browser may ask for permission.`)) return;
     try {
-      await annotationCommitPendingRef.current;
-      await documentOwnerRef.current.whenIdle();
-      await commitDrawingsToPdf();
-      const editor = new SessionDocumentEditor();
+      const results = await preparePageDownloads(keys);
+      if (!results) return;
       const base = (fileName || 'document').replace(/\.pdf$/i, '');
-      for (let i = 0; i < doc.pages.length; i++) {
-        const bytes = await editor.extractPages(doc, [i]);
-        downloadPdfBytes(bytes, `${base}-page-${i + 1}.pdf`);
-        // Brief pause so the browser doesn't coalesce / block downloads
-        await new Promise((r) => setTimeout(r, 120));
+      for (let i = 0; i < results.length; i++) {
+        downloadPdfBytes(results[i], `${base}-page-${i + 1}.pdf`);
+        await new Promise((resolve) => setTimeout(resolve, 120));
       }
     } catch (e) {
-      setError(`Failed to split pages: ${e instanceof Error ? e.message : String(e)}`);
+      if (!showUnsupportedGlyphWarning(e)) setError(`Failed to split pages: ${e instanceof Error ? e.message : String(e)}`);
     }
-  }, [doc, fileName, downloadPdfBytes, commitDrawingsToPdf]);
+  }, [doc, fileName, downloadPdfBytes, preparePageDownloads, showUnsupportedGlyphWarning]);
 
   const handleRemoveCurrentPage = useCallback(() => {
     if (!doc || doc.pages.length <= 1) return;
@@ -4936,7 +5462,7 @@ export default function EditorPage() {
             throw new Error('The selected page changed before the object could be deleted.');
           }
           const content = engine.getPageContentBytes(stagedPage, staged.objects);
-          const display = engine.interpretPage(content, stagedPage, staged.objects).displayList;
+          const display = engine.interpretPage(content, stagedPage, staged.objects, new engine.OptionalContentVisibility(staged.catalog, staged.objects)).displayList;
           const target = resolveSelectedObject(display, item);
           if (!target) throw new Error('The selected object changed or is ambiguous. Select it again.');
           const editable: EditableObject = {
@@ -4951,7 +5477,7 @@ export default function EditorPage() {
           await deleteObject(staged, currentPage, editable);
           if (target.type === 'path') {
             const updated = engine.getPageContentBytes(stagedPage, staged.objects);
-            const remaining = engine.interpretPage(updated, stagedPage, staged.objects).displayList;
+            const remaining = engine.interpretPage(updated, stagedPage, staged.objects, new engine.OptionalContentVisibility(staged.catalog, staged.objects)).displayList;
             if (resolveSelectedObject(remaining, target)) {
               throw new Error('The selected drawing could not be safely removed.');
             }
@@ -4972,7 +5498,7 @@ export default function EditorPage() {
       console.error('[Editor] Delete object failed:', e);
       setError(`Delete failed: ${e instanceof Error ? e.message : String(e)}`);
     }
-  }, [doc, currentPage, selectedDisplayItem, pushEditorHistory, queueNativeEdit]);
+  }, [doc, currentPage, selectedDisplayItem, pushEditorHistory, queueNativeEdit, setThumbnailKey]);
 
   const handleInsertBlankPage = useCallback(async (index: number) => {
     if (!doc || !engineRef.current) return;
@@ -4991,20 +5517,88 @@ export default function EditorPage() {
     if (!doc || !engineRef.current) return;
     try {
       const engine = engineRef.current;
+      let changes: Array<{ from: string; to: string }> = [];
       await commitPageOperation('insert-pages', async (staged, selected) => {
         const sourceDoc = await engine.parsePDF(new Uint8Array(await file.arrayBuffer()));
-        engine.insertPagesFromDocument(staged, sourceDoc, index);
+        if (engine.securityEngine.isEncrypted(sourceDoc)) throw new Error('The source PDF is password protected. Unlock and save a copy before inserting.');
+        changes = engine.insertPagesFromDocument(staged, sourceDoc, index);
         return selected >= index ? selected + sourceDoc.pages.length : selected;
       });
+      setRenamedFields(changes);
     } catch (e) {
       setError(`Failed to insert PDF: ${e instanceof Error ? e.message : String(e)}`);
     }
   }, [doc, commitPageOperation]);
 
+  const redactionTransientRef = useRef({ linkPopoverMode, linkCreatePending, signatureCreateOpen, editStyleOverrides });
+  useLayoutEffect(() => { redactionTransientRef.current = { linkPopoverMode, linkCreatePending, signatureCreateOpen, editStyleOverrides }; },
+    [linkPopoverMode, linkCreatePending, signatureCreateOpen, editStyleOverrides]);
+  const applyRedaction = useCallback(async (mode: 'marks' | 'region' | 'page'): Promise<{ message: string; revision: number; editRevision: number; pageKey: string }> => {
+    if (!doc || !engineRef.current || !renderReadyRef.current) throw new Error('Wait for the current page to finish rendering.');
+    if (isSaving || cryptoSignBusy || searchBusy || historyBusyRef.current || closeOperationRef.current || downloadOperationRef.current) {
+      throw new Error('Wait for the current operation to finish before redacting.');
+    }
+    const engine = engineRef.current;
+    const pageKey = doc.pages[currentPage]?.ref.toKey();
+    if (!pageKey) throw new Error('The current page is unavailable.');
+    const selected = redactionRegion;
+    if (mode === 'region' && (!selected || selected.pageKey !== pageKey || selected.scale !== scale || selected.revision !== renderKey)) {
+      throw new Error('Select the region again on the current page.');
+    }
+    const viewCurrent = () => {
+      const view = redactionViewRef.current;
+      return view.doc === doc && view.page === currentPage && currentPageRef.current === currentPage && view.scale === scale && view.revision === renderKey &&
+        view.tool === 'security' && renderReadyRef.current && doc.pages[currentPage]?.ref.toKey() === pageKey;
+    };
+    const inputsClear = () => !editingLineRef.current && !editingBlockIdRef.current && !editAnchorLineRef.current &&
+      !undoSnapshotRef.current && pendingStylesRef.current.length === 0 && redactionTransientRef.current.editStyleOverrides.length === 0 && !isDrawingRef.current &&
+      currentDrawPath.current.length === 0 && !shapeStartRef.current && !shapeEndRef.current && !eraseChangedRef.current &&
+      erasedAnnotationsRef.current.size === 0 && !formComposingRef.current && !redactionDragRef.current &&
+      !formDraftControllerRef.current.get() && !floatingTextEditStartRef.current && !dragInfo.current &&
+      !replacingImageIdRef.current && !replacingEmbeddedImageRef.current && !historyBusyRef.current &&
+      !redactionTransientRef.current.linkPopoverMode && !redactionTransientRef.current.linkCreatePending && !redactionTransientRef.current.signatureCreateOpen &&
+      drawnPathsRef.current.length === 0 && floatingTextsRef.current.length === 0 &&
+      floatingImagesRef.current.length === 0 && signaturesRef.current.length === 0;
+    if (!inputsClear()) throw new Error('Finish or save pending text, form, drawing, image and signature overlays before redacting. Your work is preserved.');
+    let pages = 0;
+    await queueNativeEdit(doc, async isCurrent => {
+      if (!isCurrent() || !inputsClear() || !viewCurrent()) throw new Error('The document, page view or pending work changed. Try redaction again.');
+      if (doc.decryptedFromEncrypted || doc.xref.trailerDict.has('Encrypt') || hasDocumentSignature(doc)) {
+        throw new Error('Redaction is unavailable for signed or protected PDFs. The document was not changed.');
+      }
+      const editor = new SessionDocumentEditor();
+      await editor.edit(doc, 'secure-redaction', async staged => {
+        if (mode !== 'marks') {
+          const inspection = await engine.securityEngine.inspector.inspectFull(staged);
+          if (!inspection.redactionMarksComplete || inspection.redactionMarks > 0) {
+            throw new Error('Existing redaction marks must be applied or removed before selecting another region.');
+          }
+          const pageIndex = staged.pages.findIndex(page => page.ref.toKey() === pageKey);
+          if (pageIndex < 0) throw new Error('The selected page is unavailable.');
+          const region = mode === 'page' ? staged.pages[pageIndex].mediaBox : selected!.pdf;
+          engine.securityEngine.redaction.markRegion(staged, pageIndex, region);
+        }
+        const result = await engine.securityEngine.redaction.applySecureRedactions(staged);
+        if (!result.pagesProcessed) throw new Error('No redaction marks were found. The document was not changed.');
+        pages = result.pagesProcessed;
+      }, { isCurrent: () => isCurrent() && inputsClear() && viewCurrent() });
+      if (!isCurrent()) throw new Error('The document changed during redaction.');
+      pushEditorHistory('secure-redaction', undefined, currentPage, false, editor);
+      setRedactionRegion(null);
+      setRedactionSelecting(false);
+      setRedactionPreview(null);
+      setRenderKey(value => value + 1);
+      setThumbnailKey(value => value + 1);
+      setIsDirty(true);
+    });
+    return { revision: renderKey + 1, editRevision: editRevisionRef.current, pageKey, message: `Redacted ${pages} page(s). ${isMobile ? 'Close this panel, then download' : 'Download'} a new copy to apply changes; the original file is unchanged. Undo restores the previous content. Independent copies elsewhere may remain.` };
+  }, [doc, currentPage, scale, renderKey, redactionRegion, isSaving, cryptoSignBusy, searchBusy, queueNativeEdit, pushEditorHistory, setThumbnailKey, setIsDirty, isMobile]);
+
 
   // ── Keyboard shortcuts (global — NOT during editing) ──
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
+      if (closeDialogOpen || closeOperationRef.current || downloadOperationRef.current) return;
       // Don't intercept when the hidden input has focus (editing)
       if (editingLine) return;
 
@@ -5019,6 +5613,9 @@ export default function EditorPage() {
         activeTool,
       });
       if (!action) return;
+      // Keep navigation and search usable, but do not act on selections from
+      // a page whose latest render failed or is still pending.
+      if (!renderReadyRef.current && (action.type === 'nudge' || action.type === 'delete')) return;
       if (action.type === 'search') { e.preventDefault(); setIsSearchOpen(v => !v);
       } else if (action.type === 'navigate-prev') { e.preventDefault(); goToPrev();
       } else if (action.type === 'navigate-next') { e.preventDefault(); goToNext();
@@ -5053,7 +5650,7 @@ export default function EditorPage() {
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [goToPrev, goToNext, zoomIn, zoomOut, editingLine, selectedDisplayItem, activeFloatingImageId, activeFloatingTextId, selectedSignatureId, handleSignatureDelete, activeTool, handleValidateSignatures, handleEmbeddedImageMove, handleFloatingImageNudge, handleFloatingTextNudge, handleDeleteSelectedDisplayItem, pushEditorHistory]);
+  }, [goToPrev, goToNext, zoomIn, zoomOut, editingLine, selectedDisplayItem, activeFloatingImageId, activeFloatingTextId, selectedSignatureId, handleSignatureDelete, activeTool, handleValidateSignatures, handleEmbeddedImageMove, handleFloatingImageNudge, handleFloatingTextNudge, handleDeleteSelectedDisplayItem, pushEditorHistory, closeDialogOpen]);
 
   // Clean, Minimalist 3D Tilted Pink Square Rubber Block Eraser Cursor
   const eraser3dSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32"><defs><filter id="er-pinksq-shadow" x="-30%" y="-30%" width="160%" height="160%"><feDropShadow dx="1" dy="1.4" stdDeviation="1.2" flood-color="#000000" flood-opacity="0.45"/></filter><linearGradient id="er-pink-top" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#FFA8E0"/><stop offset="60%" stop-color="#FF65C8"/><stop offset="100%" stop-color="#E840A8"/></linearGradient><linearGradient id="er-pink-left" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#FF52B7"/><stop offset="100%" stop-color="#D6208A"/></linearGradient><linearGradient id="er-pink-right" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#BF157A"/><stop offset="100%" stop-color="#80094F"/></linearGradient></defs><g filter="url(#er-pinksq-shadow)"><path d="M 4 16 L 16 4 L 28 16 L 28 19 L 16 31 L 4 19 Z" fill="none" stroke="#FFFFFF" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round"/><path d="M 4 16 L 16 4 L 28 16 L 16 28 Z" fill="url(#er-pink-top)" stroke="#80094F" stroke-width="0.6"/><path d="M 4 16 L 16 28 L 16 31 L 4 19 Z" fill="url(#er-pink-left)" stroke="#80094F" stroke-width="0.6"/><path d="M 16 28 L 28 16 L 28 19 L 16 31 Z" fill="url(#er-pink-right)" stroke="#80094F" stroke-width="0.6"/><path d="M 4 16 L 16 4 L 22 10 L 10 22 Z" fill="#FFFFFF" fill-opacity="0.45"/><circle cx="4" cy="28" r="0.8" fill="#FFFFFF" stroke="#80094F" stroke-width="0.4"/></g></svg>`;
@@ -5176,6 +5773,7 @@ export default function EditorPage() {
   // Space = temporary hand tool (Photoshop-style)
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
+      if (closeDialogOpen || closeOperationRef.current || downloadOperationRef.current) return;
       if (e.code !== 'Space' || e.repeat) return;
       if (editingLine) return;
       if (document.activeElement?.tagName === 'INPUT' || document.activeElement?.tagName === 'TEXTAREA') return;
@@ -5193,7 +5791,7 @@ export default function EditorPage() {
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
     };
-  }, [editingLine]);
+  }, [editingLine, closeDialogOpen]);
 
   // ── Loading state ──
   if (isLoading) {
@@ -5239,7 +5837,7 @@ export default function EditorPage() {
 
   // ── Main editor UI ──
   return (
-    <div className="flex flex-col h-screen font-sans bg-surface text-app overflow-hidden">
+    <div inert={isDownloading || isCheckingClose} className="flex flex-col h-screen font-sans bg-surface text-app overflow-hidden">
 
       {/* ── Top toolbar ── */}
       <Toolbar
@@ -5247,7 +5845,7 @@ export default function EditorPage() {
         currentPage={currentPage}
         totalPages={totalPages}
         scale={scale}
-        drawnPaths={drawnPaths}
+        drawnPaths={drawnPaths.filter(path => path.pageKey === doc?.pages[currentPage]?.ref.toKey())}
         isSaving={isSaving}
         canUndo={canUndo}
         canRedo={canRedo}
@@ -5272,12 +5870,13 @@ export default function EditorPage() {
                 if (lease && !lease.isCurrent()) return;
               }
               removeMarkupReferences(doc, currentPage, legacy);
-              setDrawnPaths([]);
-              drawnPathsRef.current = [];
-              pushEditorHistory('clear-markup', { drawnPaths: [] }, undefined, false, editor);
+              const remainingPaths = drawnPathsRef.current.filter(path => path.pageKey !== doc.pages[currentPage].ref.toKey());
+              setDrawnPaths(remainingPaths);
+              drawnPathsRef.current = remainingPaths;
+              pushEditorHistory('clear-markup', { drawnPaths: remainingPaths }, undefined, false, editor);
               // The byte boundary covers text markup; keep legacy clear redo coverage.
               if (editor && (legacy.length > 0 || drawnPaths.length > 0)) {
-                pushEditorHistory('clear-markup', { drawnPaths: [] }, undefined, true);
+                pushEditorHistory('clear-markup', { drawnPaths: remainingPaths }, undefined, true);
               }
               if (editor) setThumbnailKey(k => k + 1);
             } else {
@@ -5317,6 +5916,7 @@ export default function EditorPage() {
         }}
       />
 
+      <PdfConformanceNotice doc={doc} isDirty={isDirty} />
       <div className="flex-1 flex relative min-h-0 overflow-hidden">
 
         {/* ── Left sidebar (Tools only) — on mobile renders as fixed bottom strip ── */}
@@ -5349,10 +5949,24 @@ export default function EditorPage() {
                 setIsDirty(true);
               }}
               markDirty={() => setIsDirty(true)}
-              onClose={() => setIsPanelOpen(false)}
+              onBusyChange={(busy) => { securityBusyRef.current = busy; setSecurityBusy(busy); }}
+              onRedact={applyRedaction}
+              documentRevision={renderKey}
+              documentEditRevision={editRevision}
+              documentPageKey={doc?.pages[currentPage]?.ref.toKey()}
+              onSelectRedactionRegion={() => {
+                if (!renderReadyRef.current) { setError('Wait for the current page to finish rendering.'); return; }
+                setRedactionRegion(null);
+                setRedactionSelecting(true);
+              }}
+              onCancelRedactionRegion={() => { setRedactionSelecting(false); setRedactionRegion(null); setRedactionPreview(null); redactionDragRef.current = null; }}
+              selectingRedactionRegion={redactionSelecting}
+              hasRedactionRegion={!!redactionRegion}
+              onClose={() => { setIsPanelOpen(false); setRedactionSelecting(false); setRedactionRegion(null); setRedactionPreview(null); }}
               isMobile={isMobile}
             />
           ) : (
+            <div className="contents" inert={!renderReady}>
             <PropertiesSidebar
               activeTool={activeTool}
               setActiveTool={setActiveTool}
@@ -5488,6 +6102,9 @@ export default function EditorPage() {
           formFieldDraft={formFieldDraft}
           onFormFieldSelect={handleFormFieldSelect}
           onFormFieldChange={handleFormFieldChange}
+          onFormFieldDraftChange={handleFormFieldDraftChange}
+          onFormFieldCommit={() => { void commitFormFieldDraft(); }}
+          onFormFieldCompositionChange={(active) => { formComposingRef.current = active; }}
           onFlattenForms={handleFlattenForms}
           onDuplicateLineBelow={handleDuplicateLineBelow}
           tableInfo={selectedTableCell ? {
@@ -5578,6 +6195,7 @@ export default function EditorPage() {
           revisionEntries={revisionEntries}
           isMobile={isMobile}
         />
+            </div>
       )
     )}
 
@@ -5600,6 +6218,12 @@ export default function EditorPage() {
           onPointerUp={handleViewportPointerUp}
           onPointerCancel={handleViewportPointerUp}
         >
+          <UnassignedOverlays
+            overlays={{ drawnPaths, floatingTexts, floatingImages }}
+            pageKeys={doc?.pages.map(page => page.ref.toKey()) ?? []}
+            invalidSignatures={signatures.filter(signature => !doc?.pages[signature?.pageIndex])}
+            onAssign={assignRecoveredOverlay}
+          />
           {/* Floating Search & OCR Panel (viewport-fixed) */}
           {isSearchOpen && (
             <div className="absolute top-4 left-4 right-4 md:left-auto z-40 flex flex-col items-end gap-3 pointer-events-none animate-in fade-in slide-in-from-top-4 duration-200">
@@ -5630,6 +6254,11 @@ export default function EditorPage() {
                   onClose={() => setIsSearchOpen(false)}
                   busy={searchBusy}
                 />
+                {searchResults[activeMatchIndex]?.highlightVisible === false && (
+                  <p role="status" aria-live="polite" className="mt-1 max-w-72 rounded bg-zinc-800 px-2 py-1 text-xs text-zinc-200">
+                    The current match cannot be highlighted reliably because of its position or clipping.
+                  </p>
+                )}
               </div>
             </div>
           )}
@@ -5637,6 +6266,14 @@ export default function EditorPage() {
             <div className="absolute top-4 right-4 z-30 bg-zinc-900/90 backdrop-blur border border-zinc-800 shadow-lg rounded-full px-4 py-2 flex items-center gap-2 text-zinc-300 text-sm font-medium animate-in slide-in-from-top-4 fade-in">
               <Loader2 size={16} className="animate-spin text-accent" />
               Rendering...
+            </div>
+          )}
+          {!isRendering && pageRenderError && (
+            <div role="status" className="absolute top-4 left-4 z-30 rounded-lg border border-red-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-100">
+              <span>Unable to display this page. Your edits are preserved.</span>{' '}
+              <button type="button" className="underline" onClick={() => setRenderRetry(value => value + 1)}>
+                Retry rendering
+              </button>
             </div>
           )}
 
@@ -5650,8 +6287,10 @@ export default function EditorPage() {
           >
           <div
             ref={canvasContainerRef}
+            data-page-render-surface="true"
             className="relative inline-block shrink-0 shadow-[0_20px_50px_-12px_rgba(15,23,42,0.18),0_4px_16px_-2px_rgba(0,0,0,0.06),0_0_0_1px_rgba(15,23,42,0.06)] rounded-sm bg-white transition-shadow duration-300"
-            style={{ cursor: cursorForTool }}
+            aria-hidden={!renderReady}
+            style={{ cursor: cursorForTool, visibility: renderReady ? 'visible' : 'hidden', pointerEvents: renderReady ? 'auto' : 'none', touchAction: !spacePanHeld && ['draw', 'highlight', 'erase'].includes(activeTool) ? 'none' : undefined }}
             onDragOver={(e) => {
               e.preventDefault();
               e.dataTransfer.dropEffect = 'copy';
@@ -5666,9 +6305,8 @@ export default function EditorPage() {
               handleCanvasClick(e);
             }}
             onDoubleClick={handleCanvasDoubleClick}
-            onMouseDown={handleDrawStart}
+            {...drawingPointer}
             onMouseMove={handleCanvasMouseMove}
-            onMouseUp={handleDrawEnd}
             onMouseLeave={handleCanvasMouseLeave}
           >
             {/* PDF canvas is prepended here by the render effect */}
@@ -5683,38 +6321,109 @@ export default function EditorPage() {
               }}
             />
 
+            {(redactionSelecting || redactionRegion) && activeTool === 'security' && (
+              <div
+                data-redaction-surface="true"
+                className="absolute inset-0 z-50"
+                style={{ pointerEvents: redactionSelecting ? 'auto' : 'none', cursor: 'crosshair', touchAction: 'none' }}
+                onPointerDown={e => {
+                  if (!redactionSelecting || !e.isPrimary || !renderReadyRef.current) return;
+                  e.preventDefault(); e.stopPropagation();
+                  const box = e.currentTarget.getBoundingClientRect();
+                  const x = e.clientX - box.left, y = e.clientY - box.top;
+                  const pageKey = doc?.pages[currentPage]?.ref.toKey();
+                  if (!doc || !pageKey || redactionViewRef.current.tool !== 'security') return;
+                  redactionDragRef.current = { pointerId: e.pointerId, x, y, width: box.width, height: box.height,
+                    doc, pageKey, page: currentPage, scale, revision: renderKey };
+                  setRedactionPreview({ x, y, width: 0, height: 0 });
+                  e.currentTarget.setPointerCapture(e.pointerId);
+                }}
+                onPointerMove={e => {
+                  const start = redactionDragRef.current;
+                  if (!start || start.pointerId !== e.pointerId) return;
+                  e.preventDefault(); e.stopPropagation();
+                  const box = e.currentTarget.getBoundingClientRect();
+                  const x = e.clientX - box.left, y = e.clientY - box.top;
+                  setRedactionPreview({ x: Math.min(start.x, x), y: Math.min(start.y, y),
+                    width: Math.abs(start.x - x), height: Math.abs(start.y - y) });
+                }}
+                onPointerUp={e => {
+                  const start = redactionDragRef.current;
+                  if (!start || start.pointerId !== e.pointerId) return;
+                  e.preventDefault(); e.stopPropagation();
+                  redactionDragRef.current = null;
+                  const box = e.currentTarget.getBoundingClientRect();
+                  const x = e.clientX - box.left, y = e.clientY - box.top;
+                  try {
+                    const view = redactionViewRef.current;
+                    if (!doc || !renderReadyRef.current || start.doc !== doc || start.page !== currentPage ||
+                        start.scale !== scale || start.revision !== renderKey || start.pageKey !== doc.pages[currentPage]?.ref.toKey() ||
+                        view.doc !== doc || view.page !== currentPage || view.scale !== scale || view.revision !== renderKey || view.tool !== 'security' ||
+                        Math.abs(start.width - box.width) > 0.1 || Math.abs(start.height - box.height) > 0.1) {
+                      throw new Error('Page display changed. Select the redaction region again.');
+                    }
+                    const page = doc.pages[currentPage];
+                    if (!page) throw new Error('The selected page is unavailable.');
+                    const pdf = redactionRegionFromDrag(page, scale, box.width, box.height, start, { x, y });
+                    setRedactionRegion({ pageKey: page.ref.toKey(), scale, revision: renderKey, pdf,
+                      screen: { x: Math.min(start.x, x), y: Math.min(start.y, y), width: Math.abs(start.x - x), height: Math.abs(start.y - y) } });
+                    setRedactionSelecting(false);
+                    setRedactionPreview(null);
+                  } catch (error) {
+                    setRedactionPreview(null);
+                    setError(error instanceof Error ? error.message : 'Could not select the redaction region.');
+                  }
+                }}
+                onPointerCancel={e => {
+                  e.stopPropagation(); redactionDragRef.current = null; setRedactionPreview(null);
+                }}
+              >
+                {(redactionPreview || redactionRegion?.screen) && (() => {
+                  const box = redactionPreview ?? redactionRegion!.screen;
+                  return <div className="absolute border-2 border-red-600 bg-red-500/25 pointer-events-none"
+                    style={{ left: box.x, top: box.y, width: box.width, height: box.height }} />;
+                })()}
+              </div>
+            )}
+
             {/* Search matches highlights overlay */}
             {isSearchOpen && searchResults.length > 0 && searchResults
-              .filter(m => m.pageIndex === currentPage)
-              .map((m) => {
+              .filter(m => m.pageIndex === currentPage && m.highlightVisible !== false)
+              .flatMap((m) => {
                 const isCurrent = searchResults[activeMatchIndex]?.id === m.id;
-                const mediaBox = doc?.pages[currentPage]?.mediaBox;
-                const pageH = mediaBox?.height || 0;
-                const mbX = mediaBox?.x || 0;
-                const mbY = mediaBox?.y || 0;
+                const page = doc?.pages[currentPage];
+                if (!page) return [];
 
-                const { cssX: x1, cssY: y1 } = pdfToCanvas(m.pdfX, m.pdfY + m.pdfHeight, scale, pageH, mbX, mbY);
-                const { cssX: x2, cssY: y2 } = pdfToCanvas(m.pdfX + m.pdfWidth, m.pdfY, scale, pageH, mbX, mbY);
+                const rects = m.highlightRects ?? [{ x: m.pdfX, y: m.pdfY, width: m.pdfWidth, height: m.pdfHeight }];
+                return rects.map((rect, rectIndex) => {
+                  // A Form's glyph rectangle may fit its clip while CSS ring,
+                  // shadow or scaling would still paint beyond that clip.
+                  const boundedByForm = m.source === 'form' || !!m.parts?.some(part => part.source === 'form');
+                  const bounds = searchHighlightBounds(rect, page, scale, !!m.highlightClipped || boundedByForm);
+                  if (!bounds) return null;
+                  const w = bounds.clipped ? bounds.width : Math.max(bounds.width, 4);
+                  const h = bounds.clipped ? bounds.height : Math.max(bounds.height, 8);
 
-                const w = Math.max(Math.abs(x2 - x1), 4);
-                const h = Math.max(Math.abs(y2 - y1), 8);
-
-                return (
-                  <div
-                    key={m.id}
-                    className={`absolute rounded-sm pointer-events-none transition-all duration-150 ${
-                      isCurrent
-                        ? 'bg-amber-400/80 border-2 border-amber-600 ring-4 ring-amber-400/40 shadow-lg scale-[1.04] z-30'
-                        : 'bg-yellow-300/45 border border-yellow-500/80 shadow-sm z-20 hover:bg-yellow-300/70'
-                    }`}
-                    style={{
-                      left: Math.min(x1, x2),
-                      top: Math.min(y1, y2),
-                      width: w,
-                      height: h,
-                    }}
-                  />
-                );
+                  return (
+                    <div
+                      key={`${m.id}-${rectIndex}`}
+                      data-search-highlight="true"
+                      className={`absolute rounded-sm pointer-events-none transition-all duration-150 ${
+                        bounds.clipped
+                          ? (isCurrent ? 'bg-amber-400/80 z-30' : 'bg-yellow-300/45 z-20')
+                          : isCurrent
+                          ? 'bg-amber-400/80 border-2 border-amber-600 ring-4 ring-amber-400/40 shadow-lg scale-[1.04] z-30'
+                          : 'bg-yellow-300/45 border border-yellow-500/80 shadow-sm z-20 hover:bg-yellow-300/70'
+                      }`}
+                      style={{
+                        left: bounds.left,
+                        top: bounds.top,
+                        width: w,
+                        height: h,
+                      }}
+                    />
+                  );
+                });
               })}
 
             {/* DOM overlays for FloatingText */}
@@ -5778,6 +6487,7 @@ export default function EditorPage() {
               const { mediaBox } = page;
               return (
                 <EmbeddedImageOverlay
+                  catalog={doc.catalog}
                   item={item}
                   previewBox={activeTool === 'select' && imageBoxPreview?.item === item ? imageBoxPreview.box : null}
                   page={page}
@@ -5878,7 +6588,7 @@ export default function EditorPage() {
                 );
               })}
 
-            {floatingTexts.map(ft => {
+            {floatingTexts.filter(ft => ft.pageKey === doc?.pages[currentPage]?.ref.toKey()).map(ft => {
               const { cssX, cssY } = pdfToCanvas(
                 ft.pdfX,
                 ft.pdfY,
@@ -5929,6 +6639,7 @@ export default function EditorPage() {
                     value={ft.text}
                     autoFocus={isActive && activeFloatingTextId === ft.id}
                     onChange={(e) => {
+                      setIsDirty(true);
                       setFloatingTexts(prev => {
                         const next = prev.map(p => p.id === ft.id ? { ...p, text: e.target.value } : p);
                         floatingTextsRef.current = next;
@@ -5984,7 +6695,7 @@ export default function EditorPage() {
             })}
 
             {/* DOM overlays for FloatingImage */}
-            {floatingImages.map(fi => {
+            {floatingImages.filter(fi => fi.pageKey === doc?.pages[currentPage]?.ref.toKey()).map(fi => {
               const { cssX, cssY } = pdfToCanvas(
                 fi.pdfX,
                 fi.pdfY,
@@ -6396,8 +7107,8 @@ export default function EditorPage() {
                     setLinkPopoverMode('edit');
                   }}
                   onOpen={() => {
-                    const url = (linkDraftUrl || selectedLink.url || '').trim();
-                    if (url) window.open(url, '_blank', 'noopener,noreferrer');
+                    const url = linkDraftUrl || selectedLink.url || '';
+                    if (url && openDocumentLink(url) === 'blocked') setError('This document link cannot be opened safely.');
                   }}
                   onRemove={removeLinkFromPopover}
                   onClose={() => { void saveLinkFromPopover(true); }}
@@ -6422,14 +7133,16 @@ export default function EditorPage() {
         {/* ── Right Sidebar: Page Thumbnails (hidden on mobile, shown via floating button) ── */}
         {!isMobile && isThumbnailsOpen && !isFocusMode && (
           <ThumbnailsSidebar
+            conformanceNotice={<PdfConformanceNotice doc={doc} isDirty={isDirty} announce={false} />}
             onClose={() => setIsThumbnailsOpen(false)}
             totalPages={totalPages}
             currentPage={currentPage}
             thumbnails={thumbnails}
             isGeneratingThumbnails={isGeneratingThumbnails}
             onPageSelect={async (i) => {
+              if (!await commitFormFieldDraft()) return;
               try {
-                await prepareExportText(floatingTextsRef.current.map(ft => ft.text).join('\n'));
+                await prepareOverlayText();
                 if (editingLineRef.current && !await handleEditSubmit()) return;
                 await commitDrawingsToPdf();
               } catch (e) {
@@ -6440,7 +7153,7 @@ export default function EditorPage() {
               }
               closeLinkPopover();
               setLinkCreatePending(false);
-              setCurrentPage(i);
+              changePage(i);
             }}
             onDeletePage={handleDeletePage}
             onInsertBlankPage={handleInsertBlankPage}
@@ -6469,13 +7182,15 @@ export default function EditorPage() {
         {/* ── Mobile: Thumbnails drawer ── */}
         {isMobile && showMobileThumbnails && (
           <ThumbnailsSidebar
+            conformanceNotice={<PdfConformanceNotice doc={doc} isDirty={isDirty} announce={false} />}
             totalPages={totalPages}
             currentPage={currentPage}
             thumbnails={thumbnails}
             isGeneratingThumbnails={isGeneratingThumbnails}
             onPageSelect={async (i) => {
+              if (!await commitFormFieldDraft()) return;
               try {
-                await prepareExportText(floatingTextsRef.current.map(ft => ft.text).join('\n'));
+                await prepareOverlayText();
                 if (editingLineRef.current && !await handleEditSubmit()) return;
                 await commitDrawingsToPdf();
               } catch (e) {
@@ -6486,7 +7201,7 @@ export default function EditorPage() {
               }
               closeLinkPopover();
               setLinkCreatePending(false);
-              setCurrentPage(i);
+              changePage(i);
               setShowMobileThumbnails(false);
             }}
             onDeletePage={handleDeletePage}
@@ -6530,6 +7245,8 @@ export default function EditorPage() {
           </button>
         </div>
       )}
+
+      <FieldRenameNotice changes={renamedFields} onDismiss={() => setRenamedFields([])} />
 
       {/* Error toast */}
       {error && (
@@ -6592,6 +7309,14 @@ export default function EditorPage() {
         open={certificateImportOpen}
         onOpenChange={setCertificateImportOpen}
         onChange={handleCertificateImportChange}
+      />
+      <UnsavedChangesDialog
+        open={closeDialogOpen}
+        busy={closeBusy}
+        error={closeError}
+        onCancel={() => { setCloseError(null); setCloseDialogOpen(false); }}
+        onDiscard={() => void handleCloseChoice(false)}
+        onSave={() => void handleCloseChoice(true)}
       />
 
       {/* ── Export Panel ── */}

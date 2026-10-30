@@ -41,6 +41,7 @@ import { ctmBefore, deltaThroughInverse, invertMatrix } from '../editor/matrix';
 import { updatePageContent } from '../editor/stream-compiler';
 import { parseContentStream, type CSInstruction } from '../content/operator-lexer';
 import { interpretPage } from '../content/interpreter';
+import { OptionalContentVisibility } from '../content/optional-content';
 import { reconstructLines } from './line-reconstruction';
 import type { TextLine, StyledSegment } from './types';
 import {
@@ -330,8 +331,9 @@ function fixLineLocalOverlapsAfterFontSize(
   selectionStart: number,
   selectionEnd: number,
   newFontSize: number,
+  optionalContent?: OptionalContentVisibility,
 ): { bytes: Uint8Array; fixes: number; totalDx: number; pairs: Array<{ left: string; right: string; dx: number }> } {
-  const interpreted = interpretPage(contentBytes, page, objects);
+  const interpreted = interpretPage(contentBytes, page, objects, optionalContent);
   const freshLines = reconstructLines(interpreted.textRuns);
   const normalize = (t: string) => t.replace(/[\u2013\u2014\u2212]/g, '-');
   const want = normalize(line.text);
@@ -648,6 +650,7 @@ function ensureStandard14Font(
 }
 
 export interface StyleApplyOptions {
+  optionalContent?: OptionalContentVisibility;
   /**
    * When text was just rewritten in the same commit, peers were already shifted
    * for the new glyph widths. Extra fontSize trailing shifts then stack per
@@ -701,6 +704,40 @@ function groupIndicesByTextBlock(contentBytes: Uint8Array, run: TextRun): number
     if (arr) arr.push(idx); else groups.set(key, [idx]);
   }
   return [...groups.entries()].sort((a, b) => a[0] - b[0]).map(([, v]) => v);
+}
+
+/** Move independently positioned selected runs as earlier selected text grows. */
+function collectWholeLineSizeShifts(
+  contentBytes: Uint8Array,
+  line: TextLine,
+  newFontSize: number,
+): RunPositionShift[] {
+  const instructions = parseContentStream(contentBytes);
+  const runs = [...new Set(line.segments.map(segment => segment.run))];
+  if (runs.length < 2) return [];
+  const shifts: RunPositionShift[] = [];
+  let growth = 0;
+  let previousPosition = -1;
+  for (const run of runs) {
+    const indices = run.sourceInstructionIndices ?? [];
+    if (indices.length === 0) return [];
+    const textIndex = resolveTextShowingIndex(instructions, indices);
+    const block = findBtEtRange(instructions, textIndex);
+    if (!block) return [];
+    let position = -1;
+    for (let i = textIndex - 1; i >= block.bt; i--) {
+      if (['Tm', 'Td', 'TD'].includes(instructions[i].operator)) { position = i; break; }
+    }
+    // Runs following the same positioning operator advance naturally as their
+    // glyphs grow; a new position resets that advance and needs the shift.
+    if (position >= 0 && previousPosition >= 0 && position !== previousPosition && Math.abs(growth) >= 0.01) {
+      shifts.push({ run, dx: growth, dy: 0 });
+    }
+    previousPosition = position;
+    const oldSize = visualFontSize(run);
+    if (oldSize >= 0.5) growth += run.width * (newFontSize / oldSize - 1);
+  }
+  return shifts;
 }
 
 export function applyStyleToSelection(
@@ -759,6 +796,11 @@ export function applyStyleToSelection(
   let addedUnderline = false;
   let removedUnderline = false;
 
+  if (style.fontSize != null && start === 0 && end === line.text.length) {
+    const shifts = collectWholeLineSizeShifts(bytes, line, style.fontSize);
+    if (shifts.length > 0) bytes = applyRunPositionShifts(bytes, shifts, line.runs);
+  }
+
   // Push trailing absolute-Tm peers BEFORE patching Tf — indices must stay valid.
   // growthDx = selectedW × (newFs/oldFs − 1) stacks with text-edit insert shifts.
   if (
@@ -809,7 +851,7 @@ export function applyStyleToSelection(
   // (e.g. the "after" fragment of a style split that didn't advance enough).
   if (style.fontSize != null && end > start) {
     const fixed = fixLineLocalOverlapsAfterFontSize(
-      bytes, page, objects, line, start, end, style.fontSize,
+      bytes, page, objects, line, start, end, style.fontSize, options?.optionalContent,
     );
     bytes = fixed.bytes;
   }
@@ -850,7 +892,8 @@ export async function applyStyleToSelectionOnPage(
   const page = doc.pages[pageIndex];
   const contentBytes = getPageContentBytes(page, doc.objects);
   const result = applyStyleToSelection(
-    contentBytes, page, doc.objects, line, selectionStart, selectionEnd, style, options,
+    contentBytes, page, doc.objects, line, selectionStart, selectionEnd, style,
+    { ...options, optionalContent: new OptionalContentVisibility(doc.catalog, doc.objects) },
   );
   await updatePageContent(page.contentRefs, result.newContentBytes, doc.objects);
   return result;

@@ -40,7 +40,9 @@ import {
   shouldEncryptStream,
   shouldEncryptString,
 } from './object-cipher';
-import { stringToPdfBytes } from '../crypto/bytes';
+import { randomBytes, stringToPdfBytes } from '../crypto/bytes';
+import { validateEncryptionPasswords } from './password-validation';
+import { runDocumentTransaction } from '../../session/document-transaction';
 
 function asPdfStringBytes(obj: PDFString | PDFHexString): Uint8Array {
   return obj.toBytes();
@@ -53,9 +55,19 @@ export async function encryptDocumentObjects(
   doc: PDFDocumentData,
   options: EncryptOptions = {},
 ): Promise<EncryptionContext> {
+  return runDocumentTransaction(doc, staged => encryptDocumentObjectsInPlace(staged, options));
+}
+
+async function encryptDocumentObjectsInPlace(
+  doc: PDFDocumentData,
+  options: EncryptOptions,
+): Promise<EncryptionContext> {
+  validateEncryptionPasswords(options);
+  // Fail before changing the trailer even when an existing /ID needs no entropy.
+  randomBytes(1);
   const algorithm: EncryptionAlgorithm = options.algorithm ?? 'AES-256';
   const userPassword = options.userPassword ?? '';
-  const ownerPassword = options.ownerPassword ?? userPassword;
+  const ownerPassword = options.ownerPassword!;
   const permissions: PdfPermissions = mergePermissions(options.permissions);
   const encryptMetadata = options.encryptMetadata ?? true;
 
@@ -108,6 +120,9 @@ export async function encryptDocumentObjects(
     const gn = parseInt(parts[1], 10);
 
     if (obj instanceof PDFStream) {
+      if (obj.dict.getName('Type') !== 'XRef' && shouldEncryptString(parsed)) {
+        await encryptObjectValue(obj.dict, on, gn, ctx, new Set());
+      }
       await encryptStream(obj, on, gn, ctx);
     } else if (shouldEncryptString(parsed)) {
       await encryptObjectValue(obj, on, gn, ctx, new Set());

@@ -76,3 +76,10 @@ export function editorKeyboardAction(
   };
   return tools[key] ?? null;
 }
+
+/** Ignore editor shortcuts while an input method is composing text. */
+export function isCompositionKey(event: { isComposing?: boolean; keyCode?: number; key?: string }): boolean {
+  // Some browsers report the IME event as keyCode 229 even when isComposing
+  // is false during the final keydown. Never prevent the IME's default action.
+  return event.isComposing === true || event.keyCode === 229 || event.key === 'Process';
+}

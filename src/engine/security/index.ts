@@ -139,7 +139,7 @@ export {
   JavaScriptSecurityEngine,
   javaScriptSecurityEngine,
 } from './javascript/javascript-engine';
-export { RedactionEngine, redactionEngine } from './redaction/redaction-engine';
+export { RedactionEngine, redactionEngine, UnsupportedSecureRedactionError } from './redaction/redaction-engine';
 export { SanitizationEngine, sanitizationEngine } from './sanitization/sanitization-engine';
 export { IntegrityScanner, integrityScanner } from './integrity/integrity-scanner';
 export type { IntegrityReport, IntegrityIssue } from './integrity/integrity-scanner';

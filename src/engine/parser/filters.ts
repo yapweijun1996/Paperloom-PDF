@@ -15,6 +15,41 @@
 
 import { PDFDict } from '../types';
 
+/** Per-stream, per-filter output ceiling. Lower limits may be used by callers. */
+export const MAX_DECODED_STREAM_BYTES = 128 * 1024 * 1024;
+
+export class DecodeLimitError extends Error {
+  constructor() {
+    super('Decoded PDF stream exceeds the supported byte limit');
+    this.name = 'DecodeLimitError';
+  }
+}
+
+class BoundedBytes {
+  private bytes: Uint8Array;
+  length = 0;
+  constructor(private readonly limit: number) {
+    this.bytes = new Uint8Array(Math.min(limit, 1024));
+  }
+  push(first: number, second?: number, third?: number, fourth?: number): void {
+    const count = arguments.length;
+    const needed = this.length + count;
+    if (needed > this.limit) throw new DecodeLimitError();
+    if (needed > this.bytes.length) {
+      const grown = new Uint8Array(Math.min(this.limit, Math.max(needed, this.bytes.length * 2)));
+      grown.set(this.bytes);
+      this.bytes = grown;
+    }
+    this.bytes[this.length] = first;
+    if (count > 1) this.bytes[this.length + 1] = second!;
+    if (count > 2) this.bytes[this.length + 2] = third!;
+    if (count > 3) this.bytes[this.length + 3] = fourth!;
+    this.length = needed;
+  }
+  get(index: number): number { return this.bytes[index]; }
+  finish(): Uint8Array { return this.bytes.slice(0, this.length); }
+}
+
 // ─── Filter application ────────────────────────────────────────────────────
 
 /**
@@ -25,35 +60,71 @@ export async function applyFilters(
   data: Uint8Array,
   filterNames: string[],
   decodeParams: (PDFDict | null)[],
+  options?: {
+    maxDecodedBytes?: number;
+    remainingDecodedBytes?: () => number;
+    consumeDecodedBytes?: (length: number) => void;
+    consumeFailedDecodedBytes?: (length: number) => void;
+  },
 ): Promise<Uint8Array> {
+  const maxDecodedBytes = options?.maxDecodedBytes ?? MAX_DECODED_STREAM_BYTES;
+  if (!Number.isSafeInteger(maxDecodedBytes) || maxDecodedBytes < 0 || maxDecodedBytes > MAX_DECODED_STREAM_BYTES) {
+    throw new RangeError('Invalid decoded stream byte limit');
+  }
   let result = data;
+  const limit = () => Math.min(maxDecodedBytes, options?.remainingDecodedBytes?.() ?? maxDecodedBytes);
+  const consume = (value: Uint8Array) => options?.consumeDecodedBytes?.(value.length);
+  const decode = async (operation: (available: number) => Uint8Array | Promise<Uint8Array>) => {
+    const available = limit();
+    try { return await operation(available); }
+    catch (error) {
+      // A failed decoder may have produced and discarded partial output.
+      // Reserve its available allowance so a recovery scan cannot retry that
+      // work for free on many overlapping malformed streams.
+      if (!(error instanceof DecodeLimitError)) options?.consumeFailedDecodedBytes?.(Math.min(available, limit()));
+      throw error;
+    }
+  };
 
   for (let i = 0; i < filterNames.length; i++) {
     const filterName = filterNames[i];
     const params = decodeParams[i] ?? null;
+    let accounted = false;
 
     switch (filterName) {
       case 'FlateDecode':
       case 'Fl':
-        result = await flateDecode(result);
-        result = applyPredictor(result, params);
+        result = await decode(available => flateDecode(result, available));
+        consume(result);
+        {
+          const predicted = await decode(available => applyPredictor(result, params, available));
+          if (predicted !== result) consume(predicted);
+          result = predicted;
+        }
+        accounted = true;
         break;
       case 'ASCIIHexDecode':
       case 'AHx':
-        result = asciiHexDecode(result);
+        result = await decode(available => asciiHexDecode(result, available));
         break;
       case 'ASCII85Decode':
       case 'A85':
-        result = ascii85Decode(result);
+        result = await decode(available => ascii85Decode(result, available));
         break;
       case 'LZWDecode':
       case 'LZW':
-        result = lzwDecode(result, params);
-        result = applyPredictor(result, params);
+        result = await decode(available => lzwDecode(result, params, available));
+        consume(result);
+        {
+          const predicted = await decode(available => applyPredictor(result, params, available));
+          if (predicted !== result) consume(predicted);
+          result = predicted;
+        }
+        accounted = true;
         break;
       case 'RunLengthDecode':
       case 'RL':
-        result = runLengthDecode(result);
+        result = await decode(available => runLengthDecode(result, available));
         break;
       case 'DCTDecode':
       case 'DCT':
@@ -73,6 +144,7 @@ export async function applyFilters(
       default:
         console.warn(`[PDF Filter] Unknown filter: ${filterName}, passing through`);
     }
+    if (!accounted) consume(result);
   }
 
   return result;
@@ -84,23 +156,25 @@ export async function applyFilters(
  * Decompress FlateDecode (zlib/deflate) data using the browser's native
  * DecompressionStream API. Falls back to a manual inflate if unavailable.
  */
-async function flateDecode(data: Uint8Array): Promise<Uint8Array> {
+async function flateDecode(data: Uint8Array, limit: number): Promise<Uint8Array> {
   // Try browser's native DecompressionStream (available in all modern browsers)
   if (typeof DecompressionStream !== 'undefined') {
     try {
-      return await nativeInflate(data, 'deflate');
-    } catch {
+      return await nativeInflate(data, 'deflate', limit);
+    } catch (error) {
+      if (error instanceof DecodeLimitError) throw error;
       // Some PDFs use raw deflate without zlib header
       try {
-        return await nativeInflate(data, 'raw');
-      } catch {
+        return await nativeInflate(data, 'raw', limit);
+      } catch (rawError) {
+        if (rawError instanceof DecodeLimitError) throw rawError;
         // Fall through to manual implementation
       }
     }
   }
 
   // Fallback: manual inflate implementation
-  return manualInflate(data);
+  return manualInflate(data, limit);
 }
 
 /**
@@ -109,6 +183,7 @@ async function flateDecode(data: Uint8Array): Promise<Uint8Array> {
 async function nativeInflate(
   data: Uint8Array,
   format: 'deflate' | 'raw',
+  limit: number,
 ): Promise<Uint8Array> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const ds = new DecompressionStream(format as any);
@@ -126,6 +201,11 @@ async function nativeInflate(
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
+    if (value.length > limit - totalLength) {
+      void reader.cancel().catch(() => {});
+      void writer.abort().catch(() => {});
+      throw new DecodeLimitError();
+    }
     chunks.push(value);
     totalLength += value.length;
   }
@@ -147,7 +227,7 @@ async function nativeInflate(
  *
  * This is a complete, standalone implementation — no external dependencies.
  */
-function manualInflate(data: Uint8Array): Uint8Array {
+function manualInflate(data: Uint8Array, limit: number, onComplete?: (offset: number, output: Uint8Array) => void): Uint8Array {
   let pos = 0;
   let bitBuf = 0;
   let bitCount = 0;
@@ -164,7 +244,7 @@ function manualInflate(data: Uint8Array): Uint8Array {
     }
   }
 
-  const output: number[] = [];
+  const output = new BoundedBytes(limit);
 
   function readBits(n: number): number {
     while (bitCount < n) {
@@ -227,6 +307,7 @@ function manualInflate(data: Uint8Array): Uint8Array {
       node = bit ? node.right! : node.left!;
       if (!node) throw new Error('Invalid Huffman code');
     }
+    if (!Number.isInteger(node.symbol)) throw new Error('Invalid Huffman tree');
     return node.symbol!;
   }
 
@@ -241,10 +322,13 @@ function manualInflate(data: Uint8Array): Uint8Array {
       // Align to byte boundary
       bitBuf = 0;
       bitCount = 0;
+      if (pos + 4 > data.length) throw new Error('Truncated deflate stored-block header');
       const len = data[pos] | (data[pos + 1] << 8);
-      pos += 2;
-      // Skip NLEN (one's complement of LEN)
-      pos += 2;
+      const inverse = data[pos + 2] | (data[pos + 3] << 8);
+      pos += 4;
+      if ((len ^ inverse) !== 0xffff || len > data.length - pos) {
+        throw new Error('Invalid or truncated deflate stored block');
+      }
       for (let i = 0; i < len; i++) {
         output.push(data[pos++]);
       }
@@ -276,13 +360,16 @@ function manualInflate(data: Uint8Array): Uint8Array {
           lengths[idx++] = sym;
         } else if (sym === 16) {
           const repeat = readBits(2) + 3;
-          const prev = idx > 0 ? lengths[idx - 1] : 0;
+          if (idx === 0 || repeat > lengths.length - idx) throw new Error('Invalid deflate code length repeat');
+          const prev = lengths[idx - 1];
           for (let i = 0; i < repeat; i++) lengths[idx++] = prev;
         } else if (sym === 17) {
           const repeat = readBits(3) + 3;
+          if (repeat > lengths.length - idx) throw new Error('Invalid deflate code length repeat');
           for (let i = 0; i < repeat; i++) lengths[idx++] = 0;
         } else if (sym === 18) {
           const repeat = readBits(7) + 11;
+          if (repeat > lengths.length - idx) throw new Error('Invalid deflate code length repeat');
           for (let i = 0; i < repeat; i++) lengths[idx++] = 0;
         }
       }
@@ -307,21 +394,59 @@ function manualInflate(data: Uint8Array): Uint8Array {
       } else {
         // Length-distance pair
         const lenIdx = sym - 257;
+        if (lenIdx < 0 || lenIdx >= lengthBase.length) throw new Error('Invalid deflate length code');
         const length = lengthBase[lenIdx] + readBits(lengthExtra[lenIdx]);
 
         const distSym = decodeSymbol(distTree);
+        if (distSym >= distBase.length) throw new Error('Invalid deflate distance code');
         const distance = distBase[distSym] + readBits(distExtra[distSym]);
+        if (!Number.isSafeInteger(distance) || distance < 1 || distance > output.length) {
+          throw new Error('Invalid deflate back-reference');
+        }
 
         // Copy from output buffer
         const srcStart = output.length - distance;
         for (let i = 0; i < length; i++) {
-          output.push(output[srcStart + i]);
+          output.push(output.get(srcStart + i));
         }
       }
     }
   }
 
-  return new Uint8Array(output);
+  const result = output.finish();
+  onComplete?.(pos, result);
+  return result;
+}
+
+function validatedZlib(data: Uint8Array, limit: number): { decoded: Uint8Array; end: number } {
+  if (data.length < 6 || (data[0] & 15) !== 8 || (data[0] >>> 4) > 7 ||
+      ((data[0] << 8) | data[1]) % 31 !== 0 || (data[1] & 0x20)) {
+    throw new Error('Unsupported zlib header');
+  }
+  let end = 0;
+  const decoded = manualInflate(data, limit, (offset, output) => {
+    if (offset + 4 > data.length) throw new Error('Truncated zlib checksum');
+    let a = 1, b = 0;
+    for (const value of output) { a = (a + value) % 65521; b = (b + a) % 65521; }
+    const actual = ((b << 16) | a) >>> 0;
+    const expected = ((data[offset] * 0x1000000) + (data[offset + 1] << 16) + (data[offset + 2] << 8) + data[offset + 3]) >>> 0;
+    if (actual !== expected) throw new Error('Zlib checksum mismatch');
+    end = offset + 4;
+  });
+  return { decoded, end };
+}
+
+/** Return a proven zlib boundary for inline streams, including the Adler-32 trailer. */
+export function zlibEncodedLength(data: Uint8Array): number {
+  return validatedZlib(data, MAX_DECODED_STREAM_BYTES).end;
+}
+
+/** Decode one complete zlib stream, rejecting trailing data and oversized output. */
+export function decodeZlibFully(data: Uint8Array, limit: number): Uint8Array {
+  if (!Number.isSafeInteger(limit) || limit < 0 || limit > MAX_DECODED_STREAM_BYTES) throw new RangeError('Invalid decoded stream byte limit');
+  const result = validatedZlib(data, limit);
+  if (result.end !== data.length) throw new Error('Trailing data after zlib stream');
+  return result.decoded;
 }
 
 // ─── Huffman tree ───────────────────────────────────────────────────────────
@@ -382,15 +507,21 @@ function buildHuffmanTree(codeLengths: Uint8Array): HuffmanTree {
  * Apply PNG/TIFF predictor to decompressed data.
  * Commonly used with FlateDecode and LZWDecode.
  */
-function applyPredictor(data: Uint8Array, params: PDFDict | null): Uint8Array {
+function applyPredictor(data: Uint8Array, params: PDFDict | null, limit: number): Uint8Array {
   if (!params) return data;
 
   const predictor = params.getNumber('Predictor') ?? 1;
   if (predictor === 1) return data; // No prediction
+  if (predictor !== 2 && (predictor < 10 || predictor > 15)) return data;
 
   const columns = params.getNumber('Columns') ?? 1;
   const colors = params.getNumber('Colors') ?? 1;
   const bitsPerComponent = params.getNumber('BitsPerComponent') ?? 8;
+  if (![columns, colors, bitsPerComponent].every(value => Number.isSafeInteger(value) && value > 0)) {
+    throw new Error('Invalid PDF stream predictor dimensions');
+  }
+  const rowBytes = Math.ceil((columns * colors * bitsPerComponent) / 8);
+  if (!Number.isSafeInteger(rowBytes) || rowBytes > limit) throw new DecodeLimitError();
 
   if (predictor === 2) {
     // TIFF Predictor 2 — horizontal differencing
@@ -442,6 +573,8 @@ function pngPredictor(
   // Each row in PNG-predicted data has a 1-byte filter type prefix
   const srcRowBytes = rowBytes + 1;
   const rows = Math.floor(data.length / srcRowBytes);
+
+  if (rows === 0) return new Uint8Array(0);
 
   const result = new Uint8Array(rows * rowBytes);
   const prevRow = new Uint8Array(rowBytes); // Previous row (starts as zeros)
@@ -500,8 +633,8 @@ function paethPredictor(a: number, b: number, c: number): number {
 
 // ─── ASCIIHexDecode ─────────────────────────────────────────────────────────
 
-function asciiHexDecode(data: Uint8Array): Uint8Array {
-  const output: number[] = [];
+function asciiHexDecode(data: Uint8Array, limit: number): Uint8Array {
+  const output = new BoundedBytes(limit);
   let hex = '';
 
   for (let i = 0; i < data.length; i++) {
@@ -527,13 +660,13 @@ function asciiHexDecode(data: Uint8Array): Uint8Array {
     output.push(parseInt(hex + '0', 16));
   }
 
-  return new Uint8Array(output);
+  return output.finish();
 }
 
 // ─── ASCII85Decode (Base85) ─────────────────────────────────────────────────
 
-function ascii85Decode(data: Uint8Array): Uint8Array {
-  const output: number[] = [];
+function ascii85Decode(data: Uint8Array, limit: number): Uint8Array {
+  const output = new BoundedBytes(limit);
   let i = 0;
 
   // Skip "<~" prefix if present
@@ -591,14 +724,14 @@ function ascii85Decode(data: Uint8Array): Uint8Array {
     if (numBytes >= 4) output.push(value & 0xff);
   }
 
-  return new Uint8Array(output);
+  return output.finish();
 }
 
 // ─── LZWDecode ──────────────────────────────────────────────────────────────
 
-function lzwDecode(data: Uint8Array, params: PDFDict | null): Uint8Array {
+function lzwDecode(data: Uint8Array, params: PDFDict | null, limit: number): Uint8Array {
   const earlyChange = params?.getNumber('EarlyChange') ?? 1;
-  const output: number[] = [];
+  const output = new BoundedBytes(limit);
 
   let bitPos = 0;
   let codeSize = 9;
@@ -657,7 +790,7 @@ function lzwDecode(data: Uint8Array, params: PDFDict | null): Uint8Array {
 
     for (let i = 0; i < entry.length; i++) output.push(entry[i]);
 
-    if (prevEntry) {
+    if (prevEntry && table.length < 4096) {
       const newEntry = new Uint8Array(prevEntry.length + 1);
       newEntry.set(prevEntry);
       newEntry[prevEntry.length] = entry[0];
@@ -673,13 +806,13 @@ function lzwDecode(data: Uint8Array, params: PDFDict | null): Uint8Array {
     prevEntry = entry;
   }
 
-  return new Uint8Array(output);
+  return output.finish();
 }
 
 // ─── RunLengthDecode ────────────────────────────────────────────────────────
 
-function runLengthDecode(data: Uint8Array): Uint8Array {
-  const output: number[] = [];
+function runLengthDecode(data: Uint8Array, limit: number): Uint8Array {
+  const output = new BoundedBytes(limit);
   let i = 0;
 
   while (i < data.length) {
@@ -705,7 +838,7 @@ function runLengthDecode(data: Uint8Array): Uint8Array {
     }
   }
 
-  return new Uint8Array(output);
+  return output.finish();
 }
 
 // ─── Compression (for writing) ──────────────────────────────────────────────

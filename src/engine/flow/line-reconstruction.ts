@@ -142,7 +142,9 @@ function processCluster(runs: TextRun[]): TextLine[] {
 export function reconstructLines(runs: TextRun[]): TextLine[] {
   if (runs.length === 0) return [];
 
-  const enriched = runs.map(run => ({
+  // Logical runs may join differently colored paint runs for text extraction.
+  // Editing must keep those boundaries so untouched fragments retain their style.
+  const enriched = runs.flatMap(run => run.paintRuns ?? [run]).map(run => ({
     run,
     baseline: computeBaseline(run),
     left: getRunBounds(run).left,

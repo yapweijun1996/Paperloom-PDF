@@ -43,8 +43,8 @@ export const EXPORT_FORMATS: ExportFormatInfo[] = [
   },
   {
     id: 'svg',
-    label: 'SVG Vector',
-    description: 'Page render as SVG shell (client-side)',
+    label: 'SVG Image',
+    description: 'SVG containing a raster PNG rendering of the page',
     extension: '.svg',
     icon: '✏️',
     mimeType: 'image/svg+xml',
@@ -92,6 +92,15 @@ export interface SizeEstimation {
   message: string;
 }
 
+/** Reject invalid or empty selections before creating a download. */
+function resolveExportPages(doc: PDFDocumentData, selected: number[] | null): number[] {
+  const pages = selected ?? Array.from({ length: doc.pages.length }, (_, i) => i);
+  if (pages.length === 0 || pages.some(index => !Number.isSafeInteger(index) || index < 0 || index >= doc.pages.length)) {
+    throw new Error('Select at least one valid page to export.');
+  }
+  return pages;
+}
+
 // ─── Image Export (PNG/JPEG) ────────────────────────────────────────────────────
 
 export async function exportPageToImage(
@@ -106,7 +115,8 @@ export async function exportPageToImage(
   if (!page) throw new Error(`Page ${pageIndex} not found`);
 
   const scale = dpi / 72;
-  const result = await engine.renderPage(doc, pageIndex, { scale });
+  // Export dimensions depend on the selected DPI, not the display density.
+  const result = await engine.renderPage(doc, pageIndex, { scale, devicePixelRatio: 1 });
   const canvas = result.canvas;
 
   return new Promise<Blob>((resolve, reject) => {
@@ -125,7 +135,7 @@ export async function exportToImages(
   options: ExportOptions,
   onProgress?: (current: number, total: number) => void,
 ): Promise<ExportResult> {
-  const pages = options.pages ?? Array.from({ length: doc.pages.length }, (_, i) => i);
+  const pages = resolveExportPages(doc, options.pages);
   const format = options.format as 'png' | 'jpeg';
 
   if (pages.length === 1) {
@@ -171,7 +181,7 @@ export async function exportPageToSVG(
   const pageWidth = mediaBox.width;
   const pageHeight = mediaBox.height;
 
-  const result = await engine.renderPage(doc, pageIndex, { scale });
+  const result = await engine.renderPage(doc, pageIndex, { scale, devicePixelRatio: 1 });
   const canvas = result.canvas;
   const dataUrl = canvas.toDataURL('image/png');
 
@@ -189,7 +199,7 @@ export async function exportToSVG(
   options: ExportOptions,
   onProgress?: (current: number, total: number) => void,
 ): Promise<ExportResult> {
-  const pages = options.pages ?? Array.from({ length: doc.pages.length }, (_, i) => i);
+  const pages = resolveExportPages(doc, options.pages);
 
   if (pages.length === 1) {
     const svg = await exportPageToSVG(doc, pages[0], engine);
@@ -226,7 +236,7 @@ export async function exportToPlainText(
   options: ExportOptions,
   onProgress?: (current: number, total: number) => void,
 ): Promise<ExportResult> {
-  const pages = options.pages ?? Array.from({ length: doc.pages.length }, (_, i) => i);
+  const pages = resolveExportPages(doc, options.pages);
   const parts: string[] = [];
 
   for (let i = 0; i < pages.length; i++) {

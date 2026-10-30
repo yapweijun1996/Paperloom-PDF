@@ -4,7 +4,8 @@ import { readFileSync, unlinkSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { parsePDF } from '../parser/parser';
-import { saveDocument, saveQuick } from '../writer/save-pipeline';
+import { saveDocument, saveQuick, saveOptimized } from '../writer/save-pipeline';
+import { serializeDocument, serializeDocumentCompact } from '../writer/serializer';
 import { securityEngine } from '../security';
 import { PDFStream } from '../types';
 
@@ -27,6 +28,35 @@ function streamText(doc: Awaited<ReturnType<typeof parsePDF>>): string {
 }
 
 describe('qpdf encrypted fixtures', () => {
+  it.each([
+    ['quick save', saveQuick],
+    ['incremental quick save', (doc: Awaited<ReturnType<typeof parsePDF>>) => saveQuick(doc, new Set(['3_0']))],
+    ['optimized save', saveOptimized],
+    ['full serialization', serializeDocument],
+    ['compact serialization', serializeDocumentCompact],
+  ] as const)('refuses %s if the authenticated re-encryption key is missing', async (_label, save) => {
+    const source = new Uint8Array(readFileSync(join(fixtureDir, 'aes-128-r4.pdf')));
+    const opened = await securityEngine.open(await parsePDF(source), 'userpass');
+    expect(streamText(opened.doc)).toContain('Hello encrypted');
+    const objectCount = opened.doc.objects.size;
+    delete opened.doc.encryptionFileKey;
+    await expect(save(opened.doc)).rejects.toThrow(/re-encryption context/i);
+    expect(opened.doc.objects.size).toBe(objectCount);
+    expect(streamText(opened.doc)).toContain('Hello encrypted');
+  }, 30000);
+
+  it('rejects an empty key or missing encryption dictionary before saving', async () => {
+    const source = new Uint8Array(readFileSync(join(fixtureDir, 'aes-128-r4.pdf')));
+    const emptyKey = await securityEngine.open(await parsePDF(source), 'userpass');
+    emptyKey.doc.encryptionFileKey = new Uint8Array();
+    await expect(saveQuick(emptyKey.doc)).rejects.toThrow(/re-encryption context/i);
+    const missingDict = await securityEngine.open(await parsePDF(source), 'userpass');
+    const encryptRef = missingDict.doc.xref.trailerDict.getRef('Encrypt');
+    expect(encryptRef).toBeDefined();
+    missingDict.doc.objects.delete(encryptRef!.toKey());
+    await expect(serializeDocument(missingDict.doc)).rejects.toThrow(/re-encryption context/i);
+  }, 30000);
+
   for (const [name, password] of fixtures) {
     it(`opens ${name} with its user password and can be re-saved`, async () => {
       const parsed = await parsePDF(new Uint8Array(readFileSync(join(fixtureDir, name))));

@@ -18,6 +18,8 @@ import {
   type PDFRectangle,
 } from '../types';
 import { resolveRef } from '../parser/parser';
+import { OptionalContentVisibility } from '../content/optional-content';
+import { isAnnotationVisible } from '../content/annotation-visibility';
 import type {
   AcroFormCatalog,
   AcroFormField,
@@ -50,6 +52,31 @@ function parseRgbFromEntry(obj: PDFObject | undefined): [number, number, number]
   return [n[0] ?? 0, n[1] ?? 0, n[2] ?? 0];
 }
 
+function choiceOptions(doc: PDFDocumentData, dict: PDFDict): Array<{ value: string; label: string }> | undefined {
+  const options = inherited(doc, dict, 'Opt');
+  if (!(options instanceof PDFArray)) return undefined;
+  const resolve = (value: PDFObject | undefined) => value instanceof PDFRef ? resolveRef(value, doc.objects) : value;
+  const stringValue = (value: PDFObject | undefined) => {
+    const resolved = resolve(value);
+    return resolved instanceof PDFString || resolved instanceof PDFHexString ? formText(resolved) : undefined;
+  };
+  const result: Array<{ value: string; label: string }> = [];
+  for (const item of options.items) {
+    const resolved = resolve(item);
+    if (resolved instanceof PDFArray) {
+      const value = stringValue(resolved.get(0));
+      const label = stringValue(resolved.get(1));
+      if (resolved.length !== 2 || value === undefined || label === undefined) return undefined;
+      result.push({ value, label });
+    } else {
+      const value = stringValue(resolved);
+      if (value === undefined) return undefined;
+      result.push({ value, label: value });
+    }
+  }
+  return result;
+}
+
 function buildWidget(
   dict: PDFDict,
   ref: PDFRef,
@@ -64,7 +91,7 @@ function buildWidget(
   const v = fieldType === 'Sig' ? dict.get('V') : inherited(doc, dict, 'V');
   let value: string | boolean | string[] | null = null;
   if (v instanceof PDFString || v instanceof PDFHexString || v instanceof PDFName) value = strVal(v);
-  else if (v instanceof PDFArray) value = v.items.map(i => strVal(i));
+  else if (v instanceof PDFArray) value = v.items.map(i => strVal(i instanceof PDFRef ? resolveRef(i, objects) : i));
   else if (v instanceof PDFRef) {
     // Signature fields store /V → Sig dictionary ref
     value = fieldType === 'Sig' ? `[Sig:${v.toKey()}]` : null;
@@ -93,6 +120,7 @@ function buildWidget(
     required: (ff & 2) !== 0,
     buttonFlags: fieldType === 'Btn' ? ff : 0,
     choiceFlags: fieldType === 'Ch' ? ff : 0,
+    choiceOptions: fieldType === 'Ch' ? choiceOptions(doc, dict) : undefined,
     exportValue: dict.get('Opt') ? strVal(
       dict.get('Opt') instanceof PDFArray
         ? (dict.get('Opt') as PDFArray).get(0)
@@ -171,7 +199,7 @@ function walkField(
   const v = obj.get('V');
   let value: string | boolean | string[] | null = null;
   if (v instanceof PDFString || v instanceof PDFHexString || v instanceof PDFName) value = strVal(v);
-  else if (v instanceof PDFArray) value = v.items.map(i => strVal(i));
+  else if (v instanceof PDFArray) value = v.items.map(i => strVal(i instanceof PDFRef ? resolveRef(i, objects) : i));
   else if (v instanceof PDFRef && ft === 'Sig') {
     value = `[Sig:${v.toKey()}]`;
   }
@@ -242,8 +270,8 @@ export function parseAcroFormCatalog(doc: PDFDocumentData): AcroFormCatalog | nu
 function collectAllWidgets(fields: AcroFormField[]): AcroFormWidget[] {
   const out: AcroFormWidget[] = [];
   for (let i = 0; i < fields.length; i++) {
+    // walkField already includes descendant widgets in each root's list.
     out.push(...fields[i].widgets);
-    out.push(...collectAllWidgets(fields[i].kids));
   }
   return out;
 }
@@ -261,8 +289,12 @@ export function detectFormFieldsOnPage(
   const page = doc.pages[pageIndex];
   const pageKey = page.ref.toKey();
   const allWidgets = collectAllWidgets(catalog.fields);
+  const visibility = new OptionalContentVisibility(doc.catalog, doc.objects);
 
   return allWidgets.filter(w => {
+    if (!isAnnotationVisible(w.dict, doc.objects)) return false;
+    const layer = w.dict.get('OC');
+    if (layer && !visibility.isVisible(layer)) return false;
     if (w.pageRef) return w.pageRef.toKey() === pageKey;
     return widgetOnPageViaAnnots(w, page, doc);
   });

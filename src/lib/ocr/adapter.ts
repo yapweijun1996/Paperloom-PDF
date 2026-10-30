@@ -10,6 +10,7 @@ export interface OcrWord {
 
 export interface OcrAdapter {
   recognize(imageData: ImageData): Promise<OcrWord[]>;
+  terminate?(): Promise<void>;
 }
 
 /** Stub adapter — returns empty or mock words (tests). */
@@ -32,7 +33,14 @@ export class TesseractOcrAdapter implements OcrAdapter {
     if (!this.workerPromise) {
       this.workerPromise = (async () => {
         const Tesseract = await import('tesseract.js');
-        const worker = await Tesseract.createWorker('eng');
+        const base = (process.env.NEXT_PUBLIC_BASE_PATH ?? '').replace(/\/+$/, '');
+        const assets = `${base}/ocr-assets`;
+        const worker = await Tesseract.createWorker('eng', 1, {
+          workerPath: `${assets}/worker.min.js`,
+          corePath: assets,
+          langPath: assets,
+          workerBlobURL: false,
+        });
         return worker;
       })();
     }
@@ -50,31 +58,23 @@ export class TesseractOcrAdapter implements OcrAdapter {
     if (!ctx) return [];
     ctx.putImageData(imageData, 0, 0);
 
-    const result = await worker.recognize(canvas);
+    // Tesseract.js v6+ disables structured output by default and returns words
+    // under blocks/paragraphs/lines rather than a top-level `data.words` array.
+    const result = await worker.recognize(canvas, {}, { blocks: true });
     const words: OcrWord[] = [];
-
-    const data = result.data as {
-      words?: Array<{
-        text: string;
-        confidence: number;
-        bbox: { x0: number; y0: number; x1: number; y1: number };
-      }>;
-    };
-
-    for (const w of data.words ?? []) {
-      const text = (w.text || '').trim();
-      if (!text) continue;
-      if (w.confidence < 35) continue;
-      words.push({
-        text,
-        confidence: w.confidence / 100,
-        bbox: {
-          x: w.bbox.x0,
-          y: w.bbox.y0,
-          width: Math.max(1, w.bbox.x1 - w.bbox.x0),
-          height: Math.max(1, w.bbox.y1 - w.bbox.y0),
-        },
-      });
+    for (const block of result.data.blocks ?? []) {
+      for (const paragraph of block.paragraphs) {
+        for (const line of paragraph.lines) {
+          for (const word of line.words) {
+            const text = word.text.trim();
+            const { x0, y0, x1, y1 } = word.bbox;
+            if (!text || !Number.isFinite(word.confidence) || word.confidence < 35 ||
+                ![x0, y0, x1, y1].every(Number.isFinite) || x1 <= x0 || y1 <= y0) continue;
+            words.push({ text, confidence: word.confidence / 100,
+              bbox: { x: x0, y: y0, width: x1 - x0, height: y1 - y0 } });
+          }
+        }
+      }
     }
 
     return words;

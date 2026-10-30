@@ -1,3 +1,4 @@
+import type { SavedMetadataPatch } from '../writer/save-metadata';
 import type { WireDocument } from './codec';
 
 export type WorkerCommand =
@@ -6,5 +7,5 @@ export type WorkerCommand =
   | { type: 'OPTIMIZE_PDF'; requestId: string; document: WireDocument };
 
 export type WorkerResponse =
-  | { type: 'RESULT'; requestId: string; document?: WireDocument; bytes?: Uint8Array; rawBytesAdvanced?: boolean }
+  | { type: 'RESULT'; requestId: string; document?: WireDocument; bytes?: Uint8Array; rawBytesAdvanced?: boolean; metadata?: SavedMetadataPatch }
   | { type: 'ERROR'; requestId: string; error: { name: string; message: string; stack?: string } };

@@ -224,8 +224,8 @@ export function loadFont(
   // 7. Build CSS font string
   fontData.cssFontString = buildCSSFont(fontData);
 
-  if (fontData.widths.size === 0) {
-    console.warn(`[Font Parser] WARNING: Font ${name} (${baseFont}) has no widths! Standard: ${!!fontData.standardMetrics}, isComposite: ${isComposite}`);
+  if (!isComposite && fontData.widths.size === 0) {
+    console.warn(`[Font Parser] WARNING: Font ${name} (${baseFont}) has no widths! Standard: ${!!fontData.standardMetrics}`);
   }
 
   return fontData;
@@ -453,8 +453,8 @@ function loadFontDescriptor(
         try {
           fontData.ttfFont = parseTTF(fontBytes);
 
-          // Populate widths from embedded font if not already set
-          if (fontData.widths.size === 0 && fontData.ttfFont) {
+          // Composite fonts use PDF /W and /DW, not TrueType Unicode metrics.
+          if (!fontData.isComposite && fontData.widths.size === 0 && fontData.ttfFont) {
             populateWidthsFromTTF(fontData);
           }
         } catch (e) {
@@ -493,37 +493,11 @@ function loadDescendantFont(
     loadFontDescriptor(cidFont, objects, fontData);
   }
 
-  // CIDToGIDMap (maps CID → glyph ID in TrueType font)
+  // CIDToGIDMap selects outlines; /W and /DW alone determine advances.
   const cidToGidRef = cidFont.get('CIDToGIDMap');
-  if (cidToGidRef) {
-    const resolved = resolveRef(cidToGidRef, objects);
-    if (resolved instanceof PDFStream) {
-      // Binary map: each 2-byte entry maps CID index to glyph ID
-      const mapData = resolved.getBytes();
-      fontData.cidToGidMap = mapData;
-      if (fontData.ttfFont && mapData.length >= 2) {
-        for (let cid = 0; cid < mapData.length / 2; cid++) {
-          const gid = (mapData[cid * 2] << 8) | mapData[cid * 2 + 1];
-          if (gid !== 0 && fontData.ttfFont) {
-            // Get width from TrueType font
-            const widthFU = getGlyphWidth(fontData.ttfFont, gid);
-            const width1000 = fontUnitsToTextSpace(widthFU, fontData.ttfFont.unitsPerEm);
-            fontData.widths.set(cid, width1000);
-          }
-        }
-      }
-    }
-  } else if (!cidToGidRef || (cidToGidRef as any instanceof PDFName && (cidToGidRef as any).name === 'Identity')) {
-    // If CIDToGIDMap is /Identity, CID = GID (no mapping needed)
-    // Populate widths directly from TrueType font for all CIDs if W array was missing or incomplete
-    if (fontData.ttfFont && fontData.widths.size === 0) {
-      const numGlyphs = fontData.ttfFont.numGlyphs;
-      for (let cid = 0; cid < numGlyphs; cid++) {
-        const widthFU = getGlyphWidth(fontData.ttfFont, cid);
-        const width1000 = fontUnitsToTextSpace(widthFU, fontData.ttfFont.unitsPerEm);
-        fontData.widths.set(cid, width1000);
-      }
-    }
+  const resolved = cidToGidRef ? resolveRef(cidToGidRef, objects) : undefined;
+  if (resolved instanceof PDFStream) {
+    fontData.cidToGidMap = resolved.getBytes();
   }
 }
 

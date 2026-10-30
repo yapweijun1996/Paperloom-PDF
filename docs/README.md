@@ -14,7 +14,17 @@ for development commands and test prerequisites.
 | [Editor UI layers](UI_LAYERS.md) | Canvas and overlay stacking boundaries. |
 | [Brand](BRAND.md) | Visual identity, design tokens, assets, and release checks. |
 | [PWA baseline](PWA_BASELINE.md) | Baseline inventory and PWA-related invariants. |
+| [Security and privacy](SECURITY_PRIVACY.md) | Static-host CSP assessment and local signature-storage limitations. |
 | [GitHub Pages guide](DEPLOY_PAGES.md) | Deployment and sub-path verification guidance; see the deployment finding below before relying on its automation instructions. |
+| [UX and end-to-end audit](UX_E2E_AUDIT.md) | 2026-10-30 browser checks, simulated UX perspectives, and the remaining end-to-end matrix. |
+| [Static persona code review](CODE_REVIEW_2026-10-30.md) | 2026-10-30 read-only review: 100 points from ten personas, each mapped to a bug or task. |
+
+## Bugs and backlog
+
+[BUG.md](../BUG.md) is the defect register and [task.md](../task.md) is the
+prioritized backlog. New findings belong there;
+[Review findings awaiting verification](#review-findings-awaiting-verification)
+preserves the earlier review as recorded.
 
 ## Engine entry points
 

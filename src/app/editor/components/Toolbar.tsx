@@ -127,25 +127,25 @@ export function Toolbar({
 
         <div className="w-[1px] h-4 bg-[var(--border)] mx-0.5 md:mx-1 hidden sm:block shrink-0" />
 
-        <button onClick={onPrevPage} disabled={currentPage === 0} className="p-1 text-app-muted hover:text-app disabled:opacity-30 disabled:hover:text-app-muted transition-colors shrink-0">
+        <button aria-label="Previous page" onClick={onPrevPage} disabled={currentPage === 0} className="p-1 text-app-muted hover:text-app disabled:opacity-30 disabled:hover:text-app-muted transition-colors shrink-0">
           <ChevronLeft size={18} />
         </button>
         <span className="text-app-muted text-xs font-medium w-12 md:w-16 text-center tracking-wider shrink-0">
           {currentPage + 1} / {totalPages}
         </span>
-        <button onClick={onNextPage} disabled={currentPage >= totalPages - 1} className="p-1 text-app-muted hover:text-app disabled:opacity-30 disabled:hover:text-app-muted transition-colors shrink-0">
+        <button aria-label="Next page" onClick={onNextPage} disabled={currentPage >= totalPages - 1} className="p-1 text-app-muted hover:text-app disabled:opacity-30 disabled:hover:text-app-muted transition-colors shrink-0">
           <ChevronRight size={18} />
         </button>
 
         <div className="w-[1px] h-4 bg-[var(--border)] mx-0.5 md:mx-2 hidden sm:block shrink-0" />
 
-        <button onClick={onZoomOut} disabled={scale <= 0.5} className="p-1 text-app-muted hover:text-app disabled:opacity-30 disabled:hover:text-app-muted transition-colors shrink-0">
+        <button aria-label="Zoom out" onClick={onZoomOut} disabled={scale <= 0.5} className="p-1 text-app-muted hover:text-app disabled:opacity-30 disabled:hover:text-app-muted transition-colors shrink-0">
           <ZoomOut size={16} />
         </button>
         <span className="text-app-muted text-xs font-medium w-10 md:w-12 text-center shrink-0">
           {Math.round(scale * 100)}%
         </span>
-        <button onClick={onZoomIn} disabled={scale >= 4} className="p-1 text-app-muted hover:text-app disabled:opacity-30 disabled:hover:text-app-muted transition-colors shrink-0">
+        <button aria-label="Zoom in" onClick={onZoomIn} disabled={scale >= 4} className="p-1 text-app-muted hover:text-app disabled:opacity-30 disabled:hover:text-app-muted transition-colors shrink-0">
           <ZoomIn size={16} />
         </button>
       </div>
@@ -215,7 +215,7 @@ export function Toolbar({
                 border border-app
                 rounded-xl transition-all duration-200
               "
-              title="Export to Word, PNG, Markdown, etc."
+              title="Export to PNG, JPEG, SVG, or text"
             >
               <FileOutput size={14} />
               <span className="hidden sm:inline">Export</span>

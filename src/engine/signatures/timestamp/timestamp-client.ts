@@ -2,10 +2,12 @@
  * Phase 11 — RFC 3161 timestamp request / response (TimeStampReq / TimeStampResp).
  */
 
-import { derLength, derSequence, derInteger, derObjectIdentifier, derOctetString } from '../crypto/cms-builder';
+import { derSequence, derInteger, derObjectIdentifier, derOctetString } from '../crypto/cms-builder';
 import { hashBytes, hashAlgorithmOID, type HashAlgorithm } from '../crypto/hash-engine';
 import { parseDERNode, nodeOID } from '../crypto/signature-verify';
 import type { ASN1Node } from '../crypto/types';
+import { randomBytes } from '../../security/crypto/bytes';
+import { validateTimestampToken } from './timestamp-validation';
 
 /** Default public TSA (fallback list — may be unavailable). */
 export const DEFAULT_TSA_URLS = [
@@ -33,6 +35,8 @@ export interface TimestampToken {
   genTime: string | null;
   serialNumberHex: string | null;
   tsaUrl: string;
+  /** Certificate chain and revocation are not evaluated by this engine. */
+  trust: 'unverified';
 }
 
 export interface TimestampResult {
@@ -70,7 +74,10 @@ export function buildTimestampRequest(
     ...buildMessageImprint(messageHash, hashAlgorithm),
   ];
   if (options.nonce && options.nonce.length > 0) {
-    body.push(...derInteger(options.nonce));
+    // DER INTEGERs cannot have redundant leading zero bytes.
+    let start = 0;
+    while (start + 1 < options.nonce.length && options.nonce[start] === 0) start++;
+    body.push(...derInteger(options.nonce.subarray(start)));
   }
   if (options.certReq !== false) {
     body.push(...derBoolean(true));
@@ -134,9 +141,15 @@ export function parseTimestampResponse(data: Uint8Array): {
     };
   }
   const ch = root.children ?? [];
-  // PKIStatusInfo
   const statusInfo = ch[0];
-  const status = statusInfo?.children?.[0]?.content?.[0] ?? 2;
+  const statusNode = statusInfo?.children?.[0];
+  if (root.class !== 'universal' || root.tag !== 16 || root.length !== data.length ||
+      ch.length < 1 || ch.length > 2 || statusInfo?.class !== 'universal' || statusInfo.tag !== 16 ||
+      statusNode?.class !== 'universal' || statusNode.tag !== 2 || statusNode.content.length !== 1 ||
+      statusNode.content[0] > 5) {
+    return { status: 2, token: null, genTime: null, serialNumberHex: null, statusString: 'Invalid TimeStampResp status' };
+  }
+  const status = statusNode.content[0];
   if (status !== 0 && status !== 1) {
     let statusString = `PKIStatus=${status}`;
     const statusStringNode = statusInfo?.children?.[1];
@@ -151,7 +164,7 @@ export function parseTimestampResponse(data: Uint8Array): {
   }
 
   const tokenNode = ch[1];
-  if (!tokenNode) {
+  if (!tokenNode || tokenNode.class !== 'universal' || tokenNode.tag !== 16) {
     return { status, token: null, genTime: null, serialNumberHex: null };
   }
 
@@ -218,10 +231,11 @@ export async function requestTimestamp(
 ): Promise<TimestampResult> {
   const hashAlgorithm = options.hashAlgorithm ?? 'sha256';
   const hash = await hashBytes(options.data, hashAlgorithm);
+  const nonce = options.nonce?.length ? options.nonce : randomBytes(16);
   const req = buildTimestampRequest(hash, {
     hashAlgorithm,
     certReq: options.certReq !== false,
-    nonce: options.nonce,
+    nonce,
   });
 
   const urls = [
@@ -242,13 +256,15 @@ export async function requestTimestamp(
         errors.push(`${url}: ${parsed.statusString ?? `status ${parsed.status}`}`);
         continue;
       }
+      const validated = await validateTimestampToken(parsed.token, hash, hashAlgorithm, nonce);
       return {
         ok: true,
         token: {
           der: parsed.token,
-          genTime: parsed.genTime,
-          serialNumberHex: parsed.serialNumberHex,
+          genTime: validated.genTime,
+          serialNumberHex: validated.serialNumberHex,
           tsaUrl: url,
+          trust: 'unverified',
         },
         fallback: false,
       };
@@ -261,7 +277,7 @@ export async function requestTimestamp(
     ok: false,
     token: null,
     fallback: true,
-    error: `TSA unavailable — continuing without timestamp. ${errors.join('; ')}`,
+    error: `TSA unavailable or timestamp validation failed — continuing without timestamp. ${errors.join('; ')}`,
   };
 }
 

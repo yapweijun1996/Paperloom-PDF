@@ -141,6 +141,19 @@ export class SecurityEngine implements ISecurityEngine {
     };
 
     await decryptDocumentObjects(doc, ctx);
+    // The parser reads Info before authentication; refresh its cache from the
+    // decrypted dictionary so consumers do not see encrypted string bytes.
+    const info = this.metadata.readInfo(doc);
+    doc.info = {
+      title: info.Title,
+      author: info.Author,
+      subject: info.Subject,
+      keywords: info.Keywords,
+      creator: info.Creator,
+      producer: info.Producer,
+      creationDate: info.CreationDate,
+      modDate: info.ModDate,
+    };
     // Keep the authenticated material with the in-memory document so saves can
     // restore the original security handler without asking for the password again.
     doc.decryptedFromEncrypted = true;
@@ -165,6 +178,7 @@ export class SecurityEngine implements ISecurityEngine {
   }
 
   async decrypt(doc: PDFDocumentData, password = ''): Promise<PDFDocumentData> {
+    const wasEncrypted = this.isEncrypted(doc);
     const result = await this.open(doc, password);
     result.doc.xref.trailerDict.delete('Encrypt');
     if (result.context.encrypt?.ref) {
@@ -174,6 +188,9 @@ export class SecurityEngine implements ISecurityEngine {
     delete result.doc.decryptedFromEncrypted;
     delete result.doc.encryptionFileKey;
     delete result.doc.encryptionAlgorithm;
+    // An incremental update would retain the old encrypted revision and mix
+    // it with newly unencrypted objects. Remove protection with a full rewrite.
+    if (wasEncrypted) result.doc.requiresFullRewrite = true;
     return result.doc;
   }
 

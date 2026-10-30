@@ -1,6 +1,7 @@
 import { parseContentStream, type CSInstruction } from './operator-lexer';
 import { compileInstructions } from '../editor/text-editor';
 import { interpretPage, type FontInfo, type Matrix } from './interpreter';
+import type { OptionalContentVisibility } from './optional-content';
 import {
   PDFArray,
   PDFName,
@@ -77,9 +78,10 @@ export function explodeTJGaps(
   contentBytes: Uint8Array,
   page: PDFPageInfo,
   objects: Map<string, PDFObject>,
+  optionalContent?: OptionalContentVisibility,
 ): Uint8Array {
   const instructions = parseContentStream(contentBytes);
-  const original = interpretPage(contentBytes, page, objects);
+  const original = interpretPage(contentBytes, page, objects, optionalContent);
   const out: CSInstruction[] = [];
   let ctm: Matrix = { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 };
   let lineMatrix: Matrix = { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 };

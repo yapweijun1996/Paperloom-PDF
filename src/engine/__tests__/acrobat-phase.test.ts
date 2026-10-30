@@ -9,6 +9,7 @@ import { comparePageText } from '../ai/compare';
 import { distributeGlue, opticalMarginAdjust } from '../flow/justification';
 import { unionRects } from '../editor/redaction';
 import type { TextLine } from '../flow/types';
+import type { TextRun } from '../content/interpreter';
 
 describe('knuthPlassWrap', () => {
   const measure = (s: string) => s.length * 5;
@@ -58,13 +59,21 @@ describe('style-edit helpers', () => {
   });
 
   it('maps selection to segments', () => {
-    const line = {
-      text: 'HelloWorld',
+    const run = (text: string): TextRun => ({
+      type: 'text', text, glyphs: [], x: 0, y: 0, width: 0, height: 0,
+      fontName: 'Helvetica', fontSize: 12, textMatrix: { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 },
+      fillColor: [0, 0, 0], fillAlpha: 1, blendMode: 'Normal', softMask: null, clipPaths: [],
+    });
+    const first = run('Hello'), second = run('World');
+    const line: TextLine = {
+      id: 'test', runs: [first, second], text: 'HelloWorld', baseline: 0,
+      x: 0, y: 0, width: 0, height: 0, leftMargin: 0, rightEdge: 0,
+      fontSize: 12, isJustified: false, tabSplitIndex: -1,
       segments: [
-        { startIndex: 0, endIndex: 5, text: 'Hello', run: {} as any },
-        { startIndex: 5, endIndex: 10, text: 'World', run: {} as any },
+        { startIndex: 0, endIndex: 5, text: 'Hello', run: first },
+        { startIndex: 5, endIndex: 10, text: 'World', run: second },
       ],
-    } as TextLine;
+    };
     const hits = mapSelectionToSegments(line, 3, 7);
     expect(hits.length).toBe(2);
     expect(hits[0].localStart).toBe(3);

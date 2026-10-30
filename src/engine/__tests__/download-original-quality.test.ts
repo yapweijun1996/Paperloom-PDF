@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createCanvas, ImageData } from 'canvas';
+import { createCanvas, ImageData } from '@napi-rs/canvas/node-canvas';
 import { deflateSync } from 'node:zlib';
 import { DEFAULT_DOWNLOAD_OPTIONS } from '../../app/editor/components/downloadQualityOptions';
 import { compressDocumentImages } from '../optimize/image-compress';
@@ -35,7 +35,7 @@ function image(doc: PDFDocumentData, name: string): PDFStream {
   return stream;
 }
 
-// Use the real JPEG encoder already supplied by fabric's Node canvas dependency.
+// Use the explicitly installed native test canvas and JPEG encoder.
 function installCanvas(): void {
   vi.stubGlobal('ImageData', ImageData);
   vi.stubGlobal('document', {

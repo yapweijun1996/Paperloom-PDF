@@ -199,6 +199,13 @@ export class PDFLexer {
       return { type: TokenType.Keyword, value: ']', offset };
     }
 
+    // Unexpected closing/reserved delimiters must still advance the cursor.
+    // Container parsers can then recover without repeatedly reading one byte.
+    if (ch === RPAREN || ch === LBRACE || ch === RBRACE) {
+      this.pos++;
+      return { type: TokenType.Keyword, value: String.fromCharCode(ch), offset };
+    }
+
     // ── Name object: /Name ──
     if (ch === SLASH) return this.readName(offset);
 

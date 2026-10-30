@@ -6,11 +6,11 @@ import {
   PDFArray,
   PDFDict,
   PDFHexString,
-  PDFName,
   PDFObject,
   PDFRef,
   PDFString,
 } from '../../types';
+import { randomBytes } from '../crypto/bytes';
 import type {
   CryptFilter,
   CryptFilterMethod,
@@ -177,19 +177,9 @@ export function bytesToPdfHex(bytes: Uint8Array): PDFHexString {
 /** Ensure trailer has an /ID array; create one if missing. */
 export function ensureFileId(trailer: PDFDict): FileIdPair {
   if (!trailer.has('ID')) {
-    const id = cryptoRandomId();
+    const id = randomBytes(16);
     trailer.set('ID', new PDFArray([bytesToPdfHex(id), bytesToPdfHex(id)]));
     return { permanent: id, changing: id };
   }
   return parseFileId(trailer);
-}
-
-function cryptoRandomId(): Uint8Array {
-  const id = new Uint8Array(16);
-  if (typeof globalThis.crypto?.getRandomValues === 'function') {
-    globalThis.crypto.getRandomValues(id);
-  } else {
-    for (let i = 0; i < 16; i++) id[i] = Math.floor(Math.random() * 256);
-  }
-  return id;
 }

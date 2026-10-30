@@ -33,6 +33,7 @@ interface ThumbnailsSidebarProps {
   onSplitCurrentPage?: () => void;
   onSplitAllPages?: () => void;
   onRemoveCurrentPage?: () => void;
+  conformanceNotice?: React.ReactNode;
   isMobile?: boolean;
   onClose?: () => void;
 }
@@ -65,11 +66,11 @@ function IconTip({
 }
 
 const PAGE_CAPABILITIES = [
-  { id: 'split', icon: Scissors, label: 'Split pages', color: 'text-contrast', steps: 'Remove unwanted pages using the trash icon, then click Download to save the new PDF.' },
-  { id: 'merge', icon: Combine, label: 'Merge PDFs', color: 'text-contrast', steps: 'Hover between pages and click the "Insert from PDF" icon to append another file, then Download.' },
+  { id: 'split', icon: Scissors, label: 'Split pages', color: 'text-contrast', steps: 'Choose Download current page or Download each page to save separate PDFs.' },
+  { id: 'merge', icon: Combine, label: 'Merge PDFs', color: 'text-contrast', steps: 'Choose Merge PDF to append pages from another document.' },
   { id: 'blank', icon: FilePlus, label: 'Add blank page', color: 'text-app-muted', steps: 'Hover between pages and click the "Add blank page" icon to insert an empty page.' },
   { id: 'insert', icon: FileText, label: 'Insert from PDF', color: 'text-app-muted', steps: 'Hover between pages and click the "Insert from PDF" icon to append pages.' },
-  { id: 'reorder', icon: GripVertical, label: 'Re-order pages', color: 'text-app-muted', steps: 'Click and drag any page thumbnail to move it to a new position in the document.' },
+  { id: 'reorder', icon: GripVertical, label: 'Re-order pages', color: 'text-app-muted', steps: 'Drag a thumbnail or use its Move earlier and Move later buttons.' },
   { id: 'rotate', icon: RotateCw, label: 'Rotate page', color: 'text-app-muted', steps: 'Hover over a page thumbnail and click the rotate icon to turn it 90 degrees.' },
   { id: 'delete', icon: Trash2, label: 'Delete page', color: 'text-red-500', steps: 'Hover over a page thumbnail and click the red trash icon to remove it.' },
 ];
@@ -89,6 +90,7 @@ export function ThumbnailsSidebar({
   onSplitCurrentPage,
   onSplitAllPages,
   onRemoveCurrentPage,
+  conformanceNotice,
   isMobile = false,
   onClose,
 }: ThumbnailsSidebarProps) {
@@ -323,6 +325,34 @@ export function ThumbnailsSidebar({
             </Tooltip.Root>
           </div>
 
+          {conformanceNotice && <div className="w-full">{conformanceNotice}</div>}
+          <div className="grid grid-cols-2 gap-1.5 w-full" role="group" aria-label="Page actions">
+            {onMergePdf && (
+              <button type="button" onClick={() => mergeInputRef.current?.click()}
+                className="rounded-md border border-app bg-panel-elevated px-2 py-1.5 text-xs text-app hover:bg-panel-elevated/80">
+                Merge PDF
+              </button>
+            )}
+            {onSplitCurrentPage && (
+              <button type="button" onClick={onSplitCurrentPage}
+                className="rounded-md border border-app bg-panel-elevated px-2 py-1.5 text-xs text-app hover:bg-panel-elevated/80">
+                Download current page
+              </button>
+            )}
+            {onSplitAllPages && (
+              <button type="button" onClick={onSplitAllPages} disabled={totalPages < 2}
+                className="rounded-md border border-app bg-panel-elevated px-2 py-1.5 text-xs text-app hover:bg-panel-elevated/80 disabled:opacity-50">
+                Download each page
+              </button>
+            )}
+            {onRemoveCurrentPage && (
+              <button type="button" onClick={onRemoveCurrentPage} disabled={totalPages < 2}
+                className="rounded-md border border-app bg-panel-elevated px-2 py-1.5 text-xs text-app hover:bg-panel-elevated/80 disabled:opacity-50">
+                Remove current page
+              </button>
+            )}
+          </div>
+
           {!isGeneratingThumbnails && thumbnails.length > 0 && (
             renderInsertBar({ insertAt: 0, rotatePageIndex: 0 })
           )}
@@ -406,7 +436,7 @@ export function ThumbnailsSidebar({
                         <button
                           type="button"
                           aria-label="Delete page"
-                          className="absolute top-2 right-2 bg-red-500/90 text-white p-1 rounded-md opacity-0 group-hover:opacity-100 transition-all shadow-md hover:bg-red-500 hover:scale-110 z-[100]"
+                          className="absolute top-2 right-2 bg-red-500/90 text-white p-1 rounded-md opacity-0 group-hover:opacity-100 focus:opacity-100 transition-all shadow-md hover:bg-red-500 hover:scale-110 z-[100]"
                           onClick={(e) => {
                             e.stopPropagation();
                             if (window.confirm('Do you really want to delete this page?')) {
@@ -433,7 +463,7 @@ export function ThumbnailsSidebar({
                         <button
                           type="button"
                           aria-label={`Rotate page ${i + 1}`}
-                          className="p-0.5 rounded text-app-faint opacity-0 group-hover:opacity-100 hover:text-app hover:bg-panel-elevated transition-all"
+                          className="p-0.5 rounded text-app-faint opacity-0 group-hover:opacity-100 focus:opacity-100 hover:text-app hover:bg-panel-elevated transition-all"
                           onClick={(e) => {
                             e.stopPropagation();
                             onRotatePage?.(i);
@@ -442,12 +472,30 @@ export function ThumbnailsSidebar({
                           <RotateCw size={10} />
                         </button>
                       </IconTip>
+                      {onReorderPages && totalPages > 1 && (
+                        <>
+                          <button
+                            type="button"
+                            aria-label={`Move page ${i + 1} earlier`}
+                            disabled={i === 0}
+                            className="px-1 rounded text-app-muted hover:text-app hover:bg-panel-elevated disabled:opacity-30 focus-visible:outline"
+                            onClick={(event) => { event.stopPropagation(); onReorderPages(i, i - 1); }}
+                          >↑</button>
+                          <button
+                            type="button"
+                            aria-label={`Move page ${i + 1} later`}
+                            disabled={i === totalPages - 1}
+                            className="px-1 rounded text-app-muted hover:text-app hover:bg-panel-elevated disabled:opacity-30 focus-visible:outline"
+                            onClick={(event) => { event.stopPropagation(); onReorderPages(i, i + 1); }}
+                          >↓</button>
+                        </>
+                      )}
                     </div>
 
-                    <div className="w-full relative shadow-sm bg-white border border-app/40 rounded overflow-hidden transition-transform duration-300 group-hover:scale-[1.02] pointer-events-none">
+                    <button type="button" aria-label={`Select page ${i + 1}`} aria-current={currentPage === i ? 'page' : undefined} className="w-full relative shadow-sm bg-white border border-app/40 rounded overflow-hidden transition-transform duration-300 group-hover:scale-[1.02] focus-visible:outline">
                       {/* eslint-disable-next-line @next/next/no-img-element */}
                       <img src={thumbDataUrl} alt={`Page ${i + 1}`} className="w-full" draggable={false} />
-                    </div>
+                    </button>
                   </div>
 
                   {renderInsertBar({ insertAt: i + 1, rotatePageIndex: i })}

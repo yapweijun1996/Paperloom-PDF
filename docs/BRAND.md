@@ -94,7 +94,7 @@ These existing `@theme inline` aliases resolve the tokens above at the element's
 - Preserve aspect ratio, thread gaps, tile radius, and supplied colors. No rotation, stretching, flower embellishments, swooshes, gradients on the mark, or added effects. Reserve at least one mark-stroke width of clear space around standalone artwork.
 - UI logo image alt text must equal `BRAND_NAME` (`Paperloom PDF`). The brand constant remains in `src/lib/brand.ts`.
 - `NEXT_PUBLIC_BASE_PATH` is shared by `next.config.ts` and `BRAND_BASE_PATH` in `src/lib/brand.ts`; set it to a leading-slash deployment prefix (for example `/paperloom`) at build time. Empty means root hosting. One trailing slash is stripped. The previous code used root-only `/logo.png`; there was no existing base-path helper.
-- `public/BloomPDF.png` and other legacy binaries are retained for the manager's removal decision; UI code no longer references the old logo.
+- The unreferenced `public/BloomPDF.png` and `public/logo.png` legacy assets were removed; the UI uses the current brand assets.
 - Existing fixed-dark search, export, and signature-creation surfaces explicitly scope the dark palette even when the rest of the application uses light mode; their neutral backgrounds are unchanged.
 
 ## Manager raster-render handoff
@@ -111,7 +111,7 @@ Use **only `public/brand/paperloom-icon.svg`** as the source for all app-icon/fa
 | `public/favicon.ico` | ICO containing 16x16, 32x32, and 48x48 renders |
 | `src/app/favicon.ico` | Same multi-resolution ICO as `public/favicon.ico` |
 
-Metadata uses the new SVG for icon/shortcut and the 180px Apple raster. Next's existing file-convention icons can take precedence, so regenerate both `src/app/icon.png` and `src/app/favicon.ico`, not only public assets. No binary was generated or changed in this task. The old `public/logo.png` is no longer referenced and needs no raster replacement.
+Metadata uses the new SVG for icon/shortcut and the 180px Apple raster. Next's existing file-convention icons can take precedence, so regenerate both `src/app/icon.png` and `src/app/favicon.ico`, not only public assets. No binary was generated or changed in this task. The unreferenced old `public/logo.png` was removed.
 
 ## Release checks still required
 

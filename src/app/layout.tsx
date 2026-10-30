@@ -1,13 +1,15 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import { ThemeProvider } from "./theme/ThemeProvider";
+import { ServiceWorkerRegistration } from "./ServiceWorkerRegistration";
 import { STORAGE_KEY } from "./theme/initialTheme";
 import { BRAND_BASE_PATH, BRAND_NAME } from "@/lib/brand";
 
 export const metadata: Metadata = {
   title: `${BRAND_NAME} Editor — Pure TypeScript PDF Engine`,
   description:
-    "A robust PDF editor built from scratch in pure TypeScript. Zero external dependencies. Professional-grade PDF capabilities.",
+    "Edit PDFs in your browser. Optional timestamping contacts external services.",
+  manifest: `${BRAND_BASE_PATH}/manifest.webmanifest`,
   icons: {
     icon: [
       { url: `${BRAND_BASE_PATH}/brand/paperloom-icon.svg`, type: "image/svg+xml", sizes: "any" },
@@ -32,6 +34,7 @@ export default function RootLayout({
         />
       </head>
       <body>
+        <ServiceWorkerRegistration />
         <ThemeProvider>{children}</ThemeProvider>
       </body>
     </html>

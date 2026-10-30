@@ -45,6 +45,7 @@ export interface PageHistorySnapshot {
   cropBox: { x: number; y: number; width: number; height: number };
   rotate: number;
   contentRefs: string[];
+  contentInspectionComplete?: boolean;
   contentBytes: Uint8Array;
   annotSnapshot: PageAnnotSnapshot;
 }
@@ -319,6 +320,7 @@ export function captureHistoryEntry(
     cropBox: { ...p.cropBox },
     rotate: p.rotate,
     contentRefs: p.contentRefs.map((ref) => ref.toKey()),
+    ...(p.contentInspectionComplete === false ? { contentInspectionComplete: false } : {}),
     contentBytes: new Uint8Array(index === pageIndex ? contentBytes : getPageBytes(p, doc.objects)),
     annotSnapshot: captureAnnotSnapshot(p.dict, doc.objects),
   }));
@@ -372,7 +374,8 @@ export async function restoreDocumentStructure(
       ref,
       resources: resolvePageResources(dict, doc.objects),
       contentRefs: refs,
-    });
+      ...(state.contentInspectionComplete === false ? { contentInspectionComplete: false } : {}),
+    }, doc);
   });
   for (const state of snapshot.pages) {
     const page = doc.pages[state.pageIndex];

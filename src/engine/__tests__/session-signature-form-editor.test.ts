@@ -23,9 +23,9 @@ function fixture(indirect: boolean): Uint8Array {
     '<< /Fields 6 0 R >>',
     '[8 0 R 9 0 R 10 0 R]',
     '[8 0 R 9 0 R 10 0 R]',
-    '<< /Type /Annot /Subtype /Widget /FT /Tx /T (Name) /Rect [10 10 100 30] /V (Before) /P 3 0 R >>',
-    '<< /Type /Annot /Subtype /Widget /FT /Btn /T (Check) /Rect [10 40 30 60] /V /Off /AS /Off /P 3 0 R >>',
-    '<< /Type /Annot /Subtype /Widget /FT /Ch /T (Choice) /Rect [10 70 100 90] /Opt [(A) (B)] /V (A) /P 3 0 R >>',
+    '<< /Type /Annot /Subtype /Widget /F 4 /FT /Tx /T (Name) /Rect [10 10 100 30] /V (Before) /P 3 0 R >>',
+    '<< /Type /Annot /Subtype /Widget /F 4 /FT /Btn /T (Check) /Rect [10 40 30 60] /V /Off /AS /Off /P 3 0 R >>',
+    '<< /Type /Annot /Subtype /Widget /F 4 /FT /Ch /T (Choice) /Rect [10 70 100 90] /Opt [(A) (B)] /V (A) /P 3 0 R >>',
   ]);
 }
 

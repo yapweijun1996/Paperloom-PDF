@@ -37,6 +37,10 @@ export type DrawMode = 'freehand' | 'line' | 'arrow' | 'rectangle' | 'ellipse';
 
 export interface DrawnPath {
   id: string;
+  /** Stable PDF page reference; page order may change while the overlay is pending. */
+  pageKey: string;
+  /** Canvas scale when the path points were captured. */
+  captureScale?: number;
   type: PathType;
   /** Geometry kind; defaults to freehand when omitted */
   kind?: DrawMode;
@@ -51,6 +55,7 @@ export interface DrawnPath {
 
 export interface FloatingText {
   id: string;
+  pageKey: string;
   pdfX: number;
   pdfY: number;
   pdfWidth?: number;
@@ -67,6 +72,7 @@ export interface FloatingText {
 
 export interface FloatingImage {
   id: string;
+  pageKey: string;
   pdfX: number;
   pdfY: number;
   pdfWidth: number;

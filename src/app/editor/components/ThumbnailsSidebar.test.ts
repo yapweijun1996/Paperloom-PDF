@@ -41,6 +41,56 @@ describe('thumbnail page controls', () => {
     expect(rotate).toHaveBeenCalledWith(1);
   });
 
+  it.each([false, true])('exposes page actions and forwards merge, split and removal on mobile=%s', isMobile => {
+    const merge = vi.fn(), splitCurrent = vi.fn(), splitAll = vi.fn(), remove = vi.fn();
+    act(() => root.render(createElement(ThumbnailsSidebar, {
+      totalPages: 2, currentPage: 1, thumbnails: ['first', 'second'],
+      isGeneratingThumbnails: false, onPageSelect: vi.fn(), isMobile,
+      onMergePdf: merge, onSplitCurrentPage: splitCurrent, onSplitAllPages: splitAll, onRemoveCurrentPage: remove,
+    })));
+    const action = (name: string) => [...container.querySelectorAll<HTMLButtonElement>('button')]
+      .find(button => button.textContent?.trim() === name)!;
+    const inputs = container.querySelectorAll<HTMLInputElement>('input[type="file"]');
+    const mergeInput = inputs[1];
+    const choose = vi.spyOn(mergeInput, 'click').mockImplementation(() => {});
+    act(() => action('Merge PDF').click());
+    expect(choose).toHaveBeenCalledOnce();
+    const file = new File(['pdf'], 'other.pdf', { type: 'application/pdf' });
+    Object.defineProperty(mergeInput, 'files', { value: [file], configurable: true });
+    act(() => mergeInput.dispatchEvent(new Event('change', { bubbles: true })));
+    expect(merge).toHaveBeenCalledExactlyOnceWith(file);
+    act(() => action('Download current page').click());
+    act(() => action('Download each page').click());
+    act(() => action('Remove current page').click());
+    expect(splitCurrent).toHaveBeenCalledOnce();
+    expect(splitAll).toHaveBeenCalledOnce();
+    expect(remove).toHaveBeenCalledOnce();
+  });
+
+  it('disables split-all and removal for a one-page document', () => {
+    act(() => root.render(createElement(ThumbnailsSidebar, {
+      totalPages: 1, currentPage: 0, thumbnails: ['first'], isGeneratingThumbnails: false,
+      onPageSelect: vi.fn(), onSplitCurrentPage: vi.fn(), onSplitAllPages: vi.fn(), onRemoveCurrentPage: vi.fn(),
+    })));
+    const action = (name: string) => [...container.querySelectorAll<HTMLButtonElement>('button')]
+      .find(button => button.textContent?.trim() === name)!;
+    expect(action('Download current page').disabled).toBe(false);
+    expect(action('Download each page').disabled).toBe(true);
+    expect(action('Remove current page').disabled).toBe(true);
+  });
+
+  it('places the conformance notice before page downloads inside the mobile drawer', () => {
+    act(() => root.render(createElement(ThumbnailsSidebar, {
+      totalPages: 2, currentPage: 0, thumbnails: [], isGeneratingThumbnails: false,
+      onPageSelect: vi.fn(), isMobile: true, onSplitCurrentPage: vi.fn(),
+      conformanceNotice: createElement('p', { role: 'status' }, 'PDF/A warning'),
+    })));
+    const warning = container.querySelector('[role="status"]')!;
+    const actions = container.querySelector('[aria-label="Page actions"]')!;
+    expect(warning.textContent).toBe('PDF/A warning');
+    expect(warning.compareDocumentPosition(actions) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
   it('moves a dragged page to an insertion bar', () => {
     const reorder = vi.fn();
     act(() => root.render(createElement(ThumbnailsSidebar, {
@@ -59,5 +109,21 @@ describe('thumbnail page controls', () => {
     act(() => lastBar.dispatchEvent(drag('dragover')));
     act(() => lastBar.dispatchEvent(drag('drop')));
     expect(reorder).toHaveBeenCalledWith(0, 1);
+  });
+
+  it('supports keyboard-focusable page selection and page reordering', () => {
+    const reorder = vi.fn(); const select = vi.fn();
+    act(() => root.render(createElement(ThumbnailsSidebar, {
+      totalPages: 2, currentPage: 0, thumbnails: ['first', 'second'],
+      isGeneratingThumbnails: false, onPageSelect: select, onReorderPages: reorder,
+    })));
+    const selectSecond = container.querySelector<HTMLButtonElement>('button[aria-label="Select page 2"]')!;
+    const earlier = container.querySelector<HTMLButtonElement>('button[aria-label="Move page 2 earlier"]')!;
+    expect(container.querySelector<HTMLButtonElement>('button[aria-label="Move page 1 earlier"]')!.disabled).toBe(true);
+    expect(container.querySelector('button[aria-label="Select page 1"]')?.getAttribute('aria-current')).toBe('page');
+    act(() => selectSecond.click());
+    act(() => earlier.click());
+    expect(select).toHaveBeenCalledWith(1);
+    expect(reorder).toHaveBeenCalledWith(1, 0);
   });
 });

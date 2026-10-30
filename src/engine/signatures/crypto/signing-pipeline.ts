@@ -20,6 +20,7 @@ import {
 import { getNextObjNum } from '../../writer/serializer';
 import {
   appendIncrementalUpdate,
+  assertIncrementalOutputAllowed,
   type IncrementalWriteResult,
 } from '../../writer/incremental-writer';
 import { serializeDocument } from '../../writer/serializer';
@@ -42,6 +43,10 @@ import {
   injectSignatureContents,
 } from './signature-injector';
 import { finalizePdfSignature } from './finalizer';
+import { buildFullXref } from '../../parser/xref';
+import { withVerifiedDocumentXref } from '../../writer/new-object-safety';
+import { runDocumentTransaction } from '../../session/document-transaction';
+import { publishSignatureXref } from './signature-xref';
 import type { SignatureAlgorithmKind } from './cms-builder';
 
 export {
@@ -90,7 +95,26 @@ export interface SignPipelineResult {
   sigRef: PDFRef;
   incremental?: IncrementalWriteResult;
   timestampApplied?: boolean;
+  /** TSA certificate-chain trust and revocation are not checked. */
+  timestampTrust?: 'unverified';
   timestampError?: string;
+}
+
+/** Install an xref derived from the exact bytes produced by the signing pipeline. */
+export async function installSignatureBase(doc: PDFDocumentData, bytes: Uint8Array): Promise<void> {
+  const snapshot = new Uint8Array(bytes);
+  const parsed = await buildFullXref(snapshot);
+  publishSignatureXref(doc, parsed);
+  doc.rawBytes = snapshot;
+}
+
+/** Authenticate existing bytes before a rewrite can replace their provenance. */
+export async function prepareSignatureSource(doc: PDFDocumentData): Promise<void> {
+  if (doc.xref.provenance) {
+    await withVerifiedDocumentXref(doc, () => undefined);
+  } else if (doc.rawBytes.length) {
+    await installSignatureBase(doc, doc.rawBytes);
+  }
 }
 
 /**
@@ -118,10 +142,10 @@ export function createSignatureDictionary(
   ]);
   sigDict.set('ByteRange', br);
 
-  if (options.reason) sigDict.set('Reason', new PDFString(options.reason));
-  if (options.location) sigDict.set('Location', new PDFString(options.location));
-  if (options.contactInfo) sigDict.set('ContactInfo', new PDFString(options.contactInfo));
-  if (options.name) sigDict.set('Name', new PDFString(options.name));
+  if (options.reason) sigDict.set('Reason', PDFString.fromText(options.reason));
+  if (options.location) sigDict.set('Location', PDFString.fromText(options.location));
+  if (options.contactInfo) sigDict.set('ContactInfo', PDFString.fromText(options.contactInfo));
+  if (options.name) sigDict.set('Name', PDFString.fromText(options.name));
   sigDict.set(
     'M',
     new PDFString(
@@ -143,6 +167,16 @@ export async function signDocumentCryptographic(
   privateKey: CryptoKey,
   options: CryptoSignOptions = {},
 ): Promise<SignPipelineResult> {
+  return runDocumentTransaction(doc, staged => signDocumentCryptographicDraft(staged, fieldRef, privateKey, options));
+}
+
+async function signDocumentCryptographicDraft(
+  doc: PDFDocumentData,
+  fieldRef: PDFRef,
+  privateKey: CryptoKey,
+  options: CryptoSignOptions,
+): Promise<SignPipelineResult> {
+  assertIncrementalOutputAllowed(doc);
   const field = doc.objects.get(fieldRef.toKey());
   if (!(field instanceof PDFDict)) {
     throw new Error('Signature field not found');
@@ -151,8 +185,9 @@ export async function signDocumentCryptographic(
   const hashAlgorithm = options.hashAlgorithm ?? 'sha256';
   const contentsSize = options.contentsSize ?? DEFAULT_CONTENTS_SIZE;
 
+  await prepareSignatureSource(doc);
   if (!doc.rawBytes || doc.rawBytes.length === 0) {
-    doc.rawBytes = await serializeDocument(doc);
+    await installSignatureBase(doc, await serializeDocument(doc));
   }
 
   const sigRef = createSignatureDictionary(doc, options);
@@ -219,7 +254,7 @@ export async function signDocumentCryptographic(
     console.warn('[sign] ByteRange validation warnings:', finalized.validation.errors);
   }
 
-  doc.rawBytes = finalized.bytes;
+  await installSignatureBase(doc, finalized.bytes);
 
   // Keep in-memory Sig dict aligned with patched bytes (validation / multi-sig UI)
   const sigObj = doc.objects.get(sigRef.toKey());
@@ -250,6 +285,7 @@ export async function signDocumentCryptographic(
     sigRef,
     incremental,
     timestampApplied: finalized.timestampApplied,
+    timestampTrust: finalized.timestampTrust,
     timestampError: finalized.timestampError,
   };
 }

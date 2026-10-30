@@ -11,6 +11,8 @@
  */
 
 import { parseContentStream, type CSInstruction } from './operator-lexer';
+import { createImageResourceVersioner } from './image-resource-version';
+import { OptionalContentVisibility, OptionalContentError } from './optional-content';
 import { getCharCodeLength, parseCMap, readCharCode, type CMapData } from '../fonts/cmap-parser';
 import {
   PDFArray,
@@ -166,6 +168,22 @@ export interface TextRun {
   /** Color */
   fillColor: [number, number, number];
   fillAlpha: number;
+  /** Graphics-state stroke parameters, independent of the text fill. */
+  strokeColor?: [number, number, number];
+  strokeAlpha?: number;
+  strokeLineWidth?: number;
+  strokeLineCap?: number;
+  strokeLineJoin?: number;
+  strokeMiterLimit?: number;
+  strokeDashPattern?: number[];
+  strokeDashPhase?: number;
+  strokeCTM?: Matrix;
+  /** PDF text rendering mode. Mode 3 contributes searchable text but no ink. */
+  renderingMode?: number;
+  /** True only when the renderer resolved this text object's glyph clip. */
+  textClipSupported?: boolean;
+  /** Original paint runs when a logical editing run spans multiple fill colors. */
+  paintRuns?: TextRun[];
   /** Is underlined */
   isUnderline?: boolean;
   blendMode: string;
@@ -231,14 +249,35 @@ export interface ImageItem {
   clipPaths: ClipPathNode[];
   /** Index of the Do instruction in the content stream (for precise edit/delete). */
   sourceInstructionIndex?: number;
+  /** Portable identity of the image resource and its indirect dependencies. */
+  sourceImageVersion?: string;
+}
+
+/** Inline images belong to their content stream and are not editable XObjects. */
+export interface InlineImageItem {
+  type: 'inline-image';
+  stream: PDFStream | null;
+  ctm: Matrix;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  fillAlpha: number;
+  blendMode: string;
+  softMask: PDFDict | null;
+  clipPaths: ClipPathNode[];
 }
 
 export interface FormItem {
   type: 'form';
   /** Resource name from /Do operator */
   name: string;
+  /** Index of this invocation in its owning content stream. */
+  sourceInstructionIndex?: number;
   /** Transform matrix positioning the form */
   ctm: Matrix;
+  /** The text rendering mode is part of the inherited PDF graphics state. */
+  renderingMode?: number;
   blendMode: string;
   softMask: PDFDict | null;
   clipPaths: ClipPathNode[];
@@ -253,7 +292,7 @@ export interface ShadingItem {
   clipPaths: ClipPathNode[];
 }
 
-export type DisplayItem = TextRun | PathItem | ImageItem | FormItem | ShadingItem;
+export type DisplayItem = TextRun | PathItem | ImageItem | InlineImageItem | FormItem | ShadingItem;
 
 // ─── Font info cache ────────────────────────────────────────────────────────
 
@@ -438,6 +477,8 @@ export interface InterpreterResult {
   displayList: DisplayItem[];
   textRuns: TextRun[];
   fonts: Map<string, FontInfo>;
+  /** Logical replacement spans, including any Form invocations they enclose. */
+  actualTextSpans?: { start: number; end: number; text: string; incomplete?: boolean }[];
 }
 
 /**
@@ -451,24 +492,38 @@ export function interpretPage(
   contentBytes: Uint8Array,
   page: PDFPageInfo,
   objects: Map<string, PDFObject>,
+  optionalContent?: OptionalContentVisibility,
+  initialTextRenderingMode = 0,
+  resolveTextClip?: (runs: readonly TextRun[]) => ClipPathNode,
+  // Text-only consumers do not replace images and can avoid hashing their bytes.
+  options?: { includeImageResourceVersions?: boolean },
 ): InterpreterResult {
   const instructions = parseContentStream(contentBytes);
+  const visibility = optionalContent ?? new OptionalContentVisibility(undefined, objects);
   const displayList: DisplayItem[] = [];
   const rawTextRuns: TextRun[] = [];
+  const actualTextSpans: { start: number; end: number; text: string; incomplete?: boolean }[] = [];
   const fonts = new Map<string, FontInfo>();
+  const imageVersions = new Map<string, string | undefined>();
+  const imageResourceVersion = createImageResourceVersioner(page.resources, objects);
 
   // State machine
   let gs = defaultGraphicsState();
+  gs.textRenderMode = initialTextRenderingMode;
   const gsStack: GraphicsState[] = [];
 
   // Text state
   let textMatrix = identityMatrix();     // Tm: text matrix
   let textLineMatrix = identityMatrix(); // For T* and TD tracking
   let inTextBlock = false;
-  const markedContent: { text?: string; start: number; matrix: Matrix; ctm: Matrix }[] = [];
+  let pendingTextClips: TextRun[] = [];
+  let textClipStateAmbiguous = false;
+  const markedContent: { text?: string; start: number; displayStart: number; instructionStart: number; visible: boolean; matrix: Matrix; ctm: Matrix }[] = [];
+  const contentVisibility: boolean[] = [];
 
   // Path construction
   let currentPath: PathSegment[] = [];
+  let pendingClip: 'nonzero' | 'evenodd' | undefined;
   let pathStartX = 0;
   let pathStartY = 0;
 
@@ -486,14 +541,19 @@ export function interpretPage(
   for (let i = 0; i < instructions.length; i++) {
     const inst = instructions[i];
     const ops = inst.operands;
+    const hidden = contentVisibility.length > 0 && !contentVisibility[contentVisibility.length - 1];
+    const displayStart = displayList.length;
+    const textStart = rawTextRuns.length;
 
     switch (inst.operator) {
       // ── Graphics state ──────────────────────────────────────────────
       case 'q':
+        if (inTextBlock) textClipStateAmbiguous = true;
         gsStack.push(cloneGraphicsState(gs));
         break;
 
       case 'Q':
+        if (inTextBlock) textClipStateAmbiguous = true;
         if (gsStack.length > 0) gs = gsStack.pop()!;
         break;
 
@@ -617,12 +677,22 @@ export function interpretPage(
 
       // ── Text blocks ─────────────────────────────────────────────────
       case 'BT':
+        if (inTextBlock && resolveTextClip) throw new Error('Cannot safely render nested PDF text objects.');
         inTextBlock = true;
+        pendingTextClips = [];
+        textClipStateAmbiguous = false;
         textMatrix = identityMatrix();
         textLineMatrix = identityMatrix();
         break;
 
       case 'ET':
+        if (resolveTextClip && pendingTextClips.length) {
+          if (textClipStateAmbiguous) throw new Error('Cannot safely render a text clip with graphics-state changes inside a text object.');
+          const clip = resolveTextClip(pendingTextClips);
+          gs.clipPaths = [...gs.clipPaths, clip];
+          for (const run of pendingTextClips) run.textClipSupported = true;
+        }
+        pendingTextClips = [];
         inTextBlock = false;
         break;
 
@@ -849,22 +919,15 @@ export function interpretPage(
       case 'b': { currentPath.push({ type: 'Z', points: [] }); emitPath('both'); break; }
       case 'b*': { currentPath.push({ type: 'Z', points: [] }); emitPath('both'); break; }
       case 'W': {
-        // Per PDF spec §8.5.4: W modifies the clipping path by intersecting
-        // the current path with it. Only add non-degenerate clip paths.
-        const wSegments = [...currentPath];
-        if (wSegments.length > 0 && !isDegenerateClipPath(wSegments)) {
-          gs.clipPaths = [...gs.clipPaths, { segments: wSegments, windingRule: 'nonzero' as const }];
-        }
+        // PDF applies W when the current path is ended, after any paint.
+        pendingClip = 'nonzero';
         break;
       }
       case 'W*': {
-        const wsSegments = [...currentPath];
-        if (wsSegments.length > 0 && !isDegenerateClipPath(wsSegments)) {
-          gs.clipPaths = [...gs.clipPaths, { segments: wsSegments, windingRule: 'evenodd' as const }];
-        }
+        pendingClip = 'evenodd';
         break;
       }
-      case 'n': { currentPath = []; break; } // Discard path
+      case 'n': { finishPath(); break; } // End path without painting.
 
       // ── XObjects ────────────────────────────────────────────────────
       case 'Do': {
@@ -872,8 +935,13 @@ export function interpretPage(
         if (xobjName) {
           const xobj = getResource(page.resources, 'XObject', xobjName, objects);
           if (xobj instanceof PDFStream) {
+            const layer = xobj.dict.get('OC');
+            if (!hidden && layer && !visibility.isVisible(layer)) break;
             const subtype = xobj.dict.getName('Subtype');
             if (subtype === 'Image') {
+              if (options?.includeImageResourceVersions !== false && !imageVersions.has(xobjName)) {
+                imageVersions.set(xobjName, imageResourceVersion(xobjName));
+              }
               const imgW = xobj.dict.getNumber('Width') ?? 1;
               const imgH = xobj.dict.getNumber('Height') ?? 1;
               const [x, y] = transformPoint(gs.ctm, 0, 0);
@@ -891,12 +959,15 @@ export function interpretPage(
                 softMask: gs.softMask,
                 clipPaths: [...gs.clipPaths],
                 sourceInstructionIndex: i,
+                sourceImageVersion: imageVersions.get(xobjName),
               });
             } else if (subtype === 'Form') {
               displayList.push({
                 type: 'form',
                 name: xobjName,
+                sourceInstructionIndex: i,
                 ctm: { ...gs.ctm },
+                renderingMode: gs.textRenderMode,
                 blendMode: gs.blendMode,
                 softMask: gs.softMask,
                 clipPaths: [...gs.clipPaths],
@@ -904,6 +975,28 @@ export function interpretPage(
             }
           }
         }
+        break;
+      }
+
+      case 'BI': {
+        const dict = ops[0];
+        const offset = dict instanceof PDFDict ? dict.getNumber('__imageDataOffset') : undefined;
+        const length = dict instanceof PDFDict ? dict.getNumber('__imageDataSampleLength') : undefined;
+        let stream: PDFStream | null = null;
+        if (dict instanceof PDFDict && offset !== undefined && length !== undefined &&
+            Number.isSafeInteger(offset) && Number.isSafeInteger(length) && offset >= 0 && length >= 0 &&
+            offset + length <= contentBytes.length) {
+          const imageDict = new PDFDict([...dict.entries()].filter(([key]) => !key.startsWith('__imageData')));
+          stream = new PDFStream(imageDict, contentBytes.subarray(offset, offset + length));
+        }
+        const [x, y] = transformPoint(gs.ctm, 0, 0);
+        const [x2, y2] = transformPoint(gs.ctm, 1, 1);
+        displayList.push({
+          type: 'inline-image', stream,
+          ctm: { ...gs.ctm }, x: Math.min(x, x2), y: Math.min(y, y2),
+          width: Math.abs(x2 - x), height: Math.abs(y2 - y),
+          fillAlpha: gs.fillAlpha, blendMode: gs.blendMode, softMask: gs.softMask, clipPaths: [...gs.clipPaths],
+        });
         break;
       }
 
@@ -928,6 +1021,12 @@ export function interpretPage(
         let properties: PDFObject | undefined = ops[1];
         if (properties instanceof PDFName) properties = getResource(page.resources, 'Properties', properties.name, objects);
         if (properties instanceof PDFRef) properties = resolveRef(properties, objects);
+        let visible = !hidden;
+        if (visible && nameStr(ops[0]) === 'OC') {
+          if (!properties) throw new OptionalContentError('missing marked-content property');
+          visible = visibility.isVisible(properties);
+        }
+        contentVisibility.push(visible);
         const actual = properties instanceof PDFDict ? properties.get('ActualText') : undefined;
         let text: string | undefined;
         if (actual instanceof PDFHexString || actual instanceof PDFString) {
@@ -937,12 +1036,15 @@ export function interpretPage(
             for (let at = 2; at + 1 < bytes.length; at += 2) text += String.fromCharCode((bytes[at] << 8) | bytes[at + 1]);
           } else text = actual instanceof PDFHexString ? actual.toText() : actual.value;
         }
-        markedContent.push({ text, start: rawTextRuns.length, matrix: { ...textMatrix }, ctm: { ...gs.ctm } });
+        markedContent.push({ text, start: rawTextRuns.length, displayStart: displayList.length, instructionStart: i, visible,
+          matrix: { ...textMatrix }, ctm: { ...gs.ctm } });
         break;
       }
       case 'EMC': {
+        contentVisibility.pop();
         const span = markedContent.pop();
         if (!span || span.text === undefined) break;
+        if (span.visible) actualTextSpans.push({ start: span.instructionStart, end: i, text: span.text });
         const runs = rawTextRuns.slice(span.start);
         if (!runs.length) break;
         const first = runs[0], glyphs = runs.flatMap(run => run.glyphs);
@@ -956,11 +1058,22 @@ export function interpretPage(
           width: Math.max(...runs.map(run => run.x + run.width)) - Math.min(...runs.map(run => run.x)),
           height: Math.max(...runs.map(run => run.y + run.height)) - Math.min(...runs.map(run => run.y)),
         };
-        const replaced = new Set(runs), firstIndex = displayList.indexOf(first);
-        for (let at = displayList.length - 1; at >= firstIndex; at--) {
-          if (replaced.has(displayList[at] as TextRun)) displayList.splice(at, 1);
+        // ActualText changes extraction, not paint. Preserve separate paint
+        // runs when rendering mode or clipping state differs within the span.
+        // A clipping text object's original runs are resolved and marked at
+        // ET. Replacing them here would detach the paint runs from that proof.
+        const firstIndex = displayList.indexOf(first);
+        if (runs.length === 1 && firstIndex >= 0 && runs.every((run, index) => (run.renderingMode ?? 0) < 4 &&
+            sameTextPaint(run, first) && sameClipPaths(run.clipPaths, first.clipPaths) &&
+            displayList[firstIndex + index] === run)) {
+          displayList.splice(firstIndex, runs.length, combined);
+        } else {
+          // The renderer uses this flag to paint CID glyph outlines rather
+          // than treating ActualText's logical replacement as visible text.
+          for (const item of displayList.slice(span.displayStart)) {
+            if (item.type === 'text') item.actualText = true;
+          }
         }
-        displayList.splice(firstIndex, 0, combined);
         rawTextRuns.splice(span.start, runs.length, combined);
         break;
       }
@@ -974,27 +1087,53 @@ export function interpretPage(
       default:
         break;
     }
+    // Hidden content still updates graphics and text state, but emits no marks.
+    if (hidden) {
+      displayList.splice(displayStart);
+      rawTextRuns.splice(textStart);
+    } else if (resolveTextClip && inTextBlock) {
+      for (const item of displayList.slice(displayStart)) {
+        if (item.type === 'text' && item.renderingMode !== undefined && item.renderingMode >= 4 && item.renderingMode <= 7) {
+          pendingTextClips.push(item);
+        }
+      }
+    }
   }
 
   function emitPath(paintType: 'stroke' | 'fill' | 'both' | 'none') {
-    if (currentPath.length === 0) return;
+    if (currentPath.length) {
+      const bounds = computePathBounds(currentPath);
+      displayList.push({
+        type: 'path',
+        segments: [...currentPath],
+        strokeColor: paintType === 'fill' ? null : [...gs.strokeColor] as [number, number, number],
+        fillColor: paintType === 'stroke' ? null : [...gs.fillColor] as [number, number, number],
+        strokeAlpha: gs.strokeAlpha,
+        fillAlpha: gs.fillAlpha,
+        lineWidth: gs.lineWidth,
+        paintType,
+        blendMode: gs.blendMode,
+        softMask: gs.softMask,
+        clipPaths: [...gs.clipPaths],
+        ...bounds,
+      });
+    }
+    finishPath();
+  }
 
-    const bounds = computePathBounds(currentPath);
-    displayList.push({
-      type: 'path',
-      segments: [...currentPath],
-      strokeColor: paintType === 'fill' ? null : [...gs.strokeColor] as [number, number, number],
-      fillColor: paintType === 'stroke' ? null : [...gs.fillColor] as [number, number, number],
-      strokeAlpha: gs.strokeAlpha,
-      fillAlpha: gs.fillAlpha,
-      lineWidth: gs.lineWidth,
-      paintType,
-      blendMode: gs.blendMode,
-      softMask: gs.softMask,
-      clipPaths: [...gs.clipPaths],
-      ...bounds,
-    });
+  function finishPath() {
+    if (pendingClip && currentPath.length) {
+      // A constructed zero-area path represents an empty region and must survive.
+      gs.clipPaths = [...gs.clipPaths, { segments: [...currentPath], windingRule: pendingClip }];
+    }
+    pendingClip = undefined;
     currentPath = [];
+  }
+
+  for (const span of markedContent) {
+    if (span.visible && span.text !== undefined) {
+      actualTextSpans.push({ start: span.instructionStart, end: instructions.length, text: span.text, incomplete: true });
+    }
   }
 
   // Apostrophe often arrives as its own Tj ("FATHER" + "§" + "S NAME")
@@ -1003,8 +1142,11 @@ export function interpretPage(
   // Merge adjacent text runs on the same baseline to eliminate gaps
   // caused by font-substitution width mismatches between runs.
   mergeAdjacentTextRuns(displayList, rawTextRuns);
+  // Editing historically groups adjacent fill-only text across color changes.
+  // Keep that logical grouping without merging the independently painted runs.
+  mergeAdjacentTextRuns([...displayList], rawTextRuns, true);
 
-  return { displayList, textRuns: rawTextRuns, fonts };
+  return { displayList, textRuns: rawTextRuns, fonts, actualTextSpans };
 }
 
 /**
@@ -1016,7 +1158,29 @@ export function interpretPage(
  * the comma. Merging them into one run lets the renderer draw them as a single
  * chunk with unified scaling, eliminating the gap.
  */
-function mergeAdjacentTextRuns(displayList: DisplayItem[], rawTextRuns: TextRun[]): void {
+function sameClipPaths(a: ClipPathNode[], b: ClipPathNode[]): boolean {
+  return a.length === b.length && a.every((path, index) => path === b[index]);
+}
+
+function sameTextPaint(a: TextRun, b: TextRun, logicalFillColor = false): boolean {
+  if (a.renderingMode !== b.renderingMode || a.textClipSupported !== b.textClipSupported ||
+      a.blendMode !== b.blendMode || a.softMask !== b.softMask) return false;
+  const mode = (a.renderingMode ?? 0) % 4;
+  if ((mode === 0 || mode === 2) && (a.fillAlpha !== b.fillAlpha ||
+      (!(logicalFillColor && mode === 0) && a.fillColor.some((value, i) => value !== b.fillColor[i])))) return false;
+  if (mode !== 1 && mode !== 2) return true;
+  if (a.strokeAlpha !== b.strokeAlpha || a.strokeLineWidth !== b.strokeLineWidth ||
+      a.strokeLineCap !== b.strokeLineCap || a.strokeLineJoin !== b.strokeLineJoin ||
+      a.strokeMiterLimit !== b.strokeMiterLimit || a.strokeDashPhase !== b.strokeDashPhase ||
+      (a.strokeColor ?? []).length !== (b.strokeColor ?? []).length ||
+      (a.strokeColor ?? []).some((value, i) => value !== b.strokeColor?.[i]) ||
+      (a.strokeDashPattern ?? []).length !== (b.strokeDashPattern ?? []).length ||
+      (a.strokeDashPattern ?? []).some((value, i) => value !== b.strokeDashPattern?.[i])) return false;
+  const x = a.strokeCTM, y = b.strokeCTM;
+  return x === y || (!!x && !!y && x.a === y.a && x.b === y.b && x.c === y.c && x.d === y.d);
+}
+
+function mergeAdjacentTextRuns(displayList: DisplayItem[], rawTextRuns: TextRun[], logicalFillColor = false): void {
   let i = 0;
   while (i < displayList.length - 1) {
     const a = displayList[i];
@@ -1029,6 +1193,30 @@ function mergeAdjacentTextRuns(displayList: DisplayItem[], rawTextRuns: TextRun[
 
     const runA = a as TextRun;
     const runB = b as TextRun;
+    // ActualText can replace several logical runs while retaining their
+    // original paint runs. Those orphan paint runs must not merge with either
+    // neighboring text or remove a neighbor from the logical run list.
+    const idxA = rawTextRuns.indexOf(runA);
+    const idxB = rawTextRuns.indexOf(runB);
+    if (idxA < 0 || idxB < 0) {
+      i++;
+      continue;
+    }
+
+    // A visible and an OCR-only run can be adjacent on the same baseline.
+    // Merging would make both inherit one paint mode and reveal or erase text.
+    if (!sameTextPaint(runA, runB, logicalFillColor)) {
+      i++;
+      continue;
+    }
+
+    // Runs separated by q/Q or a path-ending clip can share a baseline while
+    // belonging to different clipping states. Merging would apply the first
+    // run's clip to both and hide or reveal the second run incorrectly.
+    if (!sameClipPaths(runA.clipPaths, runB.clipPaths)) {
+      i++;
+      continue;
+    }
 
     // Skip empty runs
     if (runA.glyphs.length === 0 || runB.glyphs.length === 0) {
@@ -1086,6 +1274,11 @@ function mergeAdjacentTextRuns(displayList: DisplayItem[], rawTextRuns: TextRun[
 
     const merged: TextRun = {
       ...runA,
+      ...(logicalFillColor && !sameTextPaint(runA, runB)
+        ? { paintRuns: [...(runA.paintRuns ?? [runA]), ...(runB.paintRuns ?? [runB])] }
+        : logicalFillColor && (runA.paintRuns || runB.paintRuns)
+          ? { paintRuns: [...(runA.paintRuns ?? [runA]), ...(runB.paintRuns ?? [runB])] }
+          : {}),
       text: mergedText,
       glyphs: mergedGlyphs,
       sourceInstructionIndices: sourceInstructionIndices.length > 0
@@ -1102,10 +1295,8 @@ function mergeAdjacentTextRuns(displayList: DisplayItem[], rawTextRuns: TextRun[
     displayList.splice(i + 1, 1);
 
     // Update rawTextRuns
-    const idxA = rawTextRuns.indexOf(runA);
-    const idxB = rawTextRuns.indexOf(runB);
-    if (idxA >= 0) rawTextRuns[idxA] = merged;
-    if (idxB >= 0) rawTextRuns.splice(idxB, 1);
+    rawTextRuns[idxA] = merged;
+    rawTextRuns.splice(idxB, 1);
 
     // Don't advance i — check if the merged run can merge with the next one too
   }
@@ -1118,37 +1309,6 @@ function mergeAdjacentTextRuns(displayList: DisplayItem[], rawTextRuns: TextRun[
  * Such clips would make everything invisible and are usually an artifact
  * of malformed content streams or empty re/m/l sequences.
  */
-function isDegenerateClipPath(segments: PathSegment[]): boolean {
-  // An empty path is degenerate
-  if (segments.length === 0) return true;
-
-  // Collect all points to compute bounds
-  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-  let hasPoints = false;
-
-  for (const seg of segments) {
-    for (let i = 0; i < seg.points.length; i += 2) {
-      const x = seg.points[i];
-      const y = seg.points[i + 1];
-      if (!isFinite(x) || !isFinite(y)) continue;
-      if (x < minX) minX = x;
-      if (y < minY) minY = y;
-      if (x > maxX) maxX = x;
-      if (y > maxY) maxY = y;
-      hasPoints = true;
-    }
-  }
-
-  if (!hasPoints) return true;
-
-  // A clip region smaller than 0.5 user units in either dimension is degenerate
-  const width = maxX - minX;
-  const height = maxY - minY;
-  if (width < 0.5 || height < 0.5) return true;
-
-  return false;
-}
-
 // ─── Text rendering helpers ─────────────────────────────────────────────────
 
 interface ShowTextResult {
@@ -1282,11 +1442,8 @@ function showTextString(
       ? font?.encodingCMap?.toCIDByLength.get(codeLength)?.get(charCode) ?? font?.toCID?.get(charCode) ?? charCode
       : charCode;
     let glyphWidth1000 = font?.widths.get(widthKey);
-    if (glyphWidth1000 === undefined && isComposite) {
-      glyphWidth1000 = font?.widths.get(charCode);
-    }
-    if (glyphWidth1000 === undefined && unicode && font?.widths) {
-      // If widths were populated from TTF cmap, they are keyed by Unicode, not charCode/CID
+    if (glyphWidth1000 === undefined && !isComposite && unicode && font?.widths) {
+      // A simple font's fallback TTF widths may be keyed by Unicode.
       const unicodeCodePoint = unicode.charCodeAt(0);
       glyphWidth1000 = font.widths.get(unicodeCodePoint);
     }
@@ -1360,6 +1517,16 @@ function showTextString(
       textMatrix: { ...effectiveMatrix },
       fillColor: [...gs.fillColor] as [number, number, number],
       fillAlpha: gs.fillAlpha,
+      strokeColor: [...gs.strokeColor] as [number, number, number],
+      strokeAlpha: gs.strokeAlpha,
+      strokeLineWidth: gs.lineWidth,
+      strokeLineCap: gs.lineCap,
+      strokeLineJoin: gs.lineJoin,
+      strokeMiterLimit: gs.miterLimit,
+      strokeDashPattern: [...gs.dashPattern],
+      strokeDashPhase: gs.dashPhase,
+      strokeCTM: { ...gs.ctm },
+      renderingMode: gs.textRenderMode,
       blendMode: gs.blendMode,
       softMask: gs.softMask,
       clipPaths: [...gs.clipPaths],
@@ -1507,6 +1674,7 @@ function mergeEditableTextRuns(runs: TextRun[]): TextRun[] {
 }
 
 function canMergeTextRuns(previous: TextRun, next: TextRun): boolean {
+  if (!sameTextPaint(previous, next)) return false;
   if (previous.fontName !== next.fontName) return false;
   if (previous.fontSize !== next.fontSize) return false;
   if (previous.fillAlpha !== next.fillAlpha) return false;
@@ -1830,6 +1998,22 @@ function parseCIDWidths(wArray: PDFArray, widths: Map<number, number>): void {
 
 // ─── Extended Graphics State ────────────────────────────────────────────────
 
+/** Resolve the two valid /SMask states with a bounded indirect-reference walk. */
+export function resolveSoftMaskState(value: PDFObject, objects: Map<string, PDFObject>): PDFDict | null {
+  let resolved: PDFObject | undefined = value;
+  const seen = new Set<string>();
+  while (resolved instanceof PDFRef) {
+    const key = resolved.toKey();
+    if (seen.has(key) || seen.size >= 128) throw new Error('Invalid soft-mask reference.');
+    seen.add(key);
+    resolved = objects.get(key);
+    if (!resolved) throw new Error('Invalid soft-mask reference.');
+  }
+  if (resolved instanceof PDFName && resolved.name === 'None') return null;
+  if (resolved instanceof PDFDict) return resolved;
+  throw new Error('Invalid soft-mask graphics state.');
+}
+
 function applyExtGState(
   dict: PDFDict,
   gs: GraphicsState,
@@ -1873,13 +2057,10 @@ function applyExtGState(
 
   // Soft Mask
   const smaskObj = dict.get('SMask');
-  if (smaskObj instanceof PDFName && smaskObj.name === 'None') {
-    gs.softMask = null;
-  } else if (smaskObj) {
-    const resolvedSMask = resolveRef(smaskObj, objects);
-    if (resolvedSMask instanceof PDFDict) {
-      gs.softMask = resolvedSMask;
-    }
+  if (smaskObj !== undefined) {
+    // /None may itself be indirect. Resolve before interpreting the value so
+    // disabling an earlier mask does not accidentally leave it active.
+    gs.softMask = resolveSoftMaskState(smaskObj, objects);
   }
 }
 

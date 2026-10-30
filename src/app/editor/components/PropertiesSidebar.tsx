@@ -9,7 +9,10 @@ import type { DrawMode, EditorTool } from '../types';
 import type { TextRun, ImageItem, PathItem, AcroFormWidget, VisualSignature, SignatureLibraryEntry, SignatureField, ManagedIdentity, ValidationReport, LtvStatus, ManagedSignature, RevisionViewEntry } from '@/engine/browser-core';
 import { BRAND_NAME } from '@/lib/brand';
 import { ImageBoxFields } from './ImageBoxFields';
+import { FormDraftInput } from './FormDraftInput';
+import { decodeMultiChoiceDraft, encodeMultiChoiceDraft } from '../multi-choice-draft';
 import type { ImageBox } from './imageBoxEdit';
+import type { WatermarkPosition } from '@/engine/watermark/watermark-engine';
 
 interface PropertiesSidebarProps {
   onClose?: () => void;
@@ -80,6 +83,9 @@ interface PropertiesSidebarProps {
   formFieldDraft?: string;
   onFormFieldSelect?: (field: AcroFormWidget) => void;
   onFormFieldChange?: (value: string) => void;
+  onFormFieldDraftChange?: (value: string) => void;
+  onFormFieldCommit?: () => void;
+  onFormFieldCompositionChange?: (active: boolean) => void;
   onFlattenForms?: () => void;
   /** Duplicate the selected/editing text line one row below (table-like). */
   onDuplicateLineBelow?: () => void;
@@ -98,8 +104,8 @@ interface PropertiesSidebarProps {
   setWatermarkRotation?: (v: number) => void;
   watermarkSize?: number;
   setWatermarkSize?: (v: number) => void;
-  watermarkPosition?: string;
-  setWatermarkPosition?: (v: string) => void;
+  watermarkPosition?: WatermarkPosition;
+  setWatermarkPosition?: (v: WatermarkPosition) => void;
   watermarkMosaic?: boolean;
   setWatermarkMosaic?: (v: boolean) => void;
   watermarkPageFrom?: number;
@@ -117,7 +123,7 @@ interface PropertiesSidebarProps {
   watermarkShapeColor?: string;
   setWatermarkShapeColor?: (v: string) => void;
   watermarkImageFile?: File | null;
-  onWatermarkImageUpload?: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  onWatermarkImageUpload?: (file: File) => void;
   onWatermarkImageClear?: () => void;
   hasScannedWatermarks?: boolean;
   detectedWatermarksCount?: number;
@@ -170,6 +176,7 @@ interface PropertiesSidebarProps {
 }
 
 export function PropertiesSidebar(props: PropertiesSidebarProps) {
+
   const {
     onClose,
     activeTool, setActiveTool, selectedRun,
@@ -187,7 +194,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
     selectedDisplayItem, setSelectedDisplayItem, onDeleteSelectedDisplayItem, onReplaceSelectedImage, onClearImageReplaceMode, displayItems,
     onCommitSelectedImageBox, onPreviewSelectedImageBox, selectedImagePageBox,
     formFields = [], selectedFormField, formFieldDraft = '',
-    onFormFieldSelect, onFormFieldChange, onFlattenForms,
+    onFormFieldSelect, onFormFieldChange, onFormFieldDraftChange, onFormFieldCommit, onFormFieldCompositionChange, onFlattenForms,
     onDuplicateLineBelow,
     tableInfo = null,
     onAddTableRow,
@@ -940,11 +947,15 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
 
           {selectedFormField && selectedFormField.fieldType === 'Tx' && onFormFieldChange && (
             <div className="space-y-2">
-              <label className="text-[10px] font-bold tracking-widest text-app-faint uppercase">Value</label>
-              <input
+              <label htmlFor="form-text-value" className="text-[10px] font-bold tracking-widest text-app-faint uppercase">Value</label>
+              <FormDraftInput
+                id="form-text-value"
                 type="text"
                 value={formFieldDraft}
-                onChange={(e) => onFormFieldChange(e.target.value)}
+                disabled={selectedFormField.readOnly}
+                onDraftChange={onFormFieldDraftChange ?? onFormFieldChange}
+                onCommit={onFormFieldCommit}
+                onCompositionChange={onFormFieldCompositionChange}
                 className="w-full px-3 py-2 text-sm bg-panel-elevated border border-app rounded-lg text-app focus:outline-none focus:border-accent"
               />
             </div>
@@ -954,29 +965,88 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
             <div className="space-y-2">
               <label className="text-[10px] font-bold tracking-widest text-app-faint uppercase">Checkbox / Radio</label>
               <button
+                type="button"
+                disabled={selectedFormField.readOnly || (!!(selectedFormField.buttonFlags & (1 << 15)) &&
+                  !!(selectedFormField.buttonFlags & (1 << 14)) && formFieldDraft !== '' && formFieldDraft !== 'Off')}
                 onClick={() => {
-                  const checked = !(selectedFormField.value === true || selectedFormField.value === 'Yes' || selectedFormField.value === 'On');
-                  onFormFieldChange(checked ? 'Yes' : 'Off');
+                  const checked = formFieldDraft !== '' && formFieldDraft !== 'Off';
+                  onFormFieldChange(checked ? 'Off' : 'Yes');
                 }}
-                className="w-full py-2 rounded-lg text-xs font-semibold bg-panel-elevated border border-app text-app hover:bg-panel-elevated/80"
+                className="w-full py-2 rounded-lg text-xs font-semibold bg-panel-elevated border border-app text-app hover:bg-panel-elevated/80 disabled:opacity-50"
               >
-                {(selectedFormField.value === true || selectedFormField.value === 'Yes' || selectedFormField.value === 'On')
-                  ? 'Checked — click to uncheck'
-                  : 'Unchecked — click to check'}
+                {formFieldDraft !== '' && formFieldDraft !== 'Off'
+                  ? (selectedFormField.readOnly || (!!(selectedFormField.buttonFlags & (1 << 15)) && !!(selectedFormField.buttonFlags & (1 << 14)))
+                    ? 'Checked' : 'Checked — click to uncheck')
+                  : (selectedFormField.readOnly ? 'Unchecked' : 'Unchecked — click to check')}
               </button>
             </div>
           )}
 
           {selectedFormField && selectedFormField.fieldType === 'Ch' && onFormFieldChange && (
             <div className="space-y-2">
-              <label className="text-[10px] font-bold tracking-widest text-app-faint uppercase">Choice value</label>
-              <input
-                type="text"
-                value={formFieldDraft}
-                onChange={(e) => onFormFieldChange(e.target.value)}
-                placeholder="Enter option value"
-                className="w-full px-3 py-2 text-sm bg-panel-elevated border border-app rounded-lg text-app focus:outline-none focus:border-accent"
-              />
+              <label htmlFor="form-choice-value" className="text-[10px] font-bold tracking-widest text-app-faint uppercase">Choice value</label>
+              {(selectedFormField.choiceFlags & (1 << 21)) && selectedFormField.choiceOptions ? (
+                <select
+                  id="form-choice-value"
+                  multiple
+                  value={(() => { try { return decodeMultiChoiceDraft(formFieldDraft); } catch { return []; } })()}
+                  disabled={selectedFormField.readOnly || !!(selectedFormField.choiceFlags & (1 << 17)) || (() => {
+                    const options = selectedFormField.choiceOptions!;
+                    try {
+                      const selected = decodeMultiChoiceDraft(formFieldDraft);
+                      return new Set(options.map(option => option.value)).size !== options.length || selected.some(value => !options.some(option => option.value === value));
+                    } catch { return true; }
+                  })()}
+                  onChange={(e) => (onFormFieldDraftChange ?? onFormFieldChange)(encodeMultiChoiceDraft(Array.from(e.target.options).filter(option => option.selected).map(option => option.value)))}
+                  onBlur={() => onFormFieldCommit?.()}
+                  className="w-full min-h-28 px-3 py-2 text-sm bg-panel-elevated border border-app rounded-lg text-app focus:outline-none focus:border-accent"
+                >
+                  {selectedFormField.choiceOptions.map((option, index) => (
+                    <option key={`${option.value}-${index}`} value={option.value}>{option.label}</option>
+                  ))}
+                </select>
+              ) : (selectedFormField.choiceOptions && !(selectedFormField.choiceFlags & (1 << 18))) ? (
+                <select
+                  id="form-choice-value"
+                  value={formFieldDraft}
+                  disabled={selectedFormField.readOnly || !!(selectedFormField.choiceFlags & (1 << 21))}
+                  onChange={(e) => onFormFieldChange(e.target.value)}
+                  className="w-full px-3 py-2 text-sm bg-panel-elevated border border-app rounded-lg text-app focus:outline-none focus:border-accent"
+                >
+                  {!selectedFormField.choiceOptions.some(option => option.value === formFieldDraft) && (
+                    <option value={formFieldDraft}>{formFieldDraft || 'Select an option'}</option>
+                  )}
+                  {selectedFormField.choiceOptions.map((option, index) => (
+                    <option key={`${option.value}-${index}`} value={option.value}>{option.label}</option>
+                  ))}
+                </select>
+              ) : !(selectedFormField.choiceFlags & (1 << 21)) ? (
+                <FormDraftInput
+                  id="form-choice-value"
+                  type="text"
+                  value={formFieldDraft}
+                  disabled={selectedFormField.readOnly || !!(selectedFormField.choiceFlags & (1 << 21))}
+                  onDraftChange={onFormFieldDraftChange ?? onFormFieldChange}
+                  onCommit={onFormFieldCommit}
+                  onCompositionChange={onFormFieldCompositionChange}
+                  placeholder="Enter option value"
+                  list={selectedFormField.choiceOptions ? 'form-choice-options' : undefined}
+                  className="w-full px-3 py-2 text-sm bg-panel-elevated border border-app rounded-lg text-app focus:outline-none focus:border-accent"
+                />
+              ) : null}
+              {!!(selectedFormField.choiceFlags & (1 << 21)) && (() => {
+                const options = selectedFormField.choiceOptions;
+                let valid = !(selectedFormField.choiceFlags & (1 << 17)) && !!options && new Set(options.map(option => option.value)).size === options.length;
+                try { valid &&= decodeMultiChoiceDraft(formFieldDraft).every(value => options!.some(option => option.value === value)); } catch { valid = false; }
+                return valid ? null : <p className="text-xs text-app-muted">Multiple selections cannot be edited because the options or current values are ambiguous.</p>;
+              })()}
+              {selectedFormField.choiceOptions && !!(selectedFormField.choiceFlags & (1 << 18)) && (
+                <datalist id="form-choice-options">
+                  {selectedFormField.choiceOptions.map((option, index) => (
+                    <option key={`${option.value}-${index}`} value={option.value}>{option.label}</option>
+                  ))}
+                </datalist>
+              )}
             </div>
           )}
           </>
@@ -1075,7 +1145,10 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                   <label className="text-[11px] font-medium text-app">Shape:</label>
                   <select
                     value={watermarkShapeType}
-                    onChange={(e) => setWatermarkShapeType?.(e.target.value as any)}
+                    onChange={(e) => {
+                      const shape = e.target.value;
+                      if (shape === 'rectangle' || shape === 'circle' || shape === 'pill') setWatermarkShapeType?.(shape);
+                    }}
                     className="w-full bg-panel-elevated border border-app rounded px-3 py-2 text-xs text-app outline-none focus:border-accent transition-colors appearance-none cursor-pointer"
                   >
                     <option value="rectangle">Rectangle</option>
@@ -1125,7 +1198,10 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                       const fileInput = document.createElement('input');
                       fileInput.type = 'file';
                       fileInput.accept = 'image/png, image/jpeg';
-                      fileInput.onchange = (e) => onWatermarkImageUpload?.(e as any);
+                      fileInput.onchange = () => {
+                        const file = fileInput.files?.[0];
+                        if (file) onWatermarkImageUpload?.(file);
+                      };
                       fileInput.click();
                     }}
                     className="flex items-center gap-2 bg-bloom-500 hover:bg-bloom-600 text-white px-8 py-3 rounded text-xs font-medium transition-colors"
@@ -1466,6 +1542,12 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
               />
               Request RFC 3161 timestamp (TSA)
             </label>
+            {enableTimestamp && (
+              <p className="text-[10px] text-app-faint leading-relaxed">
+                The timestamp signature and content are checked, but TSA certificate trust and revocation are not verified.
+                Signing continues without a timestamp if the request or checks fail. Use a trusted PDF validator to verify the timestamp.
+              </p>
+            )}
           </div>
 
           <div className="px-4 pb-3 space-y-2 border-b border-app">
@@ -1498,6 +1580,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                 </div>
                 <div className="text-[10px] text-app-faint">
                   {validationReport.signatures.length} signature(s) · {validationReport.revisionCount} revision(s)
+                  {' '}· Timestamp trust is not verified.
                 </div>
                 {validationReport.signatures.map((s) => (
                   <div key={s.fieldId} className="text-[10px] border-t border-app pt-1">
@@ -1661,6 +1744,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                     onChange={(e) => onLibraryRename?.(entry.id, e.target.value)}
                     className="w-full bg-transparent text-[11px] text-app outline-none border-b border-transparent focus:border-app-strong"
                   />
+                  <p className="text-[10px] text-app-faint mt-1">{entry.sessionOnly ? 'This session only' : 'Saved on this device'}</p>
                   <div className="flex items-center gap-1 mt-1.5">
                     <button
                       type="button"

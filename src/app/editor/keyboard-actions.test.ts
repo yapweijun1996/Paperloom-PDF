@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { editorKeyboardAction } from './keyboard-actions';
+import { editorKeyboardAction, isCompositionKey } from './keyboard-actions';
 
 const base = { selectedDisplayItem: null, activeFloatingImage: false, activeFloatingText: false, selectedSignature: false, activeTool: 'select' } as const;
 
@@ -24,5 +24,17 @@ describe('editor keyboard actions', () => {
   it('deletes selected images and floating images', () => {
     expect(editorKeyboardAction({ key: 'Delete' }, { ...base, selectedDisplayItem: 'image' })).toEqual({ type: 'delete', target: 'embedded-image' });
     expect(editorKeyboardAction({ key: 'Backspace' }, { ...base, activeFloatingImage: true })).toEqual({ type: 'delete', target: 'floating-image' });
+  });
+});
+
+describe('IME composition keys', () => {
+  it('keeps composing Enter, Shift+Enter, Escape and navigation in the input method', () => {
+    for (const key of ['Enter', 'Escape', 'ArrowLeft', 'ArrowRight']) {
+      expect(isCompositionKey({ key, isComposing: true })).toBe(true);
+      expect(isCompositionKey({ key, keyCode: 229 })).toBe(true);
+    }
+    expect(isCompositionKey({ key: 'Process' })).toBe(true);
+    expect(isCompositionKey({ key: 'Enter', isComposing: false, keyCode: 13 })).toBe(false);
+    expect(isCompositionKey({ key: 'Escape', isComposing: false, keyCode: 27 })).toBe(false);
   });
 });

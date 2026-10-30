@@ -20,6 +20,7 @@ import { ctmBefore, deltaThroughInverse, invertMatrix } from './matrix';
 import { parseContentStream, type CSInstruction } from '../content/operator-lexer';
 import { serializeInstructions } from '../content/instruction-serializer';
 import { interpretPage, type TextRun } from '../content/interpreter';
+import type { OptionalContentVisibility } from '../content/optional-content';
 import {
   PDFArray,
   PDFDict,
@@ -68,6 +69,48 @@ export interface TextEdit {
   newText: string;
 }
 
+/** Rewrite only independently verifiable, fixed-width text-showing runs.
+ * Equal-length ASCII edits preserve advances within each run and therefore
+ * keep all following runs at their existing positions. */
+export function applyVerifiedCrossRunEdits(
+  contentBytes: Uint8Array,
+  page: PDFPageInfo,
+  objects: Map<string, PDFObject>,
+  edits: TextEdit[],
+): EditResult {
+  const instructions = parseContentStream(contentBytes);
+  const fontEntry = page.resources.get('Font');
+  const fontResources = fontEntry ? resolveRef(fontEntry, objects) : undefined;
+  if (!(fontResources instanceof PDFDict)) throw new Error('Cross-run replacement requires inspectable standard fonts.');
+  let previousIndex = -1;
+  for (const { targetRun: run, newText } of edits) {
+    const indices = run.sourceInstructionIndices;
+    if (run.actualText || !indices || indices.length !== 1 || indices[0] <= previousIndex ||
+        run.text.length > 16_384 || !/^[A-Za-z0-9]+$/.test(run.text) || !/^[A-Za-z0-9]+$/.test(newText) ||
+        run.text.length !== newText.length || run.glyphs.length !== run.text.length ||
+        run.glyphs.some((glyph, i) => glyph.unicode !== run.text[i])) {
+      throw new Error('Cross-run replacement requires equal-length simple text runs.');
+    }
+    previousIndex = indices[0];
+    const instruction = instructions[indices[0]];
+    const operand = instruction?.operands[0];
+    if (instruction?.operator !== 'Tj' || instruction.operands.length !== 1 ||
+        !(operand instanceof PDFString || operand instanceof PDFHexString) ||
+        String.fromCharCode(...operand.toBytes()) !== run.text) {
+      throw new Error('Cross-run replacement requires independently inspectable text instructions.');
+    }
+    const fontEntry = fontResources.get(run.fontName);
+    const font = fontEntry ? resolveRef(fontEntry, objects) : undefined;
+    if (!(font instanceof PDFDict) || [...font.keys()].some(key => !['Type', 'Subtype', 'BaseFont', 'Encoding'].includes(key)) ||
+        font.getName('Type') !== 'Font' || font.getName('Subtype') !== 'Type1' ||
+        !['Courier', 'Courier-Bold', 'Courier-Oblique', 'Courier-BoldOblique'].includes(font.getName('BaseFont') ?? '') ||
+        (font.has('Encoding') && font.getName('Encoding') !== 'WinAnsiEncoding')) {
+      throw new Error('Cross-run replacement requires unmodified standard Courier fonts.');
+    }
+  }
+  return applyTextEdits(contentBytes, page, objects, edits);
+}
+
 export interface EditResult {
   /** The modified content stream bytes */
   newContentBytes: Uint8Array;
@@ -103,6 +146,13 @@ export function applyTextEdits(
   // Validate the entire batch before adding fallback resources or changing run indices.
   if (edits.some(edit => edit.newText !== edit.targetRun.text && edit.targetRun.actualText)) {
     throw new Error('Exported shaped text cannot be edited in place; add a new text box instead.');
+  }
+  if (edits.some(({ targetRun, newText }) => {
+    if (newText === targetRun.text || !targetRun.paintRuns) return false;
+    const selected = new Set(targetRun.sourceInstructionIndices ?? []);
+    return targetRun.paintRuns.filter(run => run.sourceInstructionIndices?.some(index => selected.has(index))).length > 1;
+  })) {
+    throw new Error('Cannot safely replace a combined text run with multiple paint styles; edit its individual fragments instead.');
   }
   const prepared = edits.filter(edit => edit.newText !== edit.targetRun.text).map(edit => {
     const fontData = loadFontForRun(edit.targetRun, page, objects);
@@ -2129,20 +2179,34 @@ export function findTextInPage(
   objects: Map<string, PDFObject>,
   searchText: string,
   caseSensitive: boolean = false,
+  optionalContent?: OptionalContentVisibility,
 ): TextRun[] {
-  const interpreted = interpretPage(contentBytes, page, objects);
+  const interpreted = interpretPage(contentBytes, page, objects, optionalContent);
   const results: TextRun[] = [];
 
-  const search = caseSensitive ? searchText : searchText.toLowerCase();
-
   for (const run of interpreted.textRuns) {
-    const text = caseSensitive ? run.text : run.text.toLowerCase();
-    if (text.includes(search)) {
+    if (findTextOccurrences(run.text, searchText, caseSensitive).length) {
       results.push(run);
     }
   }
 
   return results;
+}
+
+/** Literal, non-overlapping occurrences, with UTF-16 offsets into the source. */
+export function findTextOccurrences(text: string, searchText: string, caseSensitive = false): Array<{ start: number; end: number }> {
+  if (!searchText) return [];
+  const regex = new RegExp(searchText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), caseSensitive ? 'gu' : 'giu');
+  const result: Array<{ start: number; end: number }> = [];
+  for (const match of text.matchAll(regex)) result.push({ start: match.index!, end: match.index! + match[0].length });
+  return result;
+}
+
+export interface SearchReplacementTarget {
+  runIndex: number;
+  start: number;
+  end: number;
+  runText: string;
 }
 
 /**
@@ -2155,24 +2219,31 @@ export function findAndReplace(
   searchText: string,
   replaceText: string,
   caseSensitive: boolean = false,
-): EditResult {
-  const matchingRuns = findTextInPage(contentBytes, page, objects, searchText, caseSensitive);
-
-  const edits: TextEdit[] = matchingRuns.map((run) => {
-    let newText: string;
-    if (caseSensitive) {
-      newText = run.text.split(searchText).join(replaceText);
-    } else {
-      // Case-insensitive replace
-      const regex = new RegExp(escapeRegex(searchText), 'gi');
-      newText = run.text.replace(regex, replaceText);
+  target?: SearchReplacementTarget,
+  optionalContent?: OptionalContentVisibility,
+): EditResult & { replacedCount: number } {
+  const runs = interpretPage(contentBytes, page, objects, optionalContent).textRuns;
+  const edits: TextEdit[] = [];
+  let replacedCount = 0;
+  for (let runIndex = 0; runIndex < runs.length; runIndex++) {
+    const run = runs[runIndex];
+    if (target && runIndex !== target.runIndex) continue;
+    const matches = findTextOccurrences(run.text, searchText, caseSensitive);
+    const selected = target ? matches.filter(match => match.start === target.start && match.end === target.end && run.text === target.runText) : matches;
+    if (target && selected.length !== 1) throw new Error('The selected search match changed. Search again before replacing it.');
+    if (selected.length === 0) continue;
+    let position = 0;
+    let newText = '';
+    for (const match of selected) {
+      newText += run.text.slice(position, match.start) + replaceText;
+      position = match.end;
     }
-    return { targetRun: run, newText };
-  });
-
-  return applyTextEdits(contentBytes, page, objects, edits);
-}
-
-function escapeRegex(str: string): string {
-  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    newText += run.text.slice(position);
+    if (newText === run.text) continue;
+    edits.push({ targetRun: run, newText });
+    replacedCount += selected.length;
+  }
+  if (target && !runs[target.runIndex]) throw new Error('The selected search match changed. Search again before replacing it.');
+  if (!edits.length) return { newContentBytes: contentBytes, needsFontAugmentation: false, missingCharCodes: [], replacedCount: 0 };
+  return { ...applyTextEdits(contentBytes, page, objects, edits), replacedCount };
 }

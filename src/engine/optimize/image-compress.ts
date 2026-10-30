@@ -2,7 +2,7 @@
  * Smart PDF compression.
  *
  * Strategy (smallest current-state candidate wins):
- *   1. Lossless optimize (GC + dedup + re-serialize)
+ *   1. Lossless optimize (GC + re-serialize)
  *   2. Recompress embedded Image XObjects (JPEG + DPI downsample)
  *   3. Rasterize pages → JPEG rebuild — ONLY when it beats the best
  *      candidate so far (helps scanned / image-heavy PDFs; hurts tiny
@@ -25,7 +25,7 @@ import {
 import { decodeImage } from '../render/image-decoder';
 import { renderPage } from '../render/renderer';
 import { serializeDocument, serializeDocumentCompact } from '../writer/serializer';
-import { saveOptimized } from '../writer/save-pipeline';
+import { hasDocumentSignature, saveOptimized, saveQuick } from '../writer/save-pipeline';
 import { garbageCollect, rootsFromTrailer } from './garbage-collect';
 import { recompressStreams } from './stream-recompress';
 import { subsetFonts } from './font-subsetter';
@@ -36,7 +36,8 @@ export interface ImageCompressOptions {
   /** null disables downsampling and page rasterization. */
   dpi: number | null;
   targetBytes?: number;
-  /** Permit upload-byte fallback only when the upload still represents every edit. Defaults to false. */
+  /** Permit upload-byte fallback only when the upload still represents every edit. Defaults to false.
+   * A security cleanup requiring a full rewrite always overrides this hint. */
   originalIsCurrent?: boolean;
   onProgress?: (current: number, total: number, phase: string) => void;
 }
@@ -77,7 +78,8 @@ function countImages(doc: PDFDocumentData): { count: number; bytes: number } {
 async function serializeOptimizedCopy(doc: PDFDocumentData): Promise<Uint8Array> {
   try {
     const roots = rootsFromTrailer(doc.xref.trailerDict);
-    const gc = garbageCollect(doc.objects, roots, { deduplicateStreams: true });
+    // Keep independently editable streams separate in the exported document.
+    const gc = garbageCollect(doc.objects, roots, { deduplicateStreams: false });
     const saved = new Map(doc.objects);
     doc.objects.clear();
     for (const [k, v] of gc.objects) doc.objects.set(k, v);
@@ -289,6 +291,21 @@ export async function compressDocumentImages(
   doc: PDFDocumentData,
   options: ImageCompressOptions,
 ): Promise<ImageCompressResult> {
+  // A rewrite invalidates existing signatures, even if no edits were made.
+  // Reuse the signed save guard so edited or security-cleaned graphs fail.
+  if (hasDocumentSignature(doc)) {
+    const bytes = await saveQuick(doc);
+    return {
+      bytes,
+      imagesTouched: 0,
+      finalQuality: 1,
+      originalBytes: bytes.length,
+      compressedBytes: bytes.length,
+      targetMissed: options.targetBytes != null && bytes.length > options.targetBytes,
+      method: 'unchanged',
+      message: 'Signed document retained unchanged; compression would invalidate its signature.',
+    };
+  }
   if (options.quality === null) {
     const bytes = await saveOptimized(doc);
     return {
@@ -315,7 +332,7 @@ export async function compressDocumentImages(
   // Serialization failures must propagate rather than export stale upload bytes.
   let best = await serializeOptimizedCopy(doc);
   let method: ImageCompressResult['method'] = 'optimized';
-  if (options.originalIsCurrent === true && originalBytes > 0 && doc.rawBytes.length <= best.length) {
+  if (!doc.requiresFullRewrite && options.originalIsCurrent === true && originalBytes > 0 && doc.rawBytes.length <= best.length) {
     best = doc.rawBytes;
     method = 'unchanged';
   }
@@ -392,7 +409,7 @@ export async function compressDocumentImages(
     targetMissed = true;
   }
 
-  if (best.length >= originalBytes * 0.99) {
+  if (!doc.requiresFullRewrite && best.length >= originalBytes * 0.99) {
     method = method === 'images' || method === 'raster' ? method : 'unchanged';
   }
 

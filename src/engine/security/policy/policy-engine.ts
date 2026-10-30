@@ -9,8 +9,11 @@ import type {
   PdfPermissions,
 } from '../types';
 import { DEFAULT_PERMISSIONS } from '../types';
+import { randomBytes } from '../crypto/bytes';
+import { runDocumentTransaction } from '../../session/document-transaction';
 import { encryptDocumentObjects } from '../encryption/encrypt-pipeline';
 import { isEncryptedTrailer } from '../encryption/encrypt-dict';
+import { validateEncryptionPasswords } from '../encryption/password-validation';
 import { sanitizationEngine } from '../sanitization/sanitization-engine';
 import { javaScriptSecurityEngine } from '../javascript/javascript-engine';
 import { embeddedFileSecurityEngine } from '../embedded-files/embedded-file-engine';
@@ -21,6 +24,8 @@ export interface SecurityPolicy {
   description: string;
   encryption?: EncryptOptions | null;
   requireEncryption?: boolean;
+  /** Require a password to open the PDF, in addition to its owner password. */
+  requireUserPassword?: boolean;
   stripMetadata?: boolean;
   removeJavaScript?: boolean;
   removeAttachments?: boolean;
@@ -34,8 +39,6 @@ const BUILTIN: SecurityPolicy[] = [
     requireEncryption: true,
     encryption: {
       algorithm: 'AES-256',
-      userPassword: '',
-      ownerPassword: 'owner',
       permissions: {
         ...DEFAULT_PERMISSIONS,
         modify: false,
@@ -56,10 +59,9 @@ const BUILTIN: SecurityPolicy[] = [
     name: 'Confidential',
     description: 'AES-256, no copy, strip metadata',
     requireEncryption: true,
+    requireUserPassword: true,
     encryption: {
       algorithm: 'AES-256',
-      userPassword: 'confidential',
-      ownerPassword: 'owner',
       permissions: { ...DEFAULT_PERMISSIONS, copy: false, modify: false },
     },
     stripMetadata: true,
@@ -70,10 +72,9 @@ const BUILTIN: SecurityPolicy[] = [
     name: 'Highly Confidential',
     description: 'Strong encryption, no print/copy/modify, sanitize',
     requireEncryption: true,
+    requireUserPassword: true,
     encryption: {
       algorithm: 'AES-256',
-      userPassword: 'secret',
-      ownerPassword: 'owner',
       permissions: {
         print: false,
         printHighQuality: false,
@@ -93,10 +94,9 @@ const BUILTIN: SecurityPolicy[] = [
     name: 'Encrypted Archive',
     description: 'AES-256 archive with passwords',
     requireEncryption: true,
+    requireUserPassword: true,
     encryption: {
       algorithm: 'AES-256',
-      userPassword: 'archive',
-      ownerPassword: 'owner',
     },
   },
   {
@@ -105,8 +105,6 @@ const BUILTIN: SecurityPolicy[] = [
     requireEncryption: true,
     encryption: {
       algorithm: 'AES-128',
-      userPassword: '',
-      ownerPassword: 'owner',
       permissions: { ...DEFAULT_PERMISSIONS, print: false, printHighQuality: false },
     },
   },
@@ -116,8 +114,6 @@ const BUILTIN: SecurityPolicy[] = [
     requireEncryption: true,
     encryption: {
       algorithm: 'AES-128',
-      userPassword: '',
-      ownerPassword: 'owner',
       permissions: { ...DEFAULT_PERMISSIONS, copy: false },
     },
   },
@@ -132,6 +128,17 @@ const BUILTIN: SecurityPolicy[] = [
 
 const STORAGE_KEY = 'bloom-pdf-security-policies-v1';
 
+/** Policy definitions do not carry credentials; passwords are supplied per use. */
+function copyPolicy(policy: SecurityPolicy): SecurityPolicy {
+  const encryption = policy.encryption ? { ...policy.encryption } : policy.encryption;
+  if (encryption) {
+    delete encryption.userPassword;
+    delete encryption.ownerPassword;
+    if (encryption.permissions) encryption.permissions = { ...encryption.permissions };
+  }
+  return { ...policy, encryption, permissions: policy.permissions ? { ...policy.permissions } : undefined };
+}
+
 export class SecurityPolicyEngine implements ISecurityPolicyEngine {
   private custom: SecurityPolicy[] = [];
 
@@ -144,23 +151,27 @@ export class SecurityPolicyEngine implements ISecurityPolicyEngine {
   }
 
   getPolicy(name: string): SecurityPolicy | null {
-    return (
+    const policy = (
       BUILTIN.find((p) => p.name === name) ??
       this.custom.find((p) => p.name === name) ??
       null
     );
+    return policy ? copyPolicy(policy) : null;
   }
 
   listPolicyDetails(): SecurityPolicy[] {
-    return [...BUILTIN, ...this.custom];
+    return [...BUILTIN, ...this.custom].map(copyPolicy);
   }
 
   createPolicy(policy: SecurityPolicy): void {
     if (BUILTIN.some((p) => p.name === policy.name)) {
       throw new Error(`Cannot overwrite built-in policy "${policy.name}"`);
     }
+    if (policy.encryption && ('userPassword' in policy.encryption || 'ownerPassword' in policy.encryption)) {
+      throw new Error('Passwords cannot be stored in a policy; provide them when applying it.');
+    }
     this.custom = this.custom.filter((p) => p.name !== policy.name);
-    this.custom.push(policy);
+    this.custom.push(copyPolicy(policy));
     this.saveToStorage();
   }
 
@@ -180,31 +191,52 @@ export class SecurityPolicyEngine implements ISecurityPolicyEngine {
     const policy = this.getPolicy(name);
     if (!policy) throw new Error(`Unknown security policy: ${name}`);
 
-    if (policy.stripMetadata || policy.removeJavaScript || policy.removeAttachments) {
-      await sanitizationEngine.sanitize(doc, {
-        metadata: !!policy.stripMetadata,
-        javascript: !!policy.removeJavaScript,
-        embeddedFiles: !!policy.removeAttachments,
-        comments: name === 'Sanitized Export',
-        unusedObjects: name === 'Sanitized Export',
-      });
-    } else {
-      if (policy.removeJavaScript) javaScriptSecurityEngine.removeJavaScript(doc);
-      if (policy.removeAttachments) embeddedFileSecurityEngine.removeAllAttachments(doc);
-      if (policy.stripMetadata) {
-        metadataEngine.stripMetadata(doc, { stripInfo: true, stripXmp: true });
+    if (policy.requireEncryption) {
+      if (!policy.encryption) throw new Error('The policy does not define an encryption algorithm.');
+      validateEncryptionPasswords(passwordOverrides ?? {});
+      if (policy.requireUserPassword && !passwordOverrides?.userPassword) {
+        throw new Error('A user password is required for this policy.');
       }
+      if (isEncryptedTrailer(doc.xref.trailerDict)) {
+        throw new Error('The document is already encrypted; decrypt it before applying this policy.');
+      }
+      // Encryption must not fail for missing secure randomness after sanitization.
+      randomBytes(1);
     }
 
-    if (policy.requireEncryption && policy.encryption && !isEncryptedTrailer(doc.xref.trailerDict)) {
-      await encryptDocumentObjects(doc, {
-        ...policy.encryption,
-        userPassword: passwordOverrides?.userPassword ?? policy.encryption.userPassword,
-        ownerPassword: passwordOverrides?.ownerPassword ?? policy.encryption.ownerPassword,
-        permissions: policy.encryption.permissions ?? policy.permissions,
-      });
+    if (!policy.requireEncryption && !policy.stripMetadata && !policy.removeJavaScript && !policy.removeAttachments) {
+      return doc;
     }
+    await runDocumentTransaction(doc, async staged => {
+      if (policy.stripMetadata || policy.removeJavaScript || policy.removeAttachments) {
+        await sanitizationEngine.sanitize(staged, {
+          metadata: !!policy.stripMetadata,
+          javascript: !!policy.removeJavaScript,
+          embeddedFiles: !!policy.removeAttachments,
+          comments: name === 'Sanitized Export',
+          unusedObjects: name === 'Sanitized Export',
+          hiddenLayers: name === 'Sanitized Export',
+          alternativeImages: name === 'Sanitized Export',
+        });
+      } else {
+        if (policy.removeJavaScript) javaScriptSecurityEngine.removeJavaScript(staged);
+        if (policy.removeAttachments) embeddedFileSecurityEngine.removeAllAttachments(staged);
+        if (policy.stripMetadata) {
+          metadataEngine.stripMetadata(staged, { stripInfo: true, stripXmp: true });
+        }
+      }
 
+      if (policy.requireEncryption && policy.encryption) {
+        await encryptDocumentObjects(staged, {
+          ...policy.encryption,
+          // Never use persisted policy credentials, including legacy custom policies.
+          userPassword: passwordOverrides?.userPassword ?? '',
+          ownerPassword: passwordOverrides!.ownerPassword,
+          permissions: policy.encryption.permissions ?? policy.permissions,
+        });
+      }
+
+    });
     return doc;
   }
 

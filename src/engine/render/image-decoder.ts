@@ -17,6 +17,7 @@ import {
   PDFName,
   PDFNumber,
   PDFObject,
+  PDFRef,
   PDFStream,
 } from '../types';
 import { resolveRef } from '../parser/parser';
@@ -31,6 +32,62 @@ export interface DecodedImage {
   height: number;
 }
 
+// Decoded images are copied through RGBA buffers and canvases; bound both
+// dimensions and total pixels before allocating those buffers.
+export const MAX_IMAGE_DIMENSION = 32_767;
+export const MAX_IMAGE_PIXELS = 32_000_000;
+
+export class ImageDimensionError extends Error {}
+
+function assertImageDimensions(width: number, height: number): void {
+  if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) ||
+      width < 1 || height < 1 || width > MAX_IMAGE_DIMENSION || height > MAX_IMAGE_DIMENSION ||
+      width * height > MAX_IMAGE_PIXELS) {
+    throw new ImageDimensionError('Image dimensions exceed the supported pixel limit or are invalid');
+  }
+}
+
+/** A compressed image must never be interpreted as raw samples. */
+export class UnsupportedImageFilterError extends Error {
+  constructor(readonly filter: string) {
+    super(`Unsupported PDF image filter: ${filter}`);
+    this.name = 'UnsupportedImageFilterError';
+  }
+}
+
+const IMAGE_PREFILTERS = new Set(['FlateDecode', 'Fl', 'ASCIIHexDecode', 'AHx', 'ASCII85Decode', 'A85', 'LZWDecode', 'LZW', 'RunLengthDecode', 'RL']);
+
+function imageFilters(stream: PDFStream, objects: Map<string, PDFObject>): string[] {
+  const entry = stream.dict.get('Filter');
+  if (!entry) return [];
+  const resolved = entry instanceof PDFRef ? resolveRef(entry, objects) : entry;
+  const values = resolved instanceof PDFArray ? resolved.items : [resolved];
+  return values.map(value => {
+    const filter = value instanceof PDFRef ? resolveRef(value, objects) : value;
+    if (!(filter instanceof PDFName)) throw new UnsupportedImageFilterError('invalid filter');
+    return filter.name;
+  });
+}
+
+function assertSupportedImageFilters(stream: PDFStream, objects: Map<string, PDFObject>, mask = false): string[] {
+  const filters = imageFilters(stream, objects);
+  const decodedFilters = stream.getFilters();
+  if (filters.some((filter, index) => decodedFilters[index] !== filter) || decodedFilters.length !== filters.length) {
+    throw new UnsupportedImageFilterError('indirect filter');
+  }
+  if (filters.some(filter => IMAGE_PREFILTERS.has(filter)) &&
+      (!stream.decodedBytes || stream.decodedBytes === stream.rawBytes)) {
+    throw new UnsupportedImageFilterError('undecoded filter');
+  }
+  for (let index = 0; index < filters.length; index++) {
+    const filter = filters[index];
+    if (IMAGE_PREFILTERS.has(filter)) continue;
+    if (!mask && (filter === 'DCTDecode' || filter === 'DCT') && index === filters.length - 1) continue;
+    throw new UnsupportedImageFilterError(filter);
+  }
+  return filters;
+}
+
 /**
  * Decode a PDF Image XObject into RGBA pixel data.
  */
@@ -43,16 +100,17 @@ export async function decodeImage(
   const height = dict.getNumber('Height') ?? dict.getNumber('H') ?? 0;
 
   if (width <= 0 || height <= 0) return null;
+  assertImageDimensions(width, height);
 
   const bpc = dict.getNumber('BitsPerComponent') ?? dict.getNumber('BPC') ?? 8;
   const isImageMask = dict.getBool('ImageMask') ?? dict.getBool('IM') ?? false;
 
   // Check if it's a JPEG (DCTDecode) — let the browser decode it
-  const filters = imageStream.getFilters();
+  const filters = assertSupportedImageFilters(imageStream, objects);
   if (filters.includes('DCTDecode') || filters.includes('DCT')) {
     // Use getBytes() because if there was FlateDecode+DCTDecode,
     // our parser already applied Flate — getBytes() gives us the JPEG data
-    const image = await decodeJPEG(imageStream.getBytes(), width, height);
+    const image = await decodeJPEG(imageStream.getBytes());
     return applySoftMask(image, dict, objects);
   }
 
@@ -125,11 +183,13 @@ function applySoftMask(
   if (!smaskRef) return image;
   const smask = resolveRef(smaskRef, objects);
   if (!(smask instanceof PDFStream)) return image;
+  assertSupportedImageFilters(smask, objects, true);
 
   const maskWidth = smask.dict.getNumber('Width') ?? smask.dict.getNumber('W') ?? 0;
   const maskHeight = smask.dict.getNumber('Height') ?? smask.dict.getNumber('H') ?? 0;
   const bpc = smask.dict.getNumber('BitsPerComponent') ?? smask.dict.getNumber('BPC') ?? 8;
   if (maskWidth <= 0 || maskHeight <= 0) return image;
+  assertImageDimensions(maskWidth, maskHeight);
   if (bpc !== 1 && bpc !== 2 && bpc !== 4 && bpc !== 8 && bpc !== 16) return image;
 
   const decode = smask.dict.getArray('Decode') ?? smask.dict.getArray('D');
@@ -308,44 +368,99 @@ function dst_setPixel(dst: Uint8ClampedArray, k: number, r: number, g: number, b
 
 // ─── JPEG decoder (delegates to browser) ────────────────────────────────────
 
-async function decodeJPEG(
-  rawBytes: Uint8Array,
-  width: number,
-  height: number,
-): Promise<DecodedImage | null> {
+/** Validate the full JPEG marker stream before handing bytes to a native decoder. */
+function validateJPEGDimensions(bytes: Uint8Array): void {
+  const invalid = () => { throw new ImageDimensionError('Invalid or unsupported JPEG image dimensions'); };
+  if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8) invalid();
+  const frameMarkers = new Set([0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf]);
+  let position = 2;
+  let inScan = false;
+  let sawFrame = false;
+  let sawScan = false;
+  const frameComponents = new Set<number>();
+  while (position < bytes.length) {
+    if (inScan) {
+      while (position < bytes.length && bytes[position] !== 0xff) position++;
+    }
+    if (position >= bytes.length || bytes[position] !== 0xff) invalid();
+    while (position < bytes.length && bytes[position] === 0xff) position++;
+    if (position >= bytes.length) invalid();
+    const marker = bytes[position++];
+    if (inScan && (marker === 0x00 || (marker >= 0xd0 && marker <= 0xd7))) continue;
+    inScan = false;
+    if (marker === 0xd9) {
+      if (!sawFrame || !sawScan) invalid();
+      return;
+    }
+    if (position + 2 > bytes.length) invalid();
+    const length = bytes[position] * 256 + bytes[position + 1];
+    if (length < 2 || position + length > bytes.length) invalid();
+    if (frameMarkers.has(marker)) {
+      if (sawFrame || length < 11) invalid();
+      const components = bytes[position + 7];
+      if (components < 1 || components > 4 || length !== 8 + components * 3) invalid();
+      const precision = bytes[position + 2];
+      if (precision < 2 || precision > 16) invalid();
+      const height = bytes[position + 3] * 256 + bytes[position + 4];
+      const width = bytes[position + 5] * 256 + bytes[position + 6];
+      assertImageDimensions(width, height);
+      for (let i = 0; i < components; i++) {
+        const start = position + 8 + i * 3;
+        const id = bytes[start];
+        const sampling = bytes[start + 1];
+        if (frameComponents.has(id) || (sampling >> 4) < 1 || (sampling >> 4) > 4 ||
+            (sampling & 15) < 1 || (sampling & 15) > 4 || bytes[start + 2] > 3) invalid();
+        frameComponents.add(id);
+      }
+      sawFrame = true;
+    } else if (marker === 0xda) {
+      if (!sawFrame || length < 8) invalid();
+      const components = bytes[position + 2];
+      if (components < 1 || components > frameComponents.size || length !== 6 + components * 2) invalid();
+      const scanComponents = new Set<number>();
+      for (let i = 0; i < components; i++) {
+        const start = position + 3 + i * 2;
+        const id = bytes[start];
+        const table = bytes[start + 1];
+        if (!frameComponents.has(id) || scanComponents.has(id) || (table >> 4) > 3 || (table & 15) > 3) invalid();
+        scanComponents.add(id);
+      }
+      sawScan = true;
+      inScan = true;
+    } else if (!(marker === 0xc4 || marker === 0xcc || marker === 0xdb || marker === 0xdd ||
+                 marker === 0xfe || (marker >= 0xe0 && marker <= 0xef))) {
+      // Reject hierarchy, DNL and unknown extensions: they could change the
+      // dimensions after the SOF or have unbounded decoder behavior.
+      invalid();
+    }
+    position += length;
+  }
+  invalid();
+}
+
+async function decodeJPEG(rawBytes: Uint8Array): Promise<DecodedImage | null> {
+  validateJPEGDimensions(rawBytes);
   // In a browser environment, use createImageBitmap
   if (typeof createImageBitmap !== 'undefined') {
     try {
       const blob = new Blob([rawBytes as unknown as BlobPart], { type: 'image/jpeg' });
       const bitmap = await createImageBitmap(blob);
-
-      // Save dimensions BEFORE closing the bitmap
-      const bw = bitmap.width;
-      const bh = bitmap.height;
-
-      if (bw <= 0 || bh <= 0) {
+      try {
+        const bw = bitmap.width;
+        const bh = bitmap.height;
+        assertImageDimensions(bw, bh);
+        // Draw to an offscreen canvas to get pixel data
+        const canvas = new OffscreenCanvas(bw, bh);
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return null;
+        ctx.drawImage(bitmap, 0, 0);
+        const imageData = ctx.getImageData(0, 0, bw, bh);
+        return { data: imageData.data, width: bw, height: bh };
+      } finally {
         bitmap.close();
-        return null;
       }
-
-      // Draw to an offscreen canvas to get pixel data
-      const canvas = new OffscreenCanvas(bw, bh);
-      const ctx = canvas.getContext('2d');
-      if (!ctx) {
-        bitmap.close();
-        return null;
-      }
-
-      ctx.drawImage(bitmap, 0, 0);
-      const imageData = ctx.getImageData(0, 0, bw, bh);
-      bitmap.close();
-
-      return {
-        data: imageData.data,
-        width: bw,
-        height: bh,
-      };
-    } catch {
+    } catch (error) {
+      if (error instanceof ImageDimensionError) throw error;
       return null;
     }
   }

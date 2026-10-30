@@ -75,8 +75,8 @@ export function ExportPanel({
 }: ExportPanelProps) {
   const [selectedFormat, setSelectedFormat] = useState<ExportFormat>('png');
   const [pageRange, setPageRange] = useState<'all' | 'current' | 'custom'>('all');
-  const [customFrom, setCustomFrom] = useState(1);
-  const [customTo, setCustomTo] = useState(totalPages);
+  const [customFrom, setCustomFrom] = useState('1');
+  const [customTo, setCustomTo] = useState(String(totalPages));
   const [dpi, setDpi] = useState(150);
   const [jpegQuality, setJpegQuality] = useState(92);
   const [isExporting, setIsExporting] = useState(false);
@@ -92,27 +92,48 @@ export function ExportPanel({
       setExportDone(false);
       setExportError(null);
       setExportProgress(0);
-      setCustomTo(totalPages);
+      setCustomTo(String(totalPages));
     }
   }
   const panelRef = useRef<HTMLDivElement>(null);
+  const onCloseRef = useRef(onClose);
+  useEffect(() => { onCloseRef.current = onClose; }, [onClose]);
 
   const formatInfo = EXPORT_FORMATS.find((f) => f.id === selectedFormat)!;
 
   useEffect(() => {
     if (!isOpen) return;
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    panelRef.current?.querySelector<HTMLButtonElement>('button')?.focus();
     const handleKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      if (e.key === 'Escape') { onCloseRef.current(); return; }
+      if (e.key !== 'Tab') return;
+      const focusable = [...(panelRef.current?.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])') ?? [])];
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (e.shiftKey && (document.activeElement === first || !panelRef.current?.contains(document.activeElement))) {
+        e.preventDefault(); last.focus();
+      } else if (!e.shiftKey && (document.activeElement === last || !panelRef.current?.contains(document.activeElement))) {
+        e.preventDefault(); first.focus();
+      }
     };
     window.addEventListener('keydown', handleKey);
-    return () => window.removeEventListener('keydown', handleKey);
-  }, [isOpen, onClose]);
+    return () => { window.removeEventListener('keydown', handleKey); opener?.focus(); };
+  }, [isOpen]);
 
   const getPageIndices = useCallback((): number[] | null => {
     if (pageRange === 'all') return null;
     if (pageRange === 'current') return [currentPage];
-    const from = Math.max(0, customFrom - 1);
-    const to = Math.min(totalPages - 1, customTo - 1);
+    const fromPage = Number(customFrom);
+    const toPage = Number(customTo);
+    if (!/^\d+$/.test(customFrom) || !/^\d+$/.test(customTo) ||
+        !Number.isSafeInteger(fromPage) || !Number.isSafeInteger(toPage) ||
+        fromPage < 1 || toPage > totalPages || fromPage > toPage) {
+      throw new Error(`Enter a valid page range from 1 to ${totalPages}, with From no greater than To.`);
+    }
+    const from = fromPage - 1;
+    const to = toPage - 1;
     return Array.from({ length: to - from + 1 }, (_, i) => from + i);
   }, [pageRange, currentPage, customFrom, customTo, totalPages]);
 
@@ -130,6 +151,15 @@ export function ExportPanel({
   const handleRenderExport = useCallback(async () => {
     if (!doc || !engine) return;
 
+    let pages: number[] | null;
+    try {
+      pages = getPageIndices();
+    } catch (err) {
+      setExportDone(false);
+      setExportError(err instanceof Error ? err.message : String(err));
+      return;
+    }
+
     setIsExporting(true);
     setExportDone(false);
     setExportError(null);
@@ -139,7 +169,7 @@ export function ExportPanel({
       const title = fileName.replace(/\.pdf$/i, '') || 'export';
       const options: ExportOptions = {
         format: selectedFormat,
-        pages: getPageIndices(),
+        pages,
         dpi,
         quality: jpegQuality / 100,
         title,
@@ -176,6 +206,9 @@ export function ExportPanel({
 
       <div
         ref={panelRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="export-dialog-title"
         data-theme="dark"
         className="fixed right-0 top-0 bottom-0 z-[400] w-full max-w-[520px] flex flex-col"
         style={{
@@ -185,13 +218,14 @@ export function ExportPanel({
         <div className="flex flex-col h-full bg-zinc-900/95 backdrop-blur-2xl border-l border-zinc-700/50 shadow-2xl">
           <div className="flex items-center justify-between px-6 py-5 border-b border-zinc-800/80">
             <div>
-              <h2 className="text-lg font-semibold text-white tracking-tight">Export Document</h2>
+              <h2 id="export-dialog-title" className="text-lg font-semibold text-white tracking-tight">Export Document</h2>
               <p className="text-xs text-zinc-500 mt-0.5">
                 {fileName} · {totalPages} page{totalPages !== 1 ? 's' : ''}
               </p>
             </div>
             <button
               onClick={onClose}
+              aria-label="Close export panel"
               className="p-2 rounded-xl text-zinc-500 hover:text-zinc-200 hover:bg-zinc-800 transition-all duration-200"
             >
               <X size={18} />
@@ -288,29 +322,27 @@ export function ExportPanel({
               {pageRange === 'custom' && (
                 <div className="flex items-center gap-3 mt-3">
                   <div className="flex-1">
-                    <label className="text-[10px] text-zinc-600 mb-1 block">From</label>
+                    <label htmlFor="export-page-from" className="text-[10px] text-zinc-600 mb-1 block">From</label>
                     <input
+                      id="export-page-from"
                       type="number"
                       min={1}
                       max={totalPages}
                       value={customFrom}
-                      onChange={(e) =>
-                        setCustomFrom(Math.max(1, Math.min(totalPages, Number(e.target.value))))
-                      }
+                      onChange={(e) => setCustomFrom(e.target.value)}
                       className="w-full px-3 py-2 text-sm bg-zinc-800 border border-zinc-700 rounded-lg text-zinc-200 focus:ring-2 focus:ring-accent focus:border-accent outline-none transition-all"
                     />
                   </div>
                   <span className="text-zinc-600 text-xs mt-4">to</span>
                   <div className="flex-1">
-                    <label className="text-[10px] text-zinc-600 mb-1 block">To</label>
+                    <label htmlFor="export-page-to" className="text-[10px] text-zinc-600 mb-1 block">To</label>
                     <input
+                      id="export-page-to"
                       type="number"
                       min={1}
                       max={totalPages}
                       value={customTo}
-                      onChange={(e) =>
-                        setCustomTo(Math.max(1, Math.min(totalPages, Number(e.target.value))))
-                      }
+                      onChange={(e) => setCustomTo(e.target.value)}
                       className="w-full px-3 py-2 text-sm bg-zinc-800 border border-zinc-700 rounded-lg text-zinc-200 focus:ring-2 focus:ring-accent focus:border-accent outline-none transition-all"
                     />
                   </div>
@@ -386,7 +418,7 @@ export function ExportPanel({
             )}
 
             {exportError && (
-              <div className="p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 text-xs">
+              <div role="alert" className="p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 text-xs">
                 {exportError}
               </div>
             )}

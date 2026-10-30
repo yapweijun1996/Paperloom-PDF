@@ -12,7 +12,7 @@ import { applyStyleToLine, applyStyleToSelection } from '../flow/style-edit';
 import { subsetFonts } from '../optimize/font-subsetter';
 import { getPageContentBytes, parsePDF } from '../parser/parser';
 import { serializeDocument } from '../writer/serializer';
-import { PDFArray, PDFDict, PDFHexString, PDFName, PDFNumber, PDFRef, PDFStream, type PDFDocumentData, type PDFPageInfo } from '../types';
+import { PDFArray, PDFDict, PDFHexString, PDFName, PDFNumber, PDFRef, PDFStream, PDFString, type PDFDocumentData, type PDFPageInfo } from '../types';
 import { syntheticUnicodeFont, unicodeDocument } from './unicode-font-fixtures';
 
 const bytes = (text: string) => new TextEncoder().encode(text);
@@ -68,6 +68,83 @@ const cases = [
 ];
 
 describe('synthetic Type0 Encoding codespaces', () => {
+  it.each(['implicit', 'direct', 'indirect', 'stream'] as const)(
+    'uses /DW rather than TrueType metrics for an %s CIDToGIDMap without /W', mode => {
+      const f = fixture(oneByte, [['41', 'A', 1], ['42', 'B', 2]]);
+      f.descendant.delete('W');
+      const fontBytes = syntheticUnicodeFont('both', false, 1024);
+      const fontRef = new PDFRef(20, 0);
+      f.doc.objects.set(fontRef.toKey(), new PDFStream(new PDFDict(), fontBytes, fontBytes));
+      f.descendant.set('FontDescriptor', new PDFDict([['FontFile2', fontRef]]));
+      if (mode === 'implicit') f.descendant.delete('CIDToGIDMap');
+      if (mode === 'indirect') {
+        const identityRef = new PDFRef(21, 0);
+        f.doc.objects.set(identityRef.toKey(), new PDFName('Identity'));
+        f.descendant.set('CIDToGIDMap', identityRef);
+      }
+      if (mode === 'stream') {
+        const mapping = new Uint8Array([0, 0, 0, 7, 0, 5]);
+        f.descendant.set('CIDToGIDMap', new PDFStream(new PDFDict(), mapping, mapping));
+      }
+      const loaded = loadFont('F1', f.font, f.doc.objects);
+      expect(loaded.ttfFont).not.toBeNull();
+      expect(loaded.widths.size).toBe(0);
+      expect(loaded.defaultWidth).toBe(500);
+      expect(runs(show('4142'), f)[0].glyphs.map(glyph => glyph.width)).toEqual([5, 5]);
+      f.descendant.delete('DW');
+      expect(loadFont('F1', f.font, f.doc.objects).defaultWidth).toBe(1000);
+    },
+  );
+
+  it('keeps PDF /W advances when CIDToGIDMap points to different TrueType glyphs', () => {
+    const f = fixture(oneByte, [['41', 'A', 1], ['42', 'B', 2]]);
+    const fontBytes = syntheticUnicodeFont('both', false, 1024);
+    const fontRef = new PDFRef(20, 0);
+    f.doc.objects.set(fontRef.toKey(), new PDFStream(new PDFDict(), fontBytes, fontBytes));
+    f.descendant.set('FontDescriptor', new PDFDict([['FontFile2', fontRef]]));
+    const mapping = new Uint8Array([0, 0, 0, 7, 0, 5]);
+    f.descendant.set('CIDToGIDMap', new PDFStream(new PDFDict(), mapping, mapping));
+    const loaded = loadFont('F1', f.font, f.doc.objects);
+    expect(loaded.widths.get(1)).toBe(500);
+    expect(loaded.widths.get(2)).toBe(250);
+    expect(runs(show('4142'), f)[0].glyphs.map(glyph => glyph.width)).toEqual([5, 2.5]);
+  });
+
+  it('uses the mapped CID default rather than a different character code width', () => {
+    const f = fixture(oneByte, [['41', 'A', 1], ['42', 'B', 2]]);
+    f.descendant.set('W', new PDFArray([new PDFNumber(65), new PDFArray([new PDFNumber(900)])]));
+    const loaded = loadFont('F1', f.font, f.doc.objects);
+    expect(loaded.widths.get(65)).toBe(900);
+    expect(loaded.widths.get(1)).toBeUndefined();
+    expect(runs(show('41'), f)[0].glyphs[0].width).toBe(5);
+  });
+
+  it('preserves PDF-defined CID advances when a document is saved and reopened', async () => {
+    const f = fixture(oneByte, [['41', 'A', 1], ['42', 'B', 2]]);
+    f.descendant.set('W', new PDFArray([new PDFNumber(1), new PDFArray([new PDFNumber(700)])]));
+    const fontBytes = syntheticUnicodeFont('both', false, 1024);
+    const fontRef = new PDFRef(20, 0);
+    f.doc.objects.set(fontRef.toKey(), new PDFStream(new PDFDict(), fontBytes, fontBytes));
+    f.descendant.set('FontDescriptor', new PDFDict([['FontFile2', fontRef]]));
+    const mapping = new Uint8Array([0, 0, 0, 7, 0, 5]);
+    const mapRef = new PDFRef(21, 0);
+    f.doc.objects.set(mapRef.toKey(), new PDFStream(new PDFDict(), mapping, mapping));
+    f.descendant.set('CIDToGIDMap', mapRef);
+    f.descendant.set('CIDSystemInfo', new PDFDict([
+      ['Registry', new PDFString('Adobe')], ['Ordering', new PDFString('Identity')], ['Supplement', new PDFNumber(0)],
+    ]));
+    await updatePageContent(f.page.contentRefs, show('4142'), f.doc.objects);
+    for (const object of f.doc.objects.values()) {
+      if (object instanceof PDFStream) object.dict.set('Length', new PDFNumber(object.rawBytes.length));
+    }
+    const serialized = await serializeDocument(f.doc);
+    const reopened = await parsePDF(serialized);
+    const page = reopened.pages[0];
+    const output = interpretPage(getPageContentBytes(page, reopened.objects), page, reopened.objects);
+    expect(output.textRuns[0].text).toBe('AB');
+    expect(output.textRuns[0].glyphs.map(glyph => glyph.width)).toEqual([7, 5]);
+  });
+
   it('maps inclusive CID ranges sequentially at each source-code width', () => {
     const cmap = parseCMap(bytes(`begincmap
 4 begincidrange

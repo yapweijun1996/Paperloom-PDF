@@ -11,7 +11,12 @@
  * 7. Validate offsets
  */
 
-import type { PDFDocumentData, PDFRef } from '../../types';
+import { PDFArray, PDFDict, PDFHexString, PDFNumber, PDFRef, type PDFDocumentData } from '../../types';
+import { assertIncrementalOutputAllowed } from '../../writer/incremental-writer';
+import { parsePDF } from '../../parser/parser';
+import { withVerifiedDocumentXref } from '../../writer/new-object-safety';
+import { publishSignatureXref } from './signature-xref';
+import { dehydrateDocument, sameDocumentSnapshot } from '../../worker/codec';
 import type { HashAlgorithm } from './hash-engine';
 import type { SignatureAlgorithmKind } from './cms-builder';
 import {
@@ -27,7 +32,6 @@ import {
   type ByteRange,
   type ByteRangeCalculation,
 } from './byterange';
-import { injectSignature } from './signature-injector';
 import { derInteger, derSequence } from './cms-builder';
 
 export interface FinalizeSignatureInput {
@@ -57,6 +61,8 @@ export interface FinalizeSignatureResult {
   validation: { ok: boolean; errors: string[] };
   byteRangePatched: boolean;
   timestampApplied: boolean;
+  /** Token signature is checked, but TSA certificate trust is not established. */
+  timestampTrust?: 'unverified';
   timestampError?: string;
 }
 
@@ -166,6 +172,7 @@ export async function finalizePdfSignature(
   // Phase 11 — optional RFC 3161 timestamp over signatureValue
   let timestampToken: Uint8Array | undefined;
   let timestampApplied = false;
+  let timestampTrust: 'unverified' | undefined;
   let timestampError: string | undefined;
   if (input.enableTimestamp) {
     try {
@@ -179,6 +186,7 @@ export async function finalizePdfSignature(
       if (ts.ok && ts.token) {
         timestampToken = ts.token.der;
         timestampApplied = true;
+        timestampTrust = ts.token.trust;
       } else {
         timestampError = ts.error;
       }
@@ -217,6 +225,7 @@ export async function finalizePdfSignature(
     validation,
     byteRangePatched,
     timestampApplied,
+    timestampTrust,
     timestampError,
   };
 }
@@ -233,11 +242,73 @@ export async function finalizeSignatureOnDocument(
     sigRef?: PDFRef;
   } = {},
 ): Promise<FinalizeSignatureResult> {
+  assertIncrementalOutputAllowed(doc);
+  const baseline = dehydrateDocument(doc);
+  const raw = doc.rawBytes, objects = doc.objects, xref = doc.xref, entries = xref.entries, trailer = xref.trailerDict;
+  const entryIdentities = new Map(entries);
+  const input = new Uint8Array(pdfBytes);
+  if (!sameDocumentSnapshot(input, raw)) throw new Error('Signature bytes do not match the current document.');
+  await withVerifiedDocumentXref(doc, () => undefined);
+  const before = await parsePDF(input);
+  const parsedSnapshot = dehydrateDocument(before);
+  if (!sameDocumentSnapshot(baseline.nodes, parsedSnapshot.nodes) ||
+      !sameDocumentSnapshot(baseline.objects, parsedSnapshot.objects) || baseline.catalog !== parsedSnapshot.catalog ||
+      !sameDocumentSnapshot(baseline.pages, parsedSnapshot.pages) || !sameDocumentSnapshot(baseline.info, parsedSnapshot.info)) {
+    throw new Error('Document graph does not match the current document bytes.');
+  }
+  let sigRef = opts.sigRef;
+  if (!sigRef) {
+    const expected = makeContentsPlaceholder(opts.contentsSize ?? DEFAULT_CONTENTS_SIZE);
+    const candidates = [...before.objects].filter(([, value]) => {
+      const contents = value instanceof PDFDict ? value.get('Contents') : undefined;
+      return value instanceof PDFDict && value.get('ByteRange') instanceof PDFArray &&
+        contents instanceof PDFHexString && contents.hex.replace(/\s/g, '') === expected;
+    });
+    if (candidates.length !== 1) throw new Error('Cannot identify a unique signature dictionary.');
+    const match = /^(\d+)_(\d+)$/.exec(candidates[0][0]);
+    if (!match) throw new Error('Invalid signature reference.');
+    sigRef = new PDFRef(Number(match[1]), Number(match[2]));
+  }
+  const liveSig = objects.get(sigRef.toKey());
+  if (!(liveSig instanceof PDFDict)) throw new Error('Signature dictionary not found.');
+  const sourceSig = before.objects.get(sigRef.toKey());
+  // Snapshot just the dictionary graph, including nested objects and aliases.
+  const signatureNodes = (sig: PDFDict) => dehydrateDocument({ ...doc, objects: new Map([['signature', sig]]),
+    catalog: sig, pages: [], rawBytes: new Uint8Array(), xref: { entries: new Map(), trailerDict: sig } }).nodes;
+  if (!(sourceSig instanceof PDFDict) || !sameDocumentSnapshot(signatureNodes(liveSig), signatureNodes(sourceSig))) {
+    throw new Error('Signature dictionary does not match the current document bytes.');
+  }
+  if (opts.fieldRef) {
+    const field = objects.get(opts.fieldRef.toKey());
+    if (!(field instanceof PDFDict) || !field.getRef('V')?.equals(sigRef)) {
+      throw new Error('Signature field does not reference the signature dictionary.');
+    }
+  }
   const result = await finalizePdfSignature({
-    pdfBytes,
+    pdfBytes: input,
     privateKey,
     ...opts,
   });
+  const parsed = await parsePDF(result.bytes);
+  const parsedXref = parsed.xref;
+  const finalSig = parsed.objects.get(sigRef.toKey());
+  const range = finalSig instanceof PDFDict ? finalSig.get('ByteRange') : undefined;
+  const contents = finalSig instanceof PDFDict ? finalSig.get('Contents') : undefined;
+  const contentBytes = contents instanceof PDFHexString ? contents.toBytes() : undefined;
+  if (!result.validation.ok || !result.byteRangePatched || !(range instanceof PDFArray) ||
+      !sameDocumentSnapshot(range.asNumbers(), result.byteRange) || !(contents instanceof PDFHexString) || !contentBytes ||
+      contentBytes.length < result.cms.length || !sameDocumentSnapshot(contentBytes.subarray(0, result.cms.length), result.cms) ||
+      contentBytes.subarray(result.cms.length).some(byte => byte !== 0)) {
+    throw new Error('Finalized signature does not match its dictionary.');
+  }
+  if (doc.rawBytes !== raw || doc.objects !== objects || doc.xref !== xref || xref.entries !== entries || xref.trailerDict !== trailer ||
+      entries.size !== entryIdentities.size || [...entryIdentities].some(([key, entry]) => entries.get(key) !== entry) ||
+      !sameDocumentSnapshot(baseline, dehydrateDocument(doc))) {
+    throw new Error('Document changed during signature finalization.');
+  }
+  publishSignatureXref(doc, parsedXref);
+  liveSig.set('Contents', new PDFHexString(contents.hex));
+  liveSig.set('ByteRange', new PDFArray(result.byteRange.map(value => new PDFNumber(value))));
   doc.rawBytes = result.bytes;
   return result;
 }

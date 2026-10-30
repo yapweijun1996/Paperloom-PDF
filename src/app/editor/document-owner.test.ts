@@ -52,6 +52,51 @@ describe('editor document owner', () => {
     expect(order).toEqual([1, 2]);
   });
 
+  it('counts queued and running edits synchronously and clears the count after success or failure', async () => {
+    const owner = new EditorDocumentOwner();
+    const doc = document();
+    owner.replace(doc);
+    const firstGate = deferred();
+    const secondGate = deferred();
+    const secondStarted = deferred();
+    expect(owner.getPendingCount()).toBe(0);
+
+    const first = owner.enqueue(doc, () => null, async () => {
+      await firstGate.promise;
+      throw new Error('expected failure');
+    });
+    const firstRejected = expect(first).rejects.toThrow('expected failure');
+    const second = owner.enqueue(doc, () => null, async () => {
+      secondStarted.release();
+      await secondGate.promise;
+    });
+    expect(owner.getPendingCount()).toBe(2);
+    const idle = owner.whenIdle();
+    firstGate.release();
+    await firstRejected;
+    await secondStarted.promise;
+    expect(owner.getPendingCount()).toBe(1);
+    secondGate.release();
+    await second;
+    await idle;
+    expect(owner.getPendingCount()).toBe(0);
+  });
+
+  it('counts annotation waits and releases the count when replaced work is rejected', async () => {
+    const owner = new EditorDocumentOwner();
+    const doc = document();
+    owner.replace(doc);
+    const gate = deferred();
+    const edit = owner.enqueue(doc, () => gate.promise, async () => {});
+    const rejected = expect(edit).rejects.toThrow('replaced');
+    expect(owner.getPendingCount()).toBe(1);
+    owner.replace(document());
+    gate.release();
+    await rejected;
+    await owner.whenIdle();
+    expect(owner.getPendingCount()).toBe(0);
+  });
+
   it('waits for work added while waiting for the queue to become idle', async () => {
     const owner = new EditorDocumentOwner();
     const doc = document();
