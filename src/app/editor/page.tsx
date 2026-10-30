@@ -126,11 +126,22 @@ export default function EditorPage() {
   // ── Core state ──
   const [doc, setDocumentState] = useState<PDFDocumentData | null>(null);
   const documentOwnerRef = useRef(new EditorDocumentOwner());
-  useEffect(() => () => { documentOwnerRef.current.replace(null); }, []);
+  const editSubmitInFlightRef = useRef<{ doc: PDFDocumentData; line: TextLine; promise: Promise<boolean> } | null>(null);
+  const lineComposingRef = useRef(false);
+  const [isLineComposing, setIsLineComposing] = useState(false);
+  const [isLineSubmitting, setIsLineSubmitting] = useState(false);
+  const setLineComposition = useCallback((active: boolean) => {
+    lineComposingRef.current = active;
+    setIsLineComposing(active);
+  }, []);
+  useEffect(() => () => { editSubmitInFlightRef.current = null; documentOwnerRef.current.replace(null); }, []);
   const setDoc = useCallback((next: PDFDocumentData | null) => {
+    editSubmitInFlightRef.current = null;
+    setIsLineSubmitting(false);
+    setLineComposition(false);
     documentOwnerRef.current.replace(next);
     setDocumentState(next);
-  }, []);
+  }, [setLineComposition]);
   const [fileName, setFileName] = useState('');
   const [currentPage, setCurrentPage] = useState(0);
   const currentPageRef = useRef(0);
@@ -176,6 +187,20 @@ export default function EditorPage() {
   const [editingLineState, setEditingLineState] = useState<TextLine | null>(null);
   const editingLineRef = useRef<TextLine | null>(null);
   const editingLine = editingLineState;
+  const [mobileKeyboardInset, setMobileKeyboardInset] = useState(0);
+  useEffect(() => {
+    if (!isMobile || !editingLine || !window.visualViewport) return;
+    const viewport = window.visualViewport;
+    const update = () => setMobileKeyboardInset(Math.max(0, window.innerHeight - viewport.height - viewport.offsetTop));
+    const frame = window.requestAnimationFrame(update);
+    viewport.addEventListener('resize', update);
+    viewport.addEventListener('scroll', update);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      viewport.removeEventListener('resize', update);
+      viewport.removeEventListener('scroll', update);
+    };
+  }, [isMobile, editingLine]);
   const setEditingLine = useCallback((line: TextLine | null | ((prev: TextLine | null) => TextLine | null)) => {
     if (typeof line === 'function') {
       setEditingLineState((prev: TextLine | null) => {
@@ -543,6 +568,14 @@ export default function EditorPage() {
   const [engineModule, setEngineModule] = useState<typeof import('@/engine/browser-core') | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pdfCanvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  useEffect(() => {
+    if (!isMobile || !editingLine) return;
+    const frame = window.requestAnimationFrame(() => {
+      hiddenInputRef.current?.scrollIntoView({ block: 'center', inline: 'nearest' });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [isMobile, editingLine, mobileKeyboardInset]);
 
   const pushEditorHistory = useCallback((
     label: string,
@@ -1980,6 +2013,7 @@ export default function EditorPage() {
       setGlyphWarning('Exported shaped text cannot be edited in place; add a new text box instead.');
       return;
     }
+    setLineComposition(false);
     initialRunTextRef.current = line.text;
     setEditAnchorLine({
       ...line,
@@ -2050,7 +2084,7 @@ export default function EditorPage() {
         contentBytes: new Uint8Array(contentBytes),
       };
     }
-  }, [doc, currentPage, setEditingLine, setEditAnchorLine, setTypingStyle, renderResult, strokePaths, detectedTables]);
+  }, [doc, currentPage, setEditingLine, setEditAnchorLine, setTypingStyle, setLineComposition, renderResult, strokePaths, detectedTables]);
 
   const prepareExportText = useCallback(async (text: string, fontNames?: string[], targetDoc = doc, pageIndex = currentPage) => {
     const engine = engineRef.current;
@@ -2079,6 +2113,20 @@ export default function EditorPage() {
   // ── Text edit submit — surgical in-place line edit (preserve positions) ──
   const handleEditSubmit = useCallback(async (closeEdit: boolean = true): Promise<boolean> => {
     if (!editingLine || !doc || !engineRef.current) return true;
+    const inFlight = editSubmitInFlightRef.current;
+    if (inFlight?.doc === doc && inFlight.line === editingLine) {
+      const committed = await inFlight.promise;
+      if (committed && closeEdit && editingLineRef.current === editingLine && documentOwnerRef.current.lease(doc).isCurrent()) {
+        setEditingLine(null);
+        setSelectedLine(null);
+      }
+      return committed;
+    }
+    if (lineComposingRef.current) {
+      setError('Finish composing text before applying the edit.');
+      return false;
+    }
+    if (editingLineRef.current !== editingLine) return false;
     const lease = documentOwnerRef.current.lease(doc);
     if (blurTimeoutRef.current) {
       clearTimeout(blurTimeoutRef.current);
@@ -2108,7 +2156,13 @@ export default function EditorPage() {
       return true;
     }
 
+    let settle!: (committed: boolean) => void;
+    const promise = new Promise<boolean>(resolve => { settle = resolve; });
+    const pending = { doc, line: editingLine, promise };
+    editSubmitInFlightRef.current = pending;
+    let committed = false;
     try {
+      setIsLineSubmitting(true);
       setIsSaving(true);
       const engine = engineRef.current;
       await sessionEditorRef.current.edit(doc, 'text-edit', async doc => {
@@ -2341,6 +2395,7 @@ export default function EditorPage() {
       setRenderKey(k => k + 1);
       setThumbnailKey(k => k + 1);
       setGlyphWarning(null);
+      committed = true;
       return true;
     } catch (e) {
       if (!lease.isCurrent()) return false;
@@ -2350,12 +2405,20 @@ export default function EditorPage() {
       }
       return false;
     } finally {
+      if (editSubmitInFlightRef.current === pending) {
+        editSubmitInFlightRef.current = null;
+        setIsLineSubmitting(false);
+      }
       if (lease.isCurrent()) setIsSaving(false);
+      settle(committed);
     }
   }, [editingLine, editText, editOffsetCss, scale, doc, currentPage, setEditingLine, setEditAnchorLine, setTypingStyle, renderResult, pushEditorHistory, showUnsupportedGlyphWarning, prepareExportText, setThumbnailKey]);
 
   // ── Edit cancel — discard overlay only; PDF untouched until commit ──
   const handleEditCancel = useCallback(async () => {
+    const inFlight = editSubmitInFlightRef.current;
+    if (inFlight?.doc === doc && inFlight.line === editingLineRef.current) return;
+    setLineComposition(false);
     if (blurTimeoutRef.current) {
       clearTimeout(blurTimeoutRef.current);
       blurTimeoutRef.current = null;
@@ -2372,7 +2435,7 @@ export default function EditorPage() {
     setSelectedLine(null);
     setEditText('');
     setCaretPos(0);
-  }, [setEditingLine, setEditAnchorLine, setTypingStyle]);
+  }, [doc, setEditingLine, setEditAnchorLine, setTypingStyle, setLineComposition]);
 
   // ── Undo ──
   const handleUndo = useCallback(async () => {
@@ -3022,7 +3085,7 @@ export default function EditorPage() {
       {
         const sigHit = hitTestSignature(signaturesRef.current, currentPage, pdfX, pdfY);
         if (sigHit) {
-          if (editingLine && !await handleEditSubmit(false)) return;
+          if (editingLine && !await handleEditSubmit()) return;
           setSelectedSignatureId(sigHit.id);
           setSelectedDisplayItem(null);
           setSelectedLine(null);
@@ -3035,7 +3098,7 @@ export default function EditorPage() {
       if (formFields.length > 0 && engineRef.current) {
         const formHit = engineRef.current.hitTestFormField(formFields, pdfX, pdfY);
         if (formHit) {
-          if (editingLine && !await handleEditSubmit(false)) return;
+          if (editingLine && !await handleEditSubmit()) return;
           await handleFormFieldSelect(formHit);
           return;
         }
@@ -3054,7 +3117,7 @@ export default function EditorPage() {
       if (linksHighlighted && engineRef.current) {
         const linkHit = engineRef.current.hitTestPageLink(doc, currentPage, pdfX, pdfY);
         if (linkHit) {
-          if (editingLine && !await handleEditSubmit(false)) return;
+          if (editingLine && !await handleEditSubmit()) return;
           setSelectedLine(null);
           setSelectedDisplayItem(null);
           setLinkCreatePending(false);
@@ -4437,6 +4500,10 @@ export default function EditorPage() {
   const handleHiddenInput = useCallback((e: React.FormEvent<HTMLTextAreaElement | HTMLInputElement>) => {
     if (!editingLine) return;
     const el = e.target as HTMLTextAreaElement | HTMLInputElement;
+    if (editSubmitInFlightRef.current?.line === editingLine) {
+      el.value = editTextRef.current;
+      return;
+    }
     const newVal = el.value;
     const oldVal = editTextRef.current;
     const sel = el.selectionStart ?? newVal.length;
@@ -4612,6 +4679,7 @@ export default function EditorPage() {
   }, [editingLine, renderResult, strokePaths, setTypingStyle]);
 
   const handleHiddenKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (editSubmitInFlightRef.current?.line === editingLine) { e.preventDefault(); return; }
     // Let the browser handle Ctrl+Z / Ctrl+Y for in-progress typing (native textarea undo).
     if ((e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'y')) {
       e.stopPropagation();
@@ -5194,6 +5262,7 @@ export default function EditorPage() {
   const closeDocument = useCallback(async (preserveSavedCopy = false) => {
     if (!preserveSavedCopy) await clearPdfFromStorage();
     formDraftControllerRef.current.clear();
+    editSubmitInFlightRef.current = null;
     documentOwnerRef.current.replace(null);
     recoveryPasswordRef.current = null;
     router.push('/');
@@ -5966,7 +6035,7 @@ export default function EditorPage() {
               isMobile={isMobile}
             />
           ) : (
-            <div className="contents" inert={!renderReady}>
+            <div className="contents" inert={!renderReady || isLineSubmitting}>
             <PropertiesSidebar
               activeTool={activeTool}
               setActiveTool={setActiveTool}
@@ -6212,7 +6281,8 @@ export default function EditorPage() {
           ref={scrollViewportRef}
           data-canvas-stack="true"
           className="flex-1 overflow-auto relative isolate checkerboard"
-          style={{ cursor: cursorForTool, touchAction: isMobile ? 'manipulation' : (scale > 1 || spacePanHeld ? 'none' : undefined), paddingBottom: isMobile ? '56px' : undefined }}
+          style={{ cursor: cursorForTool, touchAction: isMobile ? 'manipulation' : (scale > 1 || spacePanHeld ? 'none' : undefined), paddingBottom: isMobile ? '56px' : undefined,
+            marginBottom: isMobile && editingLine ? Math.max(124, mobileKeyboardInset + 68) : undefined }}
           onPointerDown={handleViewportPointerDown}
           onPointerMove={handleViewportPointerMove}
           onPointerUp={handleViewportPointerUp}
@@ -6530,6 +6600,7 @@ export default function EditorPage() {
                   imageDataUrl={resolveSignatureImage(sig)}
                   scale={scale}
                   selected={selectedSignatureId === sig.id}
+                  interactive={!editingLine}
                   toCss={(b) => {
                     const tl = pdfToCanvas(
                       b.x, b.y + b.height,
@@ -7015,6 +7086,8 @@ export default function EditorPage() {
                   caretStart={editSel.start}
                   caretEnd={editSel.end}
                   textRef={hiddenInputRef}
+                  readOnly={isLineSubmitting}
+                  onCompositionChange={setLineComposition}
                   onTextInput={handleHiddenInput}
                   onKeyDown={handleHiddenKeyDown}
                   onSelect={handleEditSelection}
@@ -7024,6 +7097,7 @@ export default function EditorPage() {
                   manualWidth={editManualSize.w}
                   manualHeight={editManualSize.h}
                   onOffsetChange={(x, y, noSnap) => {
+                    if (editSubmitInFlightRef.current?.line === editingLine) return;
                     if (noSnap) {
                       setSnapGuides({ x: null, y: null });
                       setEditOffsetCss({ x, y });
@@ -7055,7 +7129,9 @@ export default function EditorPage() {
                     setEditOffsetCss({ x: x + (bestX ? bestX.d : 0), y: y + (bestY ? bestY.d : 0) });
                   }}
                   onDragEnd={() => setSnapGuides({ x: null, y: null })}
-                  onSizeChange={(w, h) => setEditManualSize({ w, h })}
+                  onSizeChange={(w, h) => {
+                    if (editSubmitInFlightRef.current?.line !== editingLine) setEditManualSize({ w, h });
+                  }}
                 />
               );
             })()}
@@ -7170,6 +7246,36 @@ export default function EditorPage() {
         )}
 
         {/* Mobile Pages button: Z_LAYERS.chrome (100). */}
+        {isMobile && editingLine && (
+          <div
+            role="group"
+            aria-label="Text edit actions"
+            data-keep-text-edit
+            className="fixed left-3 z-[100] flex gap-2 rounded-xl border border-app bg-panel p-1 shadow-lg [@media(max-height:400px)]:left-auto [@media(max-height:400px)]:right-20"
+            style={{ bottom: Math.max(64, mobileKeyboardInset + 8) }}
+            onPointerDown={event => event.preventDefault()}
+          >
+            <button
+              type="button"
+              aria-label="Done editing text"
+              disabled={isSaving || isLineComposing}
+              className="min-h-11 min-w-11 rounded-lg bg-bloom-500 px-3 text-sm font-semibold text-white disabled:opacity-50"
+              onClick={() => void handleEditSubmit()}
+            >
+              {isLineSubmitting ? <span role="status" aria-live="polite">Applying text…</span>
+                : isLineComposing ? <span role="status" aria-live="polite">Finish composing</span> : 'Done'}
+            </button>
+            <button
+              type="button"
+              aria-label="Cancel text edit"
+              disabled={isSaving}
+              className="min-h-11 min-w-11 rounded-lg px-3 text-sm font-semibold text-app hover:bg-panel-elevated disabled:opacity-50"
+              onClick={() => void handleEditCancel()}
+            >
+              Cancel
+            </button>
+          </div>
+        )}
         {isMobile && !showMobileThumbnails && (
           <button
             onClick={() => setShowMobileThumbnails(true)}
@@ -7233,7 +7339,12 @@ export default function EditorPage() {
       </div>
 
       {/* Global notifications: Z_LAYERS.toast (700), above modal surfaces. */}
-      {loadingFont && (
+      {isLineSubmitting && !isMobile && (
+        <div role="status" aria-live="polite" className="fixed bottom-10 right-3 bg-zinc-900 border border-app text-white px-4 py-3 rounded-xl text-sm shadow-xl z-[700]">
+          Applying text…
+        </div>
+      )}
+      {loadingFont && !isLineSubmitting && (
         <div role="status" aria-live="polite" className="fixed bottom-10 left-1/2 -translate-x-1/2 bg-zinc-900 border border-app text-app-muted px-4 py-3 rounded-xl text-sm shadow-xl z-[700]">
           Loading font...
         </div>

@@ -2414,3 +2414,44 @@ bounded register, not an exhaustive list of defects.
   Watermark scan action were tapped. Dark mode and keyboard close were checked
   at 390×844, and desktop behavior at 1280×800. Real iOS and Android devices
   were not tested.
+
+### BUG-238: Mobile text editing lacks visible Done and Cancel actions
+
+- **Status:** Fixed for tested simulated mobile viewports.
+- **Trigger:** Edit an existing line using touch in the PDF editor.
+- **Original behavior:** There were no touch-accessible Done or Cancel controls.
+  Enter committed, Escape canceled, and tapping away could commit without an
+  explicit choice.
+- **Fix:** Mobile editing exposes Done and Cancel. Both use the existing edit
+  transaction; a pending submit is shared with other callers and cannot be
+  canceled midway. While a line is being applied, input is read-only and the
+  status is visible; an unfinished IME composition must finish before applying.
+  Selected signature controls are unavailable during the line edit and return
+  when the edit ends, preventing a concurrent signature mutation.
+  The controls follow visual-viewport changes when available.
+- **Verification:** Chrome simulated touch and keyboard tests cover portrait and
+  landscape, PDF text extraction, undo, focus, overlapping action attempts,
+  delayed and failed font loading, signature-handle gestures, and synthetic
+  composition events. The
+  keyboard viewport was simulated; real iOS and Android devices and their soft
+  keyboards and input methods remain untested.
+
+### BUG-239: Mobile form-field selection does not open its editor
+
+- **Status:** Open.
+- **Trigger:** Select a generated ordinary text form field in mobile Chrome at
+  390×844 with simulated touch.
+- **Observed:** The field editor did not open on mobile; the same fixture was
+  compared in desktop Chrome. The original saved value remained intact.
+- **Limit:** Checkbox, dropdown and other widget types, as well as real mobile
+  devices, have not been verified.
+
+### BUG-240: Existing text-widget appearances are missing from the main canvas
+
+- **Status:** Open.
+- **Trigger:** Open the independently generated PDF with an ordinary text form
+  field and an existing value.
+- **Observed:** The main canvas did not show the field appearance; the page
+  thumbnail and Poppler did, and the saved field value was preserved.
+- **Limit:** Checkbox, dropdown and other widget types, as well as real mobile
+  devices, have not been verified.

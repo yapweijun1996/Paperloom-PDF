@@ -755,6 +755,11 @@ suggested order.
   ([BUG-236](BUG.md#bug-236-tapping-the-page-does-not-place-a-library-signature)).
   The shared mobile options sheet keeps its close control visible while scrolling
   ([BUG-237](BUG.md#bug-237-the-mobile-sign-options-close-button-scrolls-out-of-view)).
+  Existing-line editing offers mobile Done and Cancel controls
+  ([BUG-238](BUG.md#bug-238-mobile-text-editing-lacks-visible-done-and-cancel-actions)).
+  Mobile text-field selection and canvas widget appearance remain open
+  ([BUG-239](BUG.md#bug-239-mobile-form-field-selection-does-not-open-its-editor),
+  [BUG-240](BUG.md#bug-240-existing-text-widget-appearances-are-missing-from-the-main-canvas)).
   Real iOS/Android tests and other mobile tasks remain open. While a
   drawing tool is active, page-area pinch and scrolling are unavailable.
 - **Priority / effort:** P1 / high. **Related:** [BUG-108](BUG.md#bug-108-drawing-highlighting-and-erasing-ignore-touch-drags).
@@ -790,7 +795,12 @@ suggested order.
   two redraws in a 12-page fixture and verified undo/redo. Snapshot budgets and
   unsafe states fall back to a full rebuild; browser testing of that fallback
   remains open. Multi-select editing preserves values, appearances and encrypted recovery
-  in tested paths; a real IME-device check remains open. Grouped editing keeps
+  in tested paths; a real IME-device check remains open.
+  Mobile selection of an ordinary text widget does not open its editor, and its
+  existing appearance is missing from the main canvas; these remain open
+  ([BUG-239](BUG.md#bug-239-mobile-form-field-selection-does-not-open-its-editor),
+  [BUG-240](BUG.md#bug-240-existing-text-widget-appearances-are-missing-from-the-main-canvas)).
+  Grouped editing keeps
   independently painted segments and rejects unsupported low-level replacements
   ([BUG-171](BUG.md#bug-171-grouped-text-edits-can-lose-later-paint-styles));
   tested ActualText spans retain their extraction and paint order

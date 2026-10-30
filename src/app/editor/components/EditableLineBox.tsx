@@ -38,6 +38,8 @@ export interface EditableLineBoxProps {
   caretStart: number;
   caretEnd: number;
   textRef: React.RefObject<HTMLTextAreaElement | null>;
+  readOnly?: boolean;
+  onCompositionChange?: (active: boolean) => void;
   onTextInput: (e: React.FormEvent<HTMLTextAreaElement>) => void;
   onKeyDown: (e: React.KeyboardEvent<HTMLTextAreaElement>) => void;
   onSelect?: (start: number, end: number) => void;
@@ -70,7 +72,7 @@ export function EditableLineBox(props: EditableLineBoxProps) {
     left, top, naturalWidth, naturalHeight,
     fontSizeCss, fontFamily, fontWeight, fontStyle, underline, color,
     segments, text, caretStart, caretEnd,
-    textRef, onTextInput, onKeyDown, onSelect, onBlur, onDragEnd,
+    textRef, readOnly = false, onCompositionChange, onTextInput, onKeyDown, onSelect, onBlur, onDragEnd,
     onOffsetChange, onSizeChange,
     offsetCssX, offsetCssY, manualWidth, manualHeight,
   } = props;
@@ -83,6 +85,7 @@ export function EditableLineBox(props: EditableLineBoxProps) {
   const [caretBlink, setCaretBlink] = useState(true);
 
   const composingRef = useRef(false);
+  const compositionEndTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingCompositionBlurRef = useRef(false);
   const measureRef = useRef<HTMLSpanElement>(null);
   const visibleRef = useRef<HTMLDivElement>(null);
@@ -93,6 +96,10 @@ export function EditableLineBox(props: EditableLineBoxProps) {
   const selectDrag = useRef<{ anchor: number } | null>(null);
   const frozenScaleX = useRef<number | null>(null);
   const sessionKeyRef = useRef(`${left},${top},${naturalWidth},${naturalHeight}`);
+
+  useEffect(() => () => {
+    if (compositionEndTimerRef.current) clearTimeout(compositionEndTimerRef.current);
+  }, []);
 
   const hasSegments = !!(segments && segments.length > 0);
   const caretColor = hasSegments
@@ -419,6 +426,7 @@ export function EditableLineBox(props: EditableLineBoxProps) {
         top: top + offsetCssY,
         width,
         height,
+        pointerEvents: readOnly ? 'none' : undefined,
       }}
       onClick={(e) => e.stopPropagation()}
       onMouseDown={(e) => e.stopPropagation()}
@@ -543,10 +551,22 @@ export function EditableLineBox(props: EditableLineBoxProps) {
       <textarea
         ref={textRef as React.RefObject<HTMLTextAreaElement>}
         value={text}
+        readOnly={readOnly}
+        aria-busy={readOnly}
         onInput={onTextInput}
-        onCompositionStart={() => { composingRef.current = true; }}
+        onCompositionStart={() => {
+          if (readOnly) return;
+          if (compositionEndTimerRef.current) clearTimeout(compositionEndTimerRef.current);
+          composingRef.current = true;
+          onCompositionChange?.(true);
+        }}
         onCompositionEnd={() => {
           composingRef.current = false;
+          // The final input event can follow compositionend in the same turn.
+          compositionEndTimerRef.current = setTimeout(() => {
+            compositionEndTimerRef.current = null;
+            onCompositionChange?.(false);
+          }, 0);
           if (pendingCompositionBlurRef.current) {
             pendingCompositionBlurRef.current = false;
             onBlur();

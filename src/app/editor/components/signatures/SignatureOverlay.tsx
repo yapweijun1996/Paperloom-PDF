@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { PenLine, Lock, Trash2, RotateCw, X } from 'lucide-react';
 import type { VisualSignature } from '@/engine/browser-core';
 import { resizeBox, type ResizeHandle } from '../resizeGeometry';
@@ -12,6 +12,7 @@ export interface SignatureOverlayProps {
   imageDataUrl: string | null;
   scale: number;
   selected: boolean;
+  interactive?: boolean;
   toCss: (pdf: { x: number; y: number; width: number; height: number }) => {
     left: number;
     top: number;
@@ -38,6 +39,7 @@ export function SignatureOverlay(props: SignatureOverlayProps) {
     imageDataUrl,
     scale,
     selected,
+    interactive = true,
     toCss,
     onSelect,
     onCommitMove,
@@ -68,6 +70,12 @@ export function SignatureOverlay(props: SignatureOverlayProps) {
   }, [sig.x, sig.y, sig.width, sig.height, sig.rotation, sig.id]);
 
   const dragMode = useRef<DragMode>(null);
+  const interactiveRef = useRef(interactive);
+  const gestureAllowedRef = useRef(interactive);
+  useLayoutEffect(() => {
+    interactiveRef.current = interactive;
+    if (!interactive) gestureAllowedRef.current = false;
+  }, [interactive]);
   const origin = useRef({
     clientX: 0,
     clientY: 0,
@@ -81,7 +89,7 @@ export function SignatureOverlay(props: SignatureOverlayProps) {
   const onPointerMove = useCallback(
     (e: PointerEvent) => {
       const mode = dragMode.current;
-      if (!mode || sig.locked) return;
+      if (!mode || sig.locked || !interactiveRef.current || !gestureAllowedRef.current) return;
       const dxCss = e.clientX - origin.current.clientX;
       const dyCss = e.clientY - origin.current.clientY;
       const dx = dxCss / scale;
@@ -136,6 +144,11 @@ export function SignatureOverlay(props: SignatureOverlayProps) {
     window.removeEventListener('pointerup', handlePointerUp);
     if (!mode || sig.locked) return;
 
+    if (!interactiveRef.current || !gestureAllowedRef.current) {
+      setLive({ x: sig.x, y: sig.y, width: sig.width, height: sig.height, rotation: sig.rotation });
+      return;
+    }
+
     const cur = liveRef.current;
     if (mode === 'move') {
       const dx = cur.x - origin.current.x;
@@ -155,11 +168,12 @@ export function SignatureOverlay(props: SignatureOverlayProps) {
         onCommitRotate(sig.id, cur.rotation);
       }
     }
-  }, [onCommitMove, onCommitResize, onCommitRotate, onPointerMove, sig.id, sig.locked]);
+  }, [onCommitMove, onCommitResize, onCommitRotate, onPointerMove, sig.id, sig.locked, sig.x, sig.y, sig.width, sig.height, sig.rotation]);
 
   const begin = useCallback(
     (mode: DragMode, e: React.PointerEvent) => {
-      if (!mode) return;
+      if (!mode || !interactiveRef.current) return;
+      gestureAllowedRef.current = true;
       e.preventDefault();
       e.stopPropagation();
       onSelect(sig.id);
@@ -201,8 +215,10 @@ export function SignatureOverlay(props: SignatureOverlayProps) {
         height: box.height,
         transform: `translate(-50%, -50%) rotate(${-live.rotation}deg)`,
         opacity: sig.opacity,
+        pointerEvents: interactive ? undefined : 'none',
       }}
       onPointerDown={(e) => {
+        if (!interactiveRef.current) return;
         e.stopPropagation();
         onSelect(sig.id);
         if (!sig.locked) begin('move', e);
@@ -223,7 +239,7 @@ export function SignatureOverlay(props: SignatureOverlayProps) {
         </div>
       )}
 
-      {selected && (
+      {selected && interactive && (
         <>
           <div
             className={`absolute inset-0 border-2 ${sig.locked ? 'border-amber-500' : 'border-accent'} border-dashed pointer-events-none`}
