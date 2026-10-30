@@ -294,3 +294,48 @@ describe('widget appearances in thumbnails', () => {
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });
+
+describe('non-signature form appearances in editor rendering', () => {
+  it.each([
+    ['Yes', [255, 0, 0]], ['Off', [0, 0, 255]], ['', [255, 255, 255]], ['Missing', [255, 255, 255]],
+  ] as const)('uses the button appearance state %s without guessing', async (state, expected) => {
+    installCanvas();
+    const doc = await parsePDF(widgetFixture('button', state));
+    expect(pixel((await renderPage(doc, 0, { scale: 1, devicePixelRatio: 1, renderWidgets: 'form' })).canvas)).toEqual(expected);
+  });
+
+  it.each(['Tx', 'Btn', 'Ch', 'Sig', 'Unknown'])('classifies inherited %s without drawing signatures or unknown fields', async type => {
+    installCanvas();
+    const doc = await parsePDF(widgetFixture('text', ''));
+    const { PDFDict, PDFName, PDFRef } = await import('../types');
+    const widget = doc.objects.get('4_0') as InstanceType<typeof PDFDict>;
+    widget.delete('FT');
+    const parent = new PDFDict(), parentRef = new PDFRef(20, 0), subtypeRef = new PDFRef(21, 0);
+    parent.set('FT', new PDFName(type));
+    widget.set('Parent', parentRef); widget.set('Subtype', subtypeRef);
+    doc.objects.set(parentRef.toKey(), parent); doc.objects.set(subtypeRef.toKey(), new PDFName('Widget'));
+    const expected = ['Tx', 'Btn', 'Ch'].includes(type) ? [255, 0, 0] : [255, 255, 255];
+    expect(pixel((await renderPage(doc, 0, { scale: 1, devicePixelRatio: 1, renderWidgets: 'form' })).canvas)).toEqual(expected);
+  });
+
+  it.each([2, 32, 6, 36])('retains Hidden and NoView for non-signature widgets with flags %i', async flags => {
+    installCanvas();
+    const doc = await parsePDF(widgetFixture('button', 'Yes', flags));
+    expect(pixel((await renderPage(doc, 0, { scale: 1, devicePixelRatio: 1, renderWidgets: 'form' })).canvas)).toEqual([255, 255, 255]);
+  });
+});
+
+it.each(['annotation', 'appearance'])('keeps a form widget hidden by its %s optional-content layer', async layerOwner => {
+  installCanvas();
+  const red = '1 0 0 rg 0 0 40 20 re f';
+  const bytes = rawPDF([
+    '<< /Type /Catalog /Pages 2 0 R /OCProperties << /OCGs [6 0 R] /D << /OFF [6 0 R] >> >> >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Annots [4 0 R] >>',
+    `<< /Type /Annot /Subtype /Widget /FT /Btn /Rect [20 20 60 40] ${layerOwner === 'annotation' ? '/OC 6 0 R' : ''} /AP << /N 5 0 R >> >>`,
+    `<< /Type /XObject /Subtype /Form /BBox [0 0 40 20] ${layerOwner === 'appearance' ? '/OC 6 0 R' : ''} /Length ${red.length} >>\nstream\n${red}\nendstream`,
+    '<< /Type /OCG /Name (Hidden) >>',
+  ]);
+  const doc = await parsePDF(bytes);
+  expect(pixel((await renderPage(doc, 0, { scale: 1, devicePixelRatio: 1, renderWidgets: 'form' })).canvas)).toEqual([255, 255, 255]);
+});

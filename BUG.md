@@ -2477,5 +2477,63 @@ bounded register, not an exhaustive list of defects.
   and mobile form tests passed in simulated Chrome.
 - **Limit:** Existing unsupported or stale appearances and NeedAppearances are
   not repaired; the existing decoder warns and passes unknown filters through.
-  Checkbox, dropdown and other widget appearances and real mobile devices are
-  outside this fix's verified scope.
+  Other widget appearances were outside this fix; see BUG-241 for subsequent
+  checkbox and choice coverage. Real mobile devices remain unverified.
+
+
+### BUG-241: Checkbox and choice-widget appearances are missing from the canvas and image exports
+
+- **Status:** Fixed for the tested existing non-signature widget appearances.
+- **Trigger:** Open a generated PDF with a checked checkbox and a selected
+  dropdown, each with an existing normal appearance.
+- **Original behavior:** The main canvas and downloaded PNG, JPEG and SVG
+  omitted both appearances, although Poppler and the page thumbnail displayed
+  them; ordinary page text and a text field remained visible.
+- **Fix:** Render existing Tx, Btn and Ch appearances in the editor canvas,
+  selected-image background and image exports. Widget types are resolved through
+  the field tree; signatures and unknown types stay excluded. Button appearance
+  states still use /AS, without guessing a missing state, and Hidden, NoView and
+  optional-content visibility are preserved. Field outlines remain selectable
+  without drawing their names over the appearances.
+- **Verification:** Chrome and Poppler checked a prefilled checkbox and dropdown
+  on the canvas and in actual PNG, JPEG and SVG downloads. Chrome also checked
+  checkbox uncheck/undo, dropdown edit, save and reopen; selected and
+  unselected radio buttons, push button and option list appearance; and the
+  existing signature placement and text-widget suites. Renderer tests cover
+  button appearance states, inherited types, signature exclusion, Hidden,
+  NoView and disabled optional-content layers.
+- **Limit:** Tests cover the listed generated fixtures, not every button or
+  choice variant or real mobile devices. Missing, unsupported or stale
+  appearances and NeedAppearances are not synthesized or repaired. When a
+  button's appearance state (/AS) is missing or unknown, its state-dictionary
+  appearance is skipped even if another viewer chooses a fallback. PDF image
+  exports still omit signature-widget appearances.
+
+
+### BUG-242: Push-button fields offer an invalid checkbox action
+
+- **Status:** Open.
+- **Trigger:** Select an ordinary generated PDF push-button field in Chrome.
+- **Observed:** The options panel presents “Unchecked — click to check”;
+  clicking it reports “Pushbutton values cannot be toggled.” The field's
+  existing appearance is visible, but the checkbox action does not apply.
+- **Evidence:** Independent Chrome reproduction is recorded in
+  `/private/tmp/paperloom-bug241-push.log`. This interaction issue predates
+  BUG-241 and was not changed by its appearance-rendering fix.
+- **Next step:** Distinguish push buttons from checkboxes and radio widgets in
+  the field editor, avoid offering an invalid toggle, and test interactions
+  without executing PDF actions that the application does not support.
+
+### BUG-243: Signature-widget appearances are missing from image exports
+
+- **Status:** Open.
+- **Trigger:** Place a visual signature in a PDF signature field or export a
+  document containing an existing signature-widget appearance.
+- **Observed:** PNG, JPEG and SVG exports omit the signature appearance before
+  and after saving and reopening. A free signature Stamp remains visible in all
+  three formats. An independently generated native signature widget was also
+  absent from the main canvas. Poppler displayed the saved PDF appearances.
+- **Verification:** Chrome tested generated unsigned and native signature fields
+  and a temporary self-signed digital signature. `pdfsig` reported the latter's
+  mathematical signature valid; certificate trust was not verified. Hidden or
+  unsupported signature appearances and real devices remain untested.

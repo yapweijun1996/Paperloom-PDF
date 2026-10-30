@@ -761,7 +761,11 @@ suggested order.
   without automatically focusing them
   ([BUG-239](BUG.md#bug-239-mobile-form-field-selection-does-not-open-its-editor)).
   Supported existing text-widget appearances render on the main canvas and in image exports
-  ([BUG-240](BUG.md#bug-240-existing-text-widget-appearances-are-missing-from-the-canvas-and-image-exports)).
+  ([BUG-240](BUG.md#bug-240-existing-text-widget-appearances-are-missing-from-the-canvas-and-image-exports));
+  tested checkbox and choice appearances also render
+  ([BUG-241](BUG.md#bug-241-checkbox-and-choice-widget-appearances-are-missing-from-the-canvas-and-image-exports)).
+  Signature-widget appearances are still missing from image exports
+  ([BUG-243](BUG.md#bug-243-signature-widget-appearances-are-missing-from-image-exports)).
   Real iOS/Android tests and other mobile tasks remain open. While a
   drawing tool is active, page-area pinch and scrolling are unavailable.
 - **Priority / effort:** P1 / high. **Related:** [BUG-108](BUG.md#bug-108-drawing-highlighting-and-erasing-ignore-touch-drags).
@@ -802,7 +806,11 @@ suggested order.
   preserving drafts and desktop panel preferences
   ([BUG-239](BUG.md#bug-239-mobile-form-field-selection-does-not-open-its-editor)).
   Supported existing text-widget appearances render on the main canvas and in image exports
-  ([BUG-240](BUG.md#bug-240-existing-text-widget-appearances-are-missing-from-the-canvas-and-image-exports)).
+  ([BUG-240](BUG.md#bug-240-existing-text-widget-appearances-are-missing-from-the-canvas-and-image-exports));
+  tested checkbox and choice appearances also render
+  ([BUG-241](BUG.md#bug-241-checkbox-and-choice-widget-appearances-are-missing-from-the-canvas-and-image-exports)).
+  Push-button editing still offers an invalid checkbox toggle and needs a
+  separate fix ([BUG-242](BUG.md#bug-242-push-button-fields-offer-an-invalid-checkbox-action)).
   Grouped editing keeps
   independently painted segments and rejects unsupported low-level replacements
   ([BUG-171](BUG.md#bug-171-grouped-text-edits-can-lose-later-paint-styles));

@@ -63,8 +63,8 @@ export interface RenderOptions {
   renderPaths?: boolean;
   /** Whether to render images (default: true) */
   renderImages?: boolean;
-  /** Draw all widget appearances, or only existing text-field appearances. */
-  renderWidgets?: boolean | 'text';
+  /** Draw all widget appearances, text fields, or supported non-signature form fields. */
+  renderWidgets?: boolean | 'text' | 'form';
   /**
    * Override devicePixelRatio used for canvas backing store.
    * Pass `1` for export/compression so Retina screens don't inflate file size.
@@ -120,7 +120,7 @@ function isOmittedImage(item: ImageItem, omitted?: ImageItem): boolean {
 }
 
 /** /FT is inherited from the field tree, and must not be guessed for widgets. */
-function isTextWidget(widget: PDFDict, objects: Map<string, PDFObject>): boolean {
+function widgetFieldType(widget: PDFDict, objects: Map<string, PDFObject>): string | undefined {
   const seen = new Set<PDFDict>();
   let current: PDFObject | undefined = widget;
   while (current instanceof PDFDict && !seen.has(current)) {
@@ -128,12 +128,12 @@ function isTextWidget(widget: PDFDict, objects: Map<string, PDFObject>): boolean
     const type = current.get('FT');
     if (type) {
       const resolved = resolveRef(type, objects);
-      return resolved instanceof PDFName && resolved.name === 'Tx';
+      return resolved instanceof PDFName ? resolved.name : undefined;
     }
     const parent = current.get('Parent');
     current = parent ? resolveRef(parent, objects) : undefined;
   }
-  return false;
+  return undefined;
 }
 
 export interface ImagePreviewLayers {
@@ -154,7 +154,7 @@ export async function renderImagePreviewLayers(
   assertCanvasScale(dpr);
   const size = checkedCanvasDimensions(item.width * scale * dpr, item.height * scale * dpr);
   const optionalContent = new OptionalContentVisibility(catalog, objects);
-  const { canvas: background } = await renderPageToCanvas(page, objects, { scale, omitImage: item, optionalContent, renderWidgets: 'text' });
+  const { canvas: background } = await renderPageToCanvas(page, objects, { scale, omitImage: item, optionalContent, renderWidgets: 'form' });
   const image = document.createElement('canvas');
   image.width = size.width;
   image.height = size.height;
@@ -293,13 +293,19 @@ export async function renderPageToCanvas(
       const annotLayer = annotDict.get('OC');
       if (annotLayer && options.optionalContent && !options.optionalContent.isVisible(annotLayer)) continue;
 
-      // Editors can render existing text appearances without also painting
+      // Editors can render existing form appearances without also painting
       // signature widgets that may have separate interactive overlays.
       const subtypeEntry = annotDict.get('Subtype');
       const subtype = subtypeEntry ? resolveRef(subtypeEntry, objects) : undefined;
       const subtypeName = subtype instanceof PDFName ? subtype.name : '';
-      if (subtypeName === 'Link' || (subtypeName === 'Widget' &&
-        (!options.renderWidgets || (options.renderWidgets === 'text' && !isTextWidget(annotDict, objects))))) continue;
+      if (subtypeName === 'Link') continue;
+      if (subtypeName === 'Widget') {
+        if (!options.renderWidgets) continue;
+        if (options.renderWidgets !== true) {
+          const type = widgetFieldType(annotDict, objects);
+          if (options.renderWidgets === 'text' ? type !== 'Tx' : !type || !['Tx', 'Btn', 'Ch'].includes(type)) continue;
+        }
+      }
       
       const apRef = annotDict.get('AP');
       let apDict = apRef;

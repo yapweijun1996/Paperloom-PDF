@@ -1479,7 +1479,7 @@ export default function EditorPage() {
         }
         const renderDoc = previewMarkupRemoval(doc!, currentPage, hidden);
         const dpr = window.devicePixelRatio || 1;
-        const result = await engine.renderPage(renderDoc, currentPage, { scale, devicePixelRatio: dpr, renderWidgets: 'text' });
+        const result = await engine.renderPage(renderDoc, currentPage, { scale, devicePixelRatio: dpr, renderWidgets: 'form' });
         if (cancelled) return;
         setRenderResult(result);
 
@@ -1861,7 +1861,7 @@ export default function EditorPage() {
         ctx.fillRect(boxX, boxY, boxW, boxH);
         ctx.strokeRect(boxX, boxY, boxW, boxH);
         ctx.setLineDash([]);
-        if (field.fieldType !== 'Tx' && (selected || boxH > 14)) {
+        if (field.fieldType === 'Sig' && (selected || boxH > 14)) {
           ctx.font = '600 10px Inter, system-ui, sans-serif';
           ctx.fillStyle = '#f59e0b';
           const label = field.fieldName || field.fieldType;
