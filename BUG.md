@@ -293,15 +293,13 @@ The prioritized implementation backlog is in [task.md](task.md).
 
 ### BUG-015: Deployment guide references an absent Actions workflow
 
-- **Status:** Documentation corrected. This checkout has no deployment workflow;
-  its new CI workflow checks a local static build but does not deploy it.
-  the guide no longer claims a push deploys it or that CI performs a smoke test.
-  The actual deployment mechanism and live site have not been verified.
+- **Status:** The deployment workflow from remote main is incorporated and the
+  guide now describes it. Hosted workflow execution and the live site remain
+  to be verified.
 - **Trigger:** Follow the GitHub Pages guide in this checkout.
 - **Original behavior:** The guide described a deployment workflow and smoke job,
   but no `.github` workflow was present in the checkout. The referenced
-  `scripts/smoke-pages.sh` does exist; the actual deployment mechanism has not
-  been established by this review.
+  `scripts/smoke-pages.sh` existed; the deployment workflow now invokes it.
 - **Evidence:** [DEPLOY_PAGES.md:1](docs/DEPLOY_PAGES.md#L1) and
   [smoke-pages.sh](scripts/smoke-pages.sh).
 - **Acceptance:** Confirm the intended deployment mechanism, make the tracked

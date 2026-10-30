@@ -517,19 +517,21 @@ local processing, existing PDF content, unrelated changes, and static hosting.
 
 - **Status:** In progress. Supported Node ranges and rendering test dependencies
   are declared; Node 20 clean install and build passed on macOS arm64 using an
-  offline cache. The deployment guide describes the separate CI and absent
-  deployment workflow; a
+  offline cache. The deployment guide describes the separate CI and GitHub
+  Pages deployment workflows; a
   `typecheck` script and a CI missing-build guard are available. The compiled
   worker guard now executes parse/save/optimize checks in a Node VM. A local
   `verify:release` command runs tests, lint, typecheck, build and the applicable
   static guards in sequence. The command passed after an offline clean install
   on macOS arm64 in CI mode, with 2,497 tests passing and none skipped;
-  the subpath build and guards passed. Full lint warnings and the deployment
-  mechanism remain unresolved; lint reported 169 warnings and no errors. qpdf
+  the subpath build and guards passed. Full lint warnings and hosted deployment
+  verification remain open; lint reported 169 warnings and no errors. qpdf
   12.4.2 was built from verified official source in a temporary directory for
   this run, not installed system-wide. A GitHub Actions workflow now provisions
   the required tools and runs release, coverage and static E2E checks; actionlint
-  validates it locally, but a hosted run has not yet been observed.
+  validates it locally, but a hosted run has not yet been observed. The Pages
+  workflow builds and deploys main and includes a post-deployment smoke check;
+  its hosted result remains to be verified.
 - **Priority / effort:** P2 / medium. **Related:** [BUG-014](BUG.md#bug-014-the-documented-node-minimum-is-incompatible-with-the-locked-nextjs-version),
   [BUG-015](BUG.md#bug-015-deployment-guide-references-an-absent-actions-workflow).
 - **First step:** Confirm the actual Pages deployment mechanism, select a
