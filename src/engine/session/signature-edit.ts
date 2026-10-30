@@ -4,10 +4,12 @@ import { PDFArray, PDFDict, PDFName, PDFNumber, PDFRef, PDFStream, PDFString, ty
 import type { VisualSignature } from '../signatures/visual/visual-types';
 import { getNextObjNum } from '../writer/serializer';
 import { removeMarkupReferences } from './document-edit';
+import { annotationSubtype } from '../content/annotation-subtype';
 
 /** Native visual signatures are stamps, not cryptographic signature fields. */
 export function findVisualSignatureRefs(doc: PDFDocumentData, ids: ReadonlySet<string>): Map<string, PDFRef> {
   const found = new Map<string, PDFRef>();
+  if (ids.size === 0) return found;
   for (const page of doc.pages) {
     const entry = page.dict.get('Annots');
     const annots = entry instanceof PDFRef ? doc.objects.get(entry.toKey()) : entry;
@@ -16,7 +18,11 @@ export function findVisualSignatureRefs(doc: PDFDocumentData, ids: ReadonlySet<s
       if (!(ref instanceof PDFRef)) continue;
       const dict = doc.objects.get(ref.toKey());
       if (!(dict instanceof PDFDict)) continue;
-      const id = dict.get(dict.getName('Subtype') === 'Stamp' ? 'NM' : 'PaperloomSignatureId');
+      const stampId = dict.get('NM');
+      const widgetId = dict.get('PaperloomSignatureId');
+      if (!(stampId instanceof PDFString && ids.has(stampId.value)) &&
+          !(widgetId instanceof PDFString && ids.has(widgetId.value))) continue;
+      const id = annotationSubtype(dict, doc.objects) === 'Stamp' ? stampId : widgetId;
       if (id instanceof PDFString && ids.has(id.value)) found.set(id.value, ref);
     }
   }
@@ -28,7 +34,7 @@ export function removeVisualSignature(doc: PDFDocumentData, id: string): void {
   const ref = findVisualSignatureRefs(doc, new Set([id])).get(id);
   if (!ref) return;
   const dict = doc.objects.get(ref.toKey()) as PDFDict;
-  if (dict.getName('Subtype') === 'Widget') {
+  if (annotationSubtype(dict, doc.objects) === 'Widget') {
     dict.delete('AP');
     dict.delete('PaperloomSignatureId');
     return;

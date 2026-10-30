@@ -1,4 +1,5 @@
 import { parseContentStream } from '../content/operator-lexer';
+import { annotationSubtype } from '../content/annotation-subtype';
 import { serializeToString } from '../editor/stream-compiler';
 import { encodeTextForFont } from '../editor/text-editor';
 import { registerFontObject } from '../fonts/font-augmentation';
@@ -327,7 +328,7 @@ export function setTextFieldValue(doc: PDFDocumentData, widget: AcroFormWidget, 
     if (visited.has(dict)) return false;
     visited.add(dict);
     let complete = true;
-    if (dict.getName('Subtype') === 'Widget') {
+    if (annotationSubtype(dict, doc.objects) === 'Widget') {
       complete = regenerated.has(dict) || regenerate(doc, dict);
       if (complete) regenerated.add(dict);
     }

@@ -7,6 +7,7 @@ import {
   PDFArray,
   PDFDict,
   PDFName,
+  PDFNull,
   PDFNumber,
   PDFRef,
   PDFString,
@@ -36,7 +37,7 @@ export interface SignatureField {
   pageIndex: number;
   rect: PDFRectangle;
   fieldName: string;
-  /** True when /V points at a Sig dictionary. */
+  /** True when the field or an ancestor has a signature value. */
   signed: boolean;
   /** Reference to signature value dictionary, if any. */
   valueRef: PDFRef | null;
@@ -84,21 +85,40 @@ function widgetHasAppearance(
   return apDict.has('N');
 }
 
-function widgetValueRef(
+function widgetSignatureValue(
   dict: PDFDict,
   objects: Map<string, import('../../types').PDFObject>,
-): PDFRef | null {
-  const v = dict.get('V');
-  if (v instanceof PDFRef) {
-    const target = resolveRef(v, objects);
-    if (target instanceof PDFDict) {
-      const type = target.get('Type');
-      if (type instanceof PDFName && type.name === 'Sig') return v;
-      if (target.has('Contents') || target.has('ByteRange') || target.has('Filter')) return v;
+): { signed: boolean; valueRef: PDFRef | null } {
+  const seen = new Set<PDFDict>();
+  let current = dict;
+  while (true) {
+    if (seen.has(current)) throw new Error('The signature field contains a cyclic parent chain.');
+    seen.add(current);
+    const entry = current.get('V');
+    if (entry !== undefined) {
+      let value = entry;
+      const refs = new Set<string>();
+      while (value instanceof PDFRef) {
+        const key = value.toKey();
+        if (refs.has(key)) throw new Error('The signature field value contains a cyclic reference.');
+        if (refs.size >= 100_000) throw new Error('The signature field value reference chain is too long.');
+        refs.add(key);
+        const next = objects.get(key);
+        if (!next) throw new Error('The signature field value cannot be safely inspected.');
+        value = next;
+      }
+      // Null is equivalent to an absent value, so an ancestor may still be signed.
+      if (!(value instanceof PDFNull)) {
+        if (value instanceof PDFDict) return { signed: true, valueRef: entry instanceof PDFRef ? entry : null };
+        throw new Error('The signature field value cannot be safely inspected.');
+      }
     }
-    return v;
+    const parent = current.get('Parent');
+    if (!parent) return { signed: false, valueRef: null };
+    const resolved = resolveRef(parent, objects);
+    if (!(resolved instanceof PDFDict)) throw new Error('The signature field parent cannot be safely inspected.');
+    current = resolved;
   }
-  return null;
 }
 
 /** Convert an AcroForm Sig widget into a SignatureField. */
@@ -108,14 +128,14 @@ export function widgetToSignatureField(
   pageIndex?: number,
 ): SignatureField | null {
   if (widget.fieldType !== 'Sig') return null;
-  const valueRef = widgetValueRef(widget.dict, doc.objects);
+  const { signed, valueRef } = widgetSignatureValue(widget.dict, doc.objects);
   return {
     id: widget.ref.toKey(),
     ref: widget.ref,
     pageIndex: pageIndex ?? pageIndexForWidget(doc, widget),
     rect: widget.rect,
     fieldName: widget.fieldName || 'Signature',
-    signed: valueRef != null,
+    signed,
     valueRef,
     readOnly: widget.readOnly,
     required: widget.required,

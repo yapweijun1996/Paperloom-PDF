@@ -20,6 +20,7 @@ import {
 import { resolveRef } from '../parser/parser';
 import { OptionalContentVisibility } from '../content/optional-content';
 import { isAnnotationVisible } from '../content/annotation-visibility';
+import { annotationSubtype } from '../content/annotation-subtype';
 import type {
   AcroFormCatalog,
   AcroFormField,
@@ -162,8 +163,7 @@ function walkField(
   const partial = strVal(obj.get('T'));
   const fullName = parentName ? `${parentName}.${partial}` : partial;
   const ft = fieldTypeFromFT(inherited(doc, obj, 'FT'));
-  const subtype = obj.get('Subtype');
-  const isWidget = subtype instanceof PDFName && subtype.name === 'Widget';
+  const isWidget = annotationSubtype(obj, objects) === 'Widget';
 
   const widgets: AcroFormWidget[] = [];
   const kids: AcroFormField[] = [];
@@ -181,8 +181,7 @@ function walkField(
       const kidObj = resolveRef(kidRef, objects);
       if (!(kidObj instanceof PDFDict)) continue;
 
-      const kidSubtype = kidObj.get('Subtype');
-      if (kidSubtype instanceof PDFName && kidSubtype.name === 'Widget') {
+      if (annotationSubtype(kidObj, objects) === 'Widget') {
         const kidFt = fieldTypeFromFT(inherited(doc, kidObj, 'FT'));
         widgets.push(buildWidget(
           kidObj, kidRef, fullName || partial, kidFt,

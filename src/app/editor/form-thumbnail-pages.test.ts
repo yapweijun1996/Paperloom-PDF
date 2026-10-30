@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { PDFDocument, StandardFonts } from 'pdf-lib';
 import { parsePDF, resolveRef } from '@/engine/parser/parser';
-import { PDFArray, PDFBoolean, PDFDict, PDFRef, PDFStream } from '@/engine/types';
+import { PDFArray, PDFBoolean, PDFDict, PDFName, PDFRef, PDFStream } from '@/engine/types';
 import { detectFormFieldsOnPage } from '@/engine/forms/detect-fields';
 import { setFormFieldValue } from '@/engine/forms/apply-field';
 import { SessionDocumentEditor } from '@/engine/session/document-edit';
@@ -28,6 +28,31 @@ async function fixture(regenerateAll = false) {
 }
 
 describe('form thumbnail page tracking', () => {
+  it('tracks indirect widget subtype appearances and bounds subtype cycles', async () => {
+    const doc = await fixture();
+    const widget = detectFormFieldsOnPage(doc, 0)[0].dict;
+    const subtype = new PDFRef(40000, 0);
+    doc.objects.set(subtype.toKey(), new PDFName('Widget'));
+    widget.set('Subtype', subtype);
+    const before = captureFormThumbnailSnapshot(doc);
+    const ap = resolveRef(widget.get('AP')!, doc.objects) as PDFDict;
+    ap.set('TestChange', new PDFBoolean(true));
+    expect(changedFormThumbnailPages(before, captureFormThumbnailSnapshot(doc))).toEqual([0]);
+    doc.objects.set(subtype.toKey(), subtype);
+    expect(() => captureFormThumbnailSnapshot(doc)).toThrow(/cyclic/i);
+  });
+
+  it('refreshes both thumbnails when a shared indirect-subtype text field changes', async () => {
+    const doc = await fixture();
+    const first = detectFormFieldsOnPage(doc, 0)[0];
+    const second = detectFormFieldsOnPage(doc, 2)[0];
+    const subtype = new PDFRef(40001, 0);
+    doc.objects.set(subtype.toKey(), new PDFName('Widget'));
+    first.dict.set('Subtype', subtype); second.dict.set('Subtype', subtype);
+    const before = captureFormThumbnailSnapshot(doc);
+    setFormFieldValue(doc, first, 'Changed on both pages');
+    expect(changedFormThumbnailPages(before, captureFormThumbnailSnapshot(doc))).toEqual([0, 2]);
+  });
   it.each([false, true])('tracks all pages whose appearances change (NeedAppearances: %s)', async regenerateAll => {
     const doc = await fixture(regenerateAll);
     const before = captureFormThumbnailSnapshot(doc);

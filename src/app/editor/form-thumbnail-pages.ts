@@ -107,7 +107,9 @@ export function captureFormThumbnailSnapshot(doc: PDFDocumentData): FormThumbnai
     for (const item of annots?.items ?? []) {
       budget.node();
       const annot = item instanceof PDFRef ? resolveSnapshotRef(item, doc.objects, budget) : item;
-      if (annot instanceof PDFDict && annot.getName('Subtype') === 'Widget') {
+      const subtypeEntry = annot instanceof PDFDict ? annot.get('Subtype') : undefined;
+      const subtype = subtypeEntry ? resolveSnapshotRef(subtypeEntry, doc.objects, budget) : undefined;
+      if (annot instanceof PDFDict && subtype instanceof PDFName && subtype.name === 'Widget') {
         widgets.push({
           identity: item instanceof PDFRef ? item.toKey() : annot,
           appearance: snapshotAppearance(annot.get('AP'), doc.objects, budget),

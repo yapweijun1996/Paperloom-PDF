@@ -2529,7 +2529,7 @@ bounded register, not an exhaustive list of defects.
   exercised deeper flag inheritance, keyboard selection, read-only checkboxes
   and radio NoToggleToOff behavior.
 - **Limit:** Other push-button action types and physical devices were not
-  verified. A widget with indirect `/Subtype` may not be selectable; see BUG-246.
+  verified. Indirect `/Subtype` coverage is documented under BUG-246.
 
 ### BUG-243: Signature-widget appearances are missing from image exports
 
@@ -2596,15 +2596,42 @@ bounded register, not an exhaustive list of defects.
 
 ### BUG-246: A push widget with an indirect Subtype is omitted from form selection
 
-- **Status:** Open.
+- **Status:** Fixed for the tested indirect widget subtype paths.
 - **Trigger:** Open a generated push-button widget whose `/Subtype` is an
   indirect reference resolving to `/Widget`.
 - **Observed:** Its existing appearance renders, but the field is missing from
   the form list and cannot be selected to see its field-specific explanation.
   The directly encoded `/Subtype /Widget` control is detected normally.
-- **Evidence:** Independent Chrome reproduction is in
-  `/private/tmp/paperloom-bug242-subtype-review.log`. The investigation exercised
-  a push button; other field types and real devices were not verified.
-- **Next step:** Resolve the widget subtype when detecting form fields, and
-  verify inherited attributes, desktop and mobile selection, editing and save
-  behavior for the supported field types.
+- **Fix:** Resolve indirect widget subtypes in field detection, button and
+  text/choice updates, signature removal and thumbnail change tracking.
+  Missing or dangling subtype values are not guessed; cyclic references fail
+  closed. Signature searches skip unrelated annotations before inspecting
+  their subtypes, while malformed matching annotations still fail closed.
+- **Verification:** Generated push, text, checkbox, radio, dropdown and
+  signature fixtures cover detection and inherited flags. Chrome tested desktop
+  and simulated mobile selection, editing, save and reopen; unsupported push
+  actions were not executed. Unit tests cover updated appearances, thumbnail
+  tracking, signature removal, missing/dangling/cyclic references and unrelated
+  malformed annotations. See BUG-247 for the related signed-field safeguard.
+- **Limit:** Other widget variants and real mobile devices were not verified.
+
+### BUG-247: A signature value inherited from a parent is shown as unsigned
+
+- **Status:** Fixed for the tested parent-owned signature values.
+- **Trigger:** Open a signature field whose `/V` is on its parent field rather
+  than its child widget, then attempt to place a visual signature in that field.
+- **Original behavior:** The child was shown as unsigned, and its visual
+  appearance could be replaced. An independently generated real CMS fixture
+  confirmed the parent `/V` was not overwritten and `saveQuick` rejected the
+  edited signed document; an original signed PDF overwrite was not observed.
+- **Fix:** Resolve signature values through the field parent chain, treat
+  unsupported signature values and malformed chains conservatively, and check
+  the latest signed/read-only status before and within the placement transaction.
+  Digital signing also rejects a selected read-only signature field.
+- **Verification:** Unit tests cover direct and indirect widget subtypes,
+  parent `/V`, child direct and indirect null values, malformed values and
+  cyclic/dangling references. Simulated mobile Chrome tested a generated
+  parent-owned detached CMS signature: replacement was
+  refused, the downloaded bytes matched the original, and OpenSSL verified the
+  CMS before and after. The independent fixture was not validated by `pdfsig`,
+  and certificate trust and real devices were not tested.

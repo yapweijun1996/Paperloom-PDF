@@ -2540,6 +2540,10 @@ export default function EditorPage() {
   /** Place active library signature into a PDF /FT Sig field (writes /AP). */
   const placeLibrarySignatureIntoField = useCallback(async (field: SignatureField) => {
     if (!doc) return;
+    if (field.signed || field.readOnly) {
+      setError('This signature field is already signed or read-only.');
+      return;
+    }
     const lib = getSignatureLibrary();
     let entry = activeLibraryId ? lib.get(activeLibraryId) : null;
     if (!entry) {
@@ -2573,6 +2577,11 @@ export default function EditorPage() {
         );
         const editor = new SessionDocumentEditor();
         await editor.edit(doc, 'place-in-field', async staged => {
+          const current = detectSignatureFieldsOnPage(staged, field.pageIndex)
+            .find(candidate => candidate.ref.toKey() === field.ref.toKey());
+          if (!current || current.signed || current.readOnly) {
+            throw new Error('This signature field is unavailable, already signed, or read-only.');
+          }
           for (const previous of signaturesRef.current) {
             if (!withoutOverlapping.includes(previous)) removeVisualSignature(staged, previous.id);
           }

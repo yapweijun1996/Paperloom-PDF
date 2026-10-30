@@ -813,8 +813,10 @@ suggested order.
   ([BUG-241](BUG.md#bug-241-checkbox-and-choice-widget-appearances-are-missing-from-the-canvas-and-image-exports)).
   Push-button fields show an explanation instead of an invalid toggle
   ([BUG-242](BUG.md#bug-242-push-button-fields-offer-an-invalid-checkbox-action)).
-  A push widget with indirect /Subtype remains undetected
-  ([BUG-246](BUG.md#bug-246-a-push-widget-with-an-indirect-subtype-is-omitted-from-form-selection)).
+  Tested indirect widget subtypes are detected and editable
+  ([BUG-246](BUG.md#bug-246-a-push-widget-with-an-indirect-subtype-is-omitted-from-form-selection));
+  parent-owned signature values are recognized and protected from visual replacement
+  ([BUG-247](BUG.md#bug-247-a-signature-value-inherited-from-a-parent-is-shown-as-unsigned)).
   Grouped editing keeps
   independently painted segments and rejects unsupported low-level replacements
   ([BUG-171](BUG.md#bug-171-grouped-text-edits-can-lose-later-paint-styles));

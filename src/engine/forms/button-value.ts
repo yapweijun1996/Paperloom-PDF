@@ -1,5 +1,6 @@
 import { PDFArray, PDFDict, PDFName, PDFNumber, PDFRef, PDFStream, type PDFDocumentData, type PDFObject } from '../types';
 import { getNextObjNum } from '../writer/serializer';
+import { annotationSubtype } from '../content/annotation-subtype';
 import type { AcroFormWidget } from './types';
 
 function resolve(value: PDFObject | undefined, doc: PDFDocumentData): PDFObject | undefined {
@@ -80,7 +81,7 @@ export function setButtonValue(doc: PDFDocumentData, widget: AcroFormWidget, che
   const visit = (dict: PDFDict): void => {
     if (visited.has(dict)) return;
     visited.add(dict);
-    if (dict.getName('Subtype') === 'Widget') widgets.push(dict);
+    if (annotationSubtype(dict, doc.objects) === 'Widget') widgets.push(dict);
     const kids = resolve(dict.get('Kids'), doc);
     if (kids instanceof PDFArray) for (const child of kids.items) {
       const resolved = resolve(child, doc);

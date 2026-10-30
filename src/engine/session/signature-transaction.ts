@@ -27,7 +27,7 @@ export async function signDocumentTransaction(
     await prepareSignatureSource(staged);
     await installSignatureBase(staged, await saveQuick(staged));
     const fields = detectSignatureFieldsOnPage(staged, input.pageIndex);
-    let field = fields.find(item => item.id === input.selectedFieldId) ?? fields.find(item => !item.signed);
+    let field = fields.find(item => item.id === input.selectedFieldId) ?? fields.find(item => !item.signed && !item.readOnly);
     if (!field) {
       const created = createSignatureFieldAtPoint(staged, input.pageIndex, input.point.x, input.point.y, {
         withPlaceholderAppearance: true,
@@ -36,6 +36,7 @@ export async function signDocumentTransaction(
     }
     if (!field) throw new Error('No valid signature field available for digital signing.');
     if (field.signed) throw new Error('This field is already signed.');
+    if (field.readOnly) throw new Error('This field is read-only.');
     signed.pageIndex = field.pageIndex;
     signed.result = await signDocumentCryptographic(staged, field.ref, input.privateKey, input.signOptions);
   }, { includeRawBytes: true, isCurrent: input.isCurrent });
