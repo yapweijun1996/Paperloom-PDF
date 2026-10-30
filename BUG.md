@@ -2685,3 +2685,14 @@ bounded register, not an exhaustive list of defects.
 - **Fix:** The helper's renderer contract requires only the `toDataURL` method
   it actually uses, so the test substitute and real canvas both fit the type.
 - **Verification:** TypeScript checking and the preview isolation tests pass.
+
+### BUG-251: Locked visual signature controls can change or delete it
+
+- **Status:** Open; identified by source review, not yet reproduced in a browser.
+- **Evidence:** The signature overlay's delete button calls the delete handler
+  even when the signature is locked. The properties sidebar also exposes
+  deletion and opacity changes without a locked check, and the corresponding
+  signature model operations do not enforce that check.
+- **Next step:** Reproduce the affected flows, enforce the intended locked
+  semantics at the mutation boundary, and test the overlay, sidebar and saved
+  document behavior. No damage to an original signed file has been established.
