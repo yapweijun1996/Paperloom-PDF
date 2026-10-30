@@ -2379,3 +2379,34 @@ bounded register, not an exhaustive list of defects.
   and OCR control do not overlap and that retry works with search open and closed
   at 320, 390, 768, 1024 and 1280 pixels. Existing render-failure tests continue
   to verify that unsaved edits and drafts survive failed and retried renders.
+
+
+### BUG-236: Tapping the page does not place a library signature
+
+- **Status:** Fixed for tested simulated mobile touch and desktop Chrome.
+- **Trigger:** Select a signature from the library and tap an empty page while
+  the Sign tool is active.
+- **Original behavior:** The panel said to click the page, but empty-page clicks
+  only deselected signatures. Free placement required desktop drag and drop.
+- **Fix:** Tap/click and drag now share a transactional placement path; existing
+  signature fields and overlays take priority. If no library entry is selected,
+  tapping an empty page does not add a signature.
+- **Verification:** In mobile Chrome at 390×844 with simulated touch, a session
+  signature was created, placed, saved and reopened with its appearance visible.
+  A rotated/cropped page was checked against the saved annotation coordinates,
+  and an existing signature field retained its field appearance without adding
+  a free stamp. Desktop Chrome verified drag-and-drop and reselecting an overlay.
+  Real iOS and Android devices were not tested.
+
+### BUG-237: The mobile Sign options close button scrolls out of view
+
+- **Status:** Open; found while testing BUG-236.
+- **Trigger:** In the Sign tool at a 390×844 mobile viewport, create a session
+  signature and scroll the options sheet down to its library.
+- **Actual:** The sheet's header and Hide panel button scroll above the visible
+  sheet; a user must scroll back to the top or tap the dimmed backdrop to close.
+- **Verification:** Chrome simulated touch showed the button's lower edge at
+  237 px while the sheet began at 295 px after scrolling to the bottom. A real
+  click on the backdrop dismissed the sheet. Real mobile devices were not tested.
+- **Acceptance:** Keep the sheet's close control visible and usable while its
+  content scrolls, and verify top, middle and bottom at mobile and desktop sizes.

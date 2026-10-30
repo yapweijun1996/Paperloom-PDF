@@ -2973,6 +2973,29 @@ export default function EditorPage() {
     return { text: line.text.slice(start, end), line, start, end };
   }, [renderResult]);
 
+  // Both tapping and dragging use the same native signature transaction.
+  const placeLibrarySignatureAt = useCallback(async (signatureId: string, pdfX: number, pdfY: number) => {
+    if (!doc?.pages[currentPage]) return;
+    const entry = getSignatureLibrary().get(signatureId);
+    if (!entry) return;
+    const scaleFit = Math.min(1, DEFAULT_SIGNATURE_SIZE.width / Math.max(entry.width, 1));
+    const sig = createVisualSignature({
+      pageIndex: currentPage,
+      x: pdfX,
+      y: pdfY,
+      appearanceId: entry.id,
+      appearanceImageDataUrl: entry.imageDataUrl,
+      appearanceType: entry.source === 'draw' ? 'drawn' : entry.source === 'typed' ? 'typed' : 'uploaded',
+      width: Math.max(40, entry.width * scaleFit),
+      height: Math.max(24, entry.height * scaleFit),
+    });
+    if (!await commitSignatureChange(current => [...current, sig], 'add-signature')) return;
+    setSelectedSignatureId(sig.id);
+    setSelectedPdfSigFieldId(null);
+    setActiveLibraryId(entry.id);
+    pushRecentSignatureId(entry.id);
+  }, [doc, currentPage, commitSignatureChange]);
+
   // ── Canvas click handler — caret-based, no boxes ──
   const handleCanvasClick = useCallback(async (e: React.MouseEvent) => {
     if (!renderResult || !doc) return;
@@ -3206,11 +3229,12 @@ export default function EditorPage() {
         return;
       }
 
-      // Deselect signature if clicking empty canvas space (signatures are placed via drag & drop from library)
+      // Fields and existing signatures take priority over placing a new one.
       setSelectedSignatureId(null);
       setSelectedPdfSigFieldId(null);
+      if (activeLibraryId) await placeLibrarySignatureAt(activeLibraryId, pdfX, pdfY);
     }
-  }, [renderResult, doc, currentPage, scale, activeTool, editingLine, handleEditSubmit, beginEditSession, displayItems, textFontSize, textColor, textFontFamily, highlightColor, formFields, handleFormFieldSelect, linksHighlighted, linkPopoverMode, resolveLinkDisplay, pdfSignatureFields, placeLibrarySignatureIntoField, pushEditorHistory, setThumbnailKey]);
+  }, [renderResult, doc, currentPage, scale, activeTool, editingLine, handleEditSubmit, beginEditSession, displayItems, textFontSize, textColor, textFontFamily, highlightColor, formFields, handleFormFieldSelect, linksHighlighted, linkPopoverMode, resolveLinkDisplay, pdfSignatureFields, placeLibrarySignatureIntoField, activeLibraryId, placeLibrarySignatureAt, pushEditorHistory, setThumbnailKey]);
 
   // Double-click in select mode → enter text edit
   const handleCanvasDoubleClick = useCallback((e: React.MouseEvent) => {
@@ -3261,10 +3285,6 @@ export default function EditorPage() {
       e.dataTransfer.getData('text/plain');
     if (!signatureId || !doc || !renderResult) return;
 
-    const lib = getSignatureLibrary();
-    const entry = lib.get(signatureId);
-    if (!entry) return;
-
     const canvasContainer = canvasContainerRef.current;
     if (!canvasContainer) return;
     const rect = canvasContainer.getBoundingClientRect();
@@ -3280,28 +3300,8 @@ export default function EditorPage() {
       mediaBox.x, mediaBox.y, page.rotate, page.cropBox.x, page.cropBox.y,
     );
 
-    const maxW = DEFAULT_SIGNATURE_SIZE.width;
-    const scaleFit = Math.min(1, maxW / Math.max(entry.width, 1));
-    const w = Math.max(40, entry.width * scaleFit);
-    const h = Math.max(24, entry.height * scaleFit);
-
-    const sig = createVisualSignature({
-      pageIndex: currentPage,
-      x: pdfX,
-      y: pdfY,
-      appearanceId: entry.id,
-      appearanceImageDataUrl: entry.imageDataUrl,
-      appearanceType:
-        entry.source === 'draw' ? 'drawn' : entry.source === 'typed' ? 'typed' : 'uploaded',
-      width: w,
-      height: h,
-    });
-
-    if (!await commitSignatureChange(current => [...current, sig], 'add-signature')) return;
-    setSelectedSignatureId(sig.id);
-    setActiveLibraryId(entry.id);
-    pushRecentSignatureId(entry.id);
-  }, [doc, renderResult, currentPage, scale, commitSignatureChange]);
+    await placeLibrarySignatureAt(signatureId, pdfX, pdfY);
+  }, [doc, renderResult, currentPage, scale, placeLibrarySignatureAt]);
 
   const applyEraser = useCallback((x: number, y: number, opts?: { deferAnnotRender?: boolean }) => {
     const eraserRadius = eraserSize / 2;

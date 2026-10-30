@@ -1705,7 +1705,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                 Library
               </div>
               <div className="text-[10px] text-app-faint">
-                Drag to page
+                Select, then tap page or drag
               </div>
             </div>
             {signatureLibraryEntries.length === 0 && (

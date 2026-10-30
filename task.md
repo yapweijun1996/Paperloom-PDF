@@ -749,12 +749,18 @@ suggested order.
 
 - **Status:** In progress. Pointer drawing, highlighting and erasing were
   tested with simulated touch in mobile Chrome, including rotated/cropped
-  output. Real iOS/Android tests and other mobile tasks remain open. While a
+  output. A selected library signature can be placed by tapping the page;
+  mobile Chrome verified save/reopen, rotated/cropped placement and existing
+  signature-field priority, while desktop Chrome verified drag and selection
+  ([BUG-236](BUG.md#bug-236-tapping-the-page-does-not-place-a-library-signature)).
+  The Sign options sheet can hide its close button while scrolling
+  ([BUG-237](BUG.md#bug-237-the-mobile-sign-options-close-button-scrolls-out-of-view)).
+  Real iOS/Android tests and other mobile tasks remain open. While a
   drawing tool is active, page-area pinch and scrolling are unavailable.
 - **Priority / effort:** P1 / high. **Related:** [BUG-108](BUG.md#bug-108-drawing-highlighting-and-erasing-ignore-touch-drags).
   **Review points:** #4, #12–#20.
-- **First step:** Move canvas drawing to pointer events and add tap-to-place for
-  library signatures; then test on a real phone and tablet.
+- **Next step:** Keep the mobile options close control visible while scrolling,
+  then test the touch workflows on a real phone and tablet.
 - **Acceptance:** On iOS and Android devices a user can draw, highlight, erase,
   place a signature, edit a line with visible Done and Cancel, fill a form
   field, fit the page to width, reorder pages and download. Tablet widths get a
