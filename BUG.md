@@ -2673,3 +2673,15 @@ bounded register, not an exhaustive list of defects.
   not part of that independent reproduction.
 - **Next step:** Decide the intended field editing semantics, preserve the
   visible appearance, and test save, undo and signed/read-only protections.
+
+### BUG-250: Signature preview test fails TypeScript checking
+
+- **Status:** Fixed.
+- **Trigger:** Run `npm run typecheck` after the field-signature preview change.
+- **Original behavior:** The preview test's canvas substitute did not satisfy
+  the helper's unnecessarily broad `HTMLCanvasElement` return type.
+- **CI evidence:** GitHub CI run 41110892696 failed at the release typecheck
+  with TS2352 for this test; the Pages workflow succeeded.
+- **Fix:** The helper's renderer contract requires only the `toDataURL` method
+  it actually uses, so the test substitute and real canvas both fit the type.
+- **Verification:** TypeScript checking and the preview isolation tests pass.

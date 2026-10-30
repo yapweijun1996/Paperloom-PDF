@@ -1,6 +1,6 @@
 import { annotationSubtype } from '@/engine/content/annotation-subtype';
 import { PDFArray, PDFDict, type PDFDocumentData, type PDFRef } from '@/engine/types';
-import type { RenderResult, VisualSignature } from '@/engine/browser-core';
+import type { VisualSignature } from '@/engine/browser-core';
 
 // Field previews are optional. Bound their individual and combined raster cost.
 const MAX_PREVIEW_DIMENSION = 4096;
@@ -10,7 +10,7 @@ const MAX_PAGE_PREVIEW_PIXELS = 16_000_000;
 type PreviewRenderer = (
   doc: PDFDocumentData, pageIndex: number,
   options: { scale: number; devicePixelRatio: number; renderWidgets: 'supported'; background: string },
-) => Promise<Pick<RenderResult, 'canvas'>>;
+) => Promise<{ canvas: Pick<HTMLCanvasElement, 'toDataURL'> }>;
 
 /** Render only tracked widget appearances without changing the document graph. */
 export async function renderFieldSignaturePreviews(

@@ -772,6 +772,8 @@ suggested order.
   ([BUG-248](BUG.md#bug-248-signature-overlay-is-misplaced-on-a-rotated-cropped-page));
   moving a field signature can lose appearance details
   ([BUG-249](BUG.md#bug-249-moving-a-field-signature-loses-appearance-details)).
+  The preview renderer test contract passes TypeScript checking
+  ([BUG-250](BUG.md#bug-250-signature-preview-test-fails-typescript-checking)).
   Real iOS/Android tests and other mobile tasks remain open. While a
   drawing tool is active, page-area pinch and scrolling are unavailable.
 - **Priority / effort:** P1 / high. **Related:** [BUG-108](BUG.md#bug-108-drawing-highlighting-and-erasing-ignore-touch-drags).
