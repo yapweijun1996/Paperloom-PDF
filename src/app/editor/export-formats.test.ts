@@ -38,6 +38,6 @@ describe('export page selection', () => {
   it.each(['png', 'jpeg'] as const)('renders %s with a DPI scale independent of display density', async format => {
     renderPage.mockClear();
     await exportDocument(doc, engine, options(format, [0]));
-    expect(renderPage).toHaveBeenCalledWith(doc, 0, { scale: 150 / 72, devicePixelRatio: 1, renderWidgets: 'form' });
+    expect(renderPage).toHaveBeenCalledWith(doc, 0, { scale: 150 / 72, devicePixelRatio: 1, renderWidgets: 'supported' });
   });
 });

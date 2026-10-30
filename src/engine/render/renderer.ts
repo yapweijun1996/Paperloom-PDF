@@ -63,8 +63,8 @@ export interface RenderOptions {
   renderPaths?: boolean;
   /** Whether to render images (default: true) */
   renderImages?: boolean;
-  /** Draw all widget appearances, text fields, or supported non-signature form fields. */
-  renderWidgets?: boolean | 'text' | 'form';
+  /** Draw all widgets, text fields, non-signature forms, or all supported fields. */
+  renderWidgets?: boolean | 'text' | 'form' | 'supported';
   /**
    * Override devicePixelRatio used for canvas backing store.
    * Pass `1` for export/compression so Retina screens don't inflate file size.
@@ -154,7 +154,7 @@ export async function renderImagePreviewLayers(
   assertCanvasScale(dpr);
   const size = checkedCanvasDimensions(item.width * scale * dpr, item.height * scale * dpr);
   const optionalContent = new OptionalContentVisibility(catalog, objects);
-  const { canvas: background } = await renderPageToCanvas(page, objects, { scale, omitImage: item, optionalContent, renderWidgets: 'form' });
+  const { canvas: background } = await renderPageToCanvas(page, objects, { scale, omitImage: item, optionalContent, renderWidgets: 'supported' });
   const image = document.createElement('canvas');
   image.width = size.width;
   image.height = size.height;
@@ -293,8 +293,7 @@ export async function renderPageToCanvas(
       const annotLayer = annotDict.get('OC');
       if (annotLayer && options.optionalContent && !options.optionalContent.isVisible(annotLayer)) continue;
 
-      // Editors can render existing form appearances without also painting
-      // signature widgets that may have separate interactive overlays.
+      // Editors remove tracked overlays before rendering supported appearances.
       const subtypeEntry = annotDict.get('Subtype');
       const subtype = subtypeEntry ? resolveRef(subtypeEntry, objects) : undefined;
       const subtypeName = subtype instanceof PDFName ? subtype.name : '';
@@ -303,7 +302,9 @@ export async function renderPageToCanvas(
         if (!options.renderWidgets) continue;
         if (options.renderWidgets !== true) {
           const type = widgetFieldType(annotDict, objects);
-          if (options.renderWidgets === 'text' ? type !== 'Tx' : !type || !['Tx', 'Btn', 'Ch'].includes(type)) continue;
+          const allowed = options.renderWidgets === 'text' ? ['Tx'] :
+            options.renderWidgets === 'form' ? ['Tx', 'Btn', 'Ch'] : ['Tx', 'Btn', 'Ch', 'Sig'];
+          if (!type || !allowed.includes(type)) continue;
         }
       }
       

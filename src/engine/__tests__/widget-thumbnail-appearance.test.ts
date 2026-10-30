@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createCanvas, ImageData, loadImage } from '@napi-rs/canvas/node-canvas';
-import { PDFDocument, StandardFonts } from 'pdf-lib';
+import { PDFDocument, PDFName as LibPDFName, PDFString as LibPDFString, StandardFonts } from 'pdf-lib';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -12,6 +12,8 @@ import { interpretPage, type ImageItem } from '../content/interpreter';
 import { detectFormFieldsOnPage } from '../forms/detect-fields';
 import { setFormFieldValue } from '../forms/apply-field';
 import { serializeDocument } from '../writer/serializer';
+import { findVisualSignatureRefs } from '../session/signature-edit';
+import { previewMarkupRemoval } from '../session/document-edit';
 
 const hasPoppler = spawnSync('pdftoppm', ['-v'], { stdio: 'ignore' }).status === 0;
 
@@ -190,6 +192,36 @@ describe('widget appearances in thumbnails', () => {
     expect(preview.background.toDataURL()).not.toBe((await renderPage(doc, 0, { scale: 1, devicePixelRatio: 1, omitImage: item })).canvas.toDataURL());
   });
 
+  it('omits tracked signatures but keeps untracked signature widgets in image previews', async () => {
+    const pdf = await PDFDocument.create();
+    const page = pdf.addPage([100, 100]);
+    const stream = pdf.context.flateStream('1 0 0 rg 0 0 40 20 re f', {
+      Type: 'XObject', Subtype: 'Form', BBox: [0, 0, 40, 20], Resources: {},
+    });
+    const widget = pdf.context.obj({ Type: 'Annot', Subtype: 'Widget', FT: 'Sig',
+      T: LibPDFString.of('signature'), Rect: [20, 20, 60, 40], F: 4, P: page.ref,
+      PaperloomSignatureId: LibPDFString.of('live-signature'), AP: { N: pdf.context.register(stream) } });
+    const ref = pdf.context.register(widget);
+    page.node.set(LibPDFName.of('Annots'), pdf.context.obj([ref]));
+    pdf.catalog.set(LibPDFName.of('AcroForm'), pdf.context.obj({ Fields: [ref] }));
+    const image = createCanvas(4, 4); image.getContext('2d').fillRect(0, 0, 4, 4);
+    page.drawImage(await pdf.embedPng(image.toBuffer('image/png')), { x: 70, y: 70, width: 10, height: 10 });
+    const doc = await parsePDF(await pdf.save({ useObjectStreams: false }));
+    installCanvas();
+    const item = interpretPage(getPageContentBytes(doc.pages[0], doc.objects), doc.pages[0], doc.objects)
+      .displayList.find((entry): entry is ImageItem => entry.type === 'image');
+    expect(item).toBeDefined();
+    const native = await renderImagePreviewLayers(doc.pages[0], doc.objects, item!, 1, doc.catalog);
+    expect(pixel(native.background)).toEqual([255, 0, 0]);
+    const refs = findVisualSignatureRefs(doc, new Set(['live-signature']));
+    expect(refs.size).toBe(1);
+    const hidden = new Map([...refs.values()].map(value => [value.toKey(), value]));
+    const previewPage = previewMarkupRemoval(doc, 0, hidden).pages[0];
+    const tracked = await renderImagePreviewLayers(previewPage, doc.objects, item!, 1, doc.catalog);
+    expect(pixel(tracked.background)).toEqual([255, 255, 255]);
+    expect(tracked.image.getContext('2d')!.getImageData(5, 5, 1, 1).data[3]).toBe(255);
+  });
+
   it.skipIf(!hasPoppler)('maps a text appearance on a cropped, rotated page like Poppler', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'paperloom-widget-geometry-'));
     try {
@@ -296,6 +328,39 @@ describe('widget appearances in thumbnails', () => {
 });
 
 describe('non-signature form appearances in editor rendering', () => {
+  it.each(['annotation', 'appearance'])('keeps a signature hidden by its %s optional-content layer', async location => {
+    installCanvas();
+    const content = '1 0 0 rg 0 0 40 20 re f';
+    const bytes = rawPDF([
+      '<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [4 0 R] >> /OCProperties << /OCGs [6 0 R] /D << /OFF [6 0 R] >> >> >>',
+      '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+      '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Resources << >> /Annots [4 0 R] >>',
+      `<< /Type /Annot /Subtype /Widget /FT /Sig /T (signature) /Rect [20 20 60 40] /F 4 /P 3 0 R ${location === 'annotation' ? '/OC 6 0 R' : ''} /AP << /N 5 0 R >> >>`,
+      `<< /Type /XObject /Subtype /Form /BBox [0 0 40 20] ${location === 'appearance' ? '/OC 6 0 R' : ''} /Length ${content.length} >>\nstream\n${content}\nendstream`,
+      '<< /Type /OCG /Name (Hidden) >>',
+    ]);
+    const result = await renderPage(await parsePDF(bytes), 0, { scale: 1, devicePixelRatio: 1, renderWidgets: 'supported' });
+    expect(pixel(result.canvas)).toEqual([255, 255, 255]);
+  });
+
+  it.each([['Sig', 4, [255, 0, 0]], ['Sig', 2, [255, 255, 255]],
+    ['Sig', 32, [255, 255, 255]], ['Unknown', 4, [255, 255, 255]]] as const)(
+    'renders only visible supported field appearances: %s flags %i', async (type, flags, expected) => {
+      installCanvas();
+      const doc = await parsePDF(widgetFixture('text', '', flags));
+      const { PDFDict, PDFName, PDFRef } = await import('../types');
+      const widget = doc.objects.get('4_0');
+      expect(widget).toBeInstanceOf(PDFDict);
+      const dict = widget as InstanceType<typeof PDFDict>;
+      dict.delete('FT');
+      const parent = new PDFDict(), parentRef = new PDFRef(20, 0), typeRef = new PDFRef(21, 0), subtypeRef = new PDFRef(22, 0);
+      parent.set('FT', typeRef); dict.set('Parent', parentRef); dict.set('Subtype', subtypeRef);
+      doc.objects.set(parentRef.toKey(), parent); doc.objects.set(typeRef.toKey(), new PDFName(type));
+      doc.objects.set(subtypeRef.toKey(), new PDFName('Widget'));
+      expect(pixel((await renderPage(doc, 0, { scale: 1, devicePixelRatio: 1, renderWidgets: 'supported' })).canvas)).toEqual(expected);
+    },
+  );
+
   it.each([
     ['Yes', [255, 0, 0]], ['Off', [0, 0, 255]], ['', [255, 255, 255]], ['Missing', [255, 255, 255]],
   ] as const)('uses the button appearance state %s without guessing', async (state, expected) => {

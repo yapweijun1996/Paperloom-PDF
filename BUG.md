@@ -2506,8 +2506,8 @@ bounded register, not an exhaustive list of defects.
   choice variant or real mobile devices. Missing, unsupported or stale
   appearances and NeedAppearances are not synthesized or repaired. When a
   button's appearance state (/AS) is missing or unknown, its state-dictionary
-  appearance is skipped even if another viewer chooses a fallback. PDF image
-  exports still omit signature-widget appearances.
+  appearance is skipped even if another viewer chooses a fallback. Signature-widget
+  appearance coverage is documented separately under BUG-243.
 
 
 ### BUG-242: Push-button fields offer an invalid checkbox action
@@ -2526,14 +2526,39 @@ bounded register, not an exhaustive list of defects.
 
 ### BUG-243: Signature-widget appearances are missing from image exports
 
-- **Status:** Open.
+- **Status:** Fixed for tested existing signature-widget appearances.
 - **Trigger:** Place a visual signature in a PDF signature field or export a
   document containing an existing signature-widget appearance.
 - **Observed:** PNG, JPEG and SVG exports omit the signature appearance before
   and after saving and reopening. A free signature Stamp remains visible in all
   three formats. An independently generated native signature widget was also
   absent from the main canvas. Poppler displayed the saved PDF appearances.
-- **Verification:** Chrome tested generated unsigned and native signature fields
-  and a temporary self-signed digital signature. `pdfsig` reported the latter's
-  mathematical signature valid; certificate trust was not verified. Hidden or
-  unsupported signature appearances and real devices remain untested.
+- **Fix:** Render supported signature-widget appearances in the main canvas,
+  selected-image preview and PNG, JPEG and SVG exports. Tracked interactive
+  signatures are excluded from editor backgrounds so their overlays are not
+  painted twice. Existing appearance streams and signature values are preserved.
+- **Verification:** Chrome tested a typed signature placed in a field and a free
+  Stamp before save, after save and after reopen; a native untracked appearance;
+  a half-transparent appearance; and a cropped, rotated page. Chrome also tested
+  tracked and untracked appearances while dragging an embedded image. A temporary
+  self-signed digital signature remained byte-identical after image exports, and
+  `pdfsig` reported its mathematical signature valid before and after. Renderer
+  tests cover inherited types, Hidden, NoView and disabled optional-content layers.
+- **Limit:** Certificate trust, other signature appearance variants and real
+  devices were not verified. Missing, stale or unsupported appearances are not
+  synthesized. The existing live-field preview differs from the PDF appearance
+  in the tested typed-signature scenario; see BUG-244.
+
+### BUG-244: Live field-signature preview differs from the PDF appearance
+
+- **Status:** Open.
+- **Trigger:** Place a typed library signature into a PDF signature field.
+- **Observed:** The live overlay shows the signature image, while the saved PDF
+  appearance and image export also include a border, printed name and date, with
+  different signature scaling. The export follows the existing PDF appearance.
+- **Evidence:** Independently reproduced in Chrome with a generated signature
+  field; `/tmp/paperloom-bug243-review.t9eBVc/surface.png` and `export.png`
+  show the compared states. Other signature sources, fields and real devices
+  were not verified.
+- **Next step:** Align the live field preview with the actual PDF appearance and
+  verify placement, editing, save/reopen and exports without invalidating signed PDFs.

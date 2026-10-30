@@ -764,8 +764,10 @@ suggested order.
   ([BUG-240](BUG.md#bug-240-existing-text-widget-appearances-are-missing-from-the-canvas-and-image-exports));
   tested checkbox and choice appearances also render
   ([BUG-241](BUG.md#bug-241-checkbox-and-choice-widget-appearances-are-missing-from-the-canvas-and-image-exports)).
-  Signature-widget appearances are still missing from image exports
-  ([BUG-243](BUG.md#bug-243-signature-widget-appearances-are-missing-from-image-exports)).
+  Tested signature-widget appearances render on the canvas and in image exports
+  ([BUG-243](BUG.md#bug-243-signature-widget-appearances-are-missing-from-image-exports));
+  the live field-signature preview still differs from the PDF appearance
+  ([BUG-244](BUG.md#bug-244-live-field-signature-preview-differs-from-the-pdf-appearance)).
   Real iOS/Android tests and other mobile tasks remain open. While a
   drawing tool is active, page-area pinch and scrolling are unavailable.
 - **Priority / effort:** P1 / high. **Related:** [BUG-108](BUG.md#bug-108-drawing-highlighting-and-erasing-ignore-touch-drags).

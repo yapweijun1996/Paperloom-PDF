@@ -528,6 +528,15 @@ export default function EditorPage() {
   const [validationBusy, setValidationBusy] = useState(false);
   const [validationReport, setValidationReport] = useState<ValidationReport | null>(null);
   const [signatureSummaryVersion, setSignatureSummaryVersion] = useState(0);
+  const imagePreviewPage = useMemo(() => {
+    // Native PDF objects mutate in place, so the render revision invalidates this view.
+    void renderKey;
+    if (!doc?.pages[currentPage]) return null;
+    if (!signatures.length || selectedDisplayItem?.type !== 'image') return doc.pages[currentPage];
+    const refs = findVisualSignatureRefs(doc, new Set(signatures.map(signature => signature.id)));
+    const hidden = new Map([...refs.values()].map(ref => [ref.toKey(), ref]));
+    return previewMarkupRemoval(doc, currentPage, hidden).pages[currentPage];
+  }, [doc, currentPage, signatures, selectedDisplayItem, renderKey]);
   const refreshMultiSigPanel = useCallback(() => setSignatureSummaryVersion(version => version + 1), []);
   const { ltvStatus, managedSignatures, revisionEntries } = useMemo(() => {
     // The PDF engine mutates document objects in place; these values signal relevant changes.
@@ -1479,7 +1488,7 @@ export default function EditorPage() {
         }
         const renderDoc = previewMarkupRemoval(doc!, currentPage, hidden);
         const dpr = window.devicePixelRatio || 1;
-        const result = await engine.renderPage(renderDoc, currentPage, { scale, devicePixelRatio: dpr, renderWidgets: 'form' });
+        const result = await engine.renderPage(renderDoc, currentPage, { scale, devicePixelRatio: dpr, renderWidgets: 'supported' });
         if (cancelled) return;
         setRenderResult(result);
 
@@ -1861,7 +1870,9 @@ export default function EditorPage() {
         ctx.fillRect(boxX, boxY, boxW, boxH);
         ctx.strokeRect(boxX, boxY, boxW, boxH);
         ctx.setLineDash([]);
-        if (field.fieldType === 'Sig' && (selected || boxH > 14)) {
+        // Preserve the label for an empty signature field without obscuring an
+        // existing appearance painted underneath the field outline.
+        if (field.fieldType === 'Sig' && !field.dict.has('AP') && (selected || boxH > 14)) {
           ctx.font = '600 10px Inter, system-ui, sans-serif';
           ctx.fillStyle = '#f59e0b';
           const label = field.fieldName || field.fieldType;
@@ -6612,7 +6623,7 @@ export default function EditorPage() {
                   catalog={doc.catalog}
                   item={item}
                   previewBox={activeTool === 'select' && imageBoxPreview?.item === item ? imageBoxPreview.box : null}
-                  page={page}
+                  page={imagePreviewPage ?? page}
                   objects={doc.objects}
                   scale={scale}
                   toCss={(b) => {
