@@ -753,14 +753,14 @@ suggested order.
   mobile Chrome verified save/reopen, rotated/cropped placement and existing
   signature-field priority, while desktop Chrome verified drag and selection
   ([BUG-236](BUG.md#bug-236-tapping-the-page-does-not-place-a-library-signature)).
-  The Sign options sheet can hide its close button while scrolling
+  The shared mobile options sheet keeps its close control visible while scrolling
   ([BUG-237](BUG.md#bug-237-the-mobile-sign-options-close-button-scrolls-out-of-view)).
   Real iOS/Android tests and other mobile tasks remain open. While a
   drawing tool is active, page-area pinch and scrolling are unavailable.
 - **Priority / effort:** P1 / high. **Related:** [BUG-108](BUG.md#bug-108-drawing-highlighting-and-erasing-ignore-touch-drags).
   **Review points:** #4, #12–#20.
-- **Next step:** Keep the mobile options close control visible while scrolling,
-  then test the touch workflows on a real phone and tablet.
+- **Next step:** Test the touch workflows on a real phone and tablet, and
+  continue the remaining mobile editing and coarse-pointer controls.
 - **Acceptance:** On iOS and Android devices a user can draw, highlight, erase,
   place a signature, edit a line with visible Done and Cancel, fill a form
   field, fit the page to width, reorder pages and download. Tablet widths get a

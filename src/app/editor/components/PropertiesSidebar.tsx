@@ -302,12 +302,14 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
         {isMobile && <div className="sheet-handle" />}
         {/* Top Bar with Hide Panel Button */}
         {onClose && (
-          <div className="flex items-center justify-between px-4 pt-3 pb-2 border-b border-app/40 text-xs text-app-muted">
+          <div className={`flex items-center justify-between px-4 pt-3 pb-2 border-b border-app/40 text-xs text-app-muted ${isMobile ? 'sticky top-0 z-10 shrink-0 bg-panel' : ''}`}>
             <span className="text-[10px] font-bold uppercase tracking-wider text-app-muted">Options Panel</span>
           <button
+            type="button"
             onClick={onClose}
             title="Hide panel"
-            className="p-1 rounded-lg text-app-muted hover:text-app hover:bg-panel-elevated transition-colors"
+            aria-label="Hide panel"
+            className={`${isMobile ? 'flex min-h-[44px] min-w-[44px] items-center justify-center' : 'p-1'} rounded-lg text-app-muted hover:text-app hover:bg-panel-elevated transition-colors`}
           >
             <PanelLeftClose size={14} />
           </button>

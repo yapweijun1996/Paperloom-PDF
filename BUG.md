@@ -2400,13 +2400,17 @@ bounded register, not an exhaustive list of defects.
 
 ### BUG-237: The mobile Sign options close button scrolls out of view
 
-- **Status:** Open; found while testing BUG-236.
+- **Status:** Fixed for tested simulated mobile viewports; discovered during
+  BUG-236 testing.
 - **Trigger:** In the Sign tool at a 390×844 mobile viewport, create a session
   signature and scroll the options sheet down to its library.
-- **Actual:** The sheet's header and Hide panel button scroll above the visible
-  sheet; a user must scroll back to the top or tap the dimmed backdrop to close.
-- **Verification:** Chrome simulated touch showed the button's lower edge at
-  237 px while the sheet began at 295 px after scrolling to the bottom. A real
-  click on the backdrop dismissed the sheet. Real mobile devices were not tested.
-- **Acceptance:** Keep the sheet's close control visible and usable while its
-  content scrolls, and verify top, middle and bottom at mobile and desktop sizes.
+- **Original behavior:** The sheet's header and Hide panel button scrolled above
+  the visible sheet. Before the fix, the button's lower edge was at 237 px while
+  the sheet began at 295 px after scrolling to the bottom.
+- **Fix:** The shared mobile options header remains visible above scrolling
+  content and has a 44×44 px close target. Desktop layout stays unchanged.
+- **Verification:** Chrome simulated touch checked Sign and Watermark at the
+  top, middle and bottom at 390×844, 320×568 and 568×320; close and the bottom
+  Watermark scan action were tapped. Dark mode and keyboard close were checked
+  at 390×844, and desktop behavior at 1280×800. Real iOS and Android devices
+  were not tested.
