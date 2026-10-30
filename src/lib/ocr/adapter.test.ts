@@ -16,6 +16,7 @@ afterEach(() => {
 
 describe('Tesseract OCR adapter', () => {
   it('requests structured output and returns word text, confidence and pixel boxes', async () => {
+    vi.stubEnv('NEXT_PUBLIC_BASE_PATH', '');
     const putImageData = vi.fn();
     const canvas = { width: 0, height: 0, getContext: () => ({ putImageData }) };
     vi.stubGlobal('document', { createElement: () => canvas });
