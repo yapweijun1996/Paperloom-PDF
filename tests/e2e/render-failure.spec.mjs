@@ -74,6 +74,43 @@ test('a failed page render clears stale content while preserving unsaved edits',
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
+for (const [width, height] of [[320, 640], [390, 844], [768, 720], [1024, 768], [1280, 720]]) {
+  test(`render retry remains clickable with search open at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height });
+    await page.goto('./');
+    await page.locator('input[type=file]').setInputFiles({
+      name: 'render-failure.pdf', mimeType: 'application/pdf', buffer: await makeFixture(),
+    });
+    await expect(page.locator('[data-page-render-surface] canvas.pdf-canvas')).toBeVisible();
+    await page.getByTitle('Toggle Find & Replace').click();
+    const search = page.getByPlaceholder('Search text in PDF...');
+    await search.fill('Original');
+    await page.getByRole('button', { name: 'Next page' }).click();
+    const retry = page.getByRole('button', { name: 'Retry rendering' });
+    await expect(retry).toBeVisible();
+    const panelBox = await page.locator('[data-theme="dark"]').filter({ has: search }).boundingBox();
+    const ocrBox = await page.getByTitle('OCR recognize text').boundingBox();
+    const statusBox = await retry.locator('..').boundingBox();
+    expect(panelBox).not.toBeNull();
+    expect(ocrBox).not.toBeNull();
+    expect(statusBox).not.toBeNull();
+    expect(statusBox.x).toBeGreaterThanOrEqual(0);
+    expect(statusBox.x + statusBox.width).toBeLessThanOrEqual(width);
+    expect(statusBox.y + statusBox.height).toBeLessThanOrEqual(height);
+    for (const box of [panelBox, ocrBox]) {
+      const overlaps = statusBox.x < box.x + box.width && statusBox.x + statusBox.width > box.x &&
+        statusBox.y < box.y + box.height && statusBox.y + statusBox.height > box.y;
+      expect(overlaps).toBe(false);
+    }
+    await retry.click({ timeout: 5_000 });
+    await expect(retry).toBeVisible();
+    await page.getByTitle('Close Search').click();
+    await expect(search).toHaveCount(0);
+    await retry.click({ timeout: 5_000 });
+    await expect(retry).toBeVisible();
+  });
+}
+
 test('a failed zoom render preserves the in-progress text draft for retry', async ({ page }) => {
   await page.addInitScript(() => {
     const fillText = CanvasRenderingContext2D.prototype.fillText;

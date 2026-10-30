@@ -850,6 +850,9 @@ suggested order.
   ([BUG-168](BUG.md#bug-168-text-stroke-rendering-modes-are-drawn-as-fills)).
   A failed page render clears stale visual/editing state without discarding
   tested unsaved work ([BUG-167](BUG.md#bug-167-a-failed-page-render-can-leave-the-previous-page-visible)).
+  Render status and the search panel now share a non-overlapping layout so retry
+  remains clickable at tested mobile, tablet and desktop widths
+  ([BUG-235](BUG.md#bug-235-search-can-cover-the-page-render-retry-control)).
 - **Priority / effort:** P2 / high. **Review points:** #51, #55, #57, #58, #60, #61.
   Related to TASK-05 and [BUG-009](BUG.md#bug-009-extracting-or-splitting-pages-loses-acroform-structure).
 - **First step:** Show a labelled placeholder for CCITT, JBIG2 and JPX images

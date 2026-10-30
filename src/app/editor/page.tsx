@@ -6224,9 +6224,10 @@ export default function EditorPage() {
             invalidSignatures={signatures.filter(signature => !doc?.pages[signature?.pageIndex])}
             onAssign={assignRecoveredOverlay}
           />
-          {/* Floating Search & OCR Panel (viewport-fixed) */}
-          {isSearchOpen && (
+          {/* Keep search and render status in one stack so neither covers the other. */}
+          {(isSearchOpen || isRendering || pageRenderError) && (
             <div className="absolute top-4 left-4 right-4 md:left-auto z-40 flex flex-col items-end gap-3 pointer-events-none animate-in fade-in slide-in-from-top-4 duration-200">
+              {isSearchOpen && (<>
               <div className="pointer-events-auto flex items-center justify-between gap-2 bg-zinc-900/95 backdrop-blur-md px-3 py-2 rounded-xl border border-zinc-700/80 shadow-lg w-full md:w-72">
                 <button
                   onClick={() => void handleRecognizeText()}
@@ -6260,20 +6261,21 @@ export default function EditorPage() {
                   </p>
                 )}
               </div>
-            </div>
-          )}
-          {isRendering && (
-            <div className="absolute top-4 right-4 z-30 bg-zinc-900/90 backdrop-blur border border-zinc-800 shadow-lg rounded-full px-4 py-2 flex items-center gap-2 text-zinc-300 text-sm font-medium animate-in slide-in-from-top-4 fade-in">
-              <Loader2 size={16} className="animate-spin text-accent" />
-              Rendering...
-            </div>
-          )}
-          {!isRendering && pageRenderError && (
-            <div role="status" className="absolute top-4 left-4 z-30 rounded-lg border border-red-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-100">
-              <span>Unable to display this page. Your edits are preserved.</span>{' '}
-              <button type="button" className="underline" onClick={() => setRenderRetry(value => value + 1)}>
-                Retry rendering
-              </button>
+              </>)}
+              {isRendering && (
+                <div className="bg-zinc-900/90 backdrop-blur border border-zinc-800 shadow-lg rounded-full px-4 py-2 flex items-center gap-2 text-zinc-300 text-sm font-medium animate-in slide-in-from-top-4 fade-in">
+                  <Loader2 size={16} className="animate-spin text-accent" />
+                  Rendering...
+                </div>
+              )}
+              {!isRendering && pageRenderError && (
+                <div role="status" className="pointer-events-auto max-w-full rounded-lg border border-red-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-100">
+                  <span>Unable to display this page. Your edits are preserved.</span>{' '}
+                  <button type="button" className="underline" onClick={() => setRenderRetry(value => value + 1)}>
+                    Retry rendering
+                  </button>
+                </div>
+              )}
             </div>
           )}
 

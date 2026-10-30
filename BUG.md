@@ -2366,3 +2366,16 @@ bounded register, not an exhaustive list of defects.
   Both qpdf 11.9 and 12.4 tests independently verify the conflicting xref
   entries and require the application to reject object-number reuse. CI and
   Pages workflows install the compatible Liberation fonts and PDF tools.
+
+### BUG-235: Search can cover the page-render retry control
+
+- **Status:** Fixed for tested desktop and mobile viewport sizes.
+- **Trigger:** A page fails to render while the Find & Replace panel is open,
+  particularly around a 768-pixel viewport.
+- **Original behavior:** The search/OCR panel and the failure notice occupied
+  overlapping positions, leaving the Retry rendering button visible but unable
+  to receive pointer clicks. The GitHub CI browser test timed out on that click.
+- **Verification:** Chrome regression tests check that the notice, search panel
+  and OCR control do not overlap and that retry works with search open and closed
+  at 320, 390, 768, 1024 and 1280 pixels. Existing render-failure tests continue
+  to verify that unsaved edits and drafts survive failed and retried renders.
