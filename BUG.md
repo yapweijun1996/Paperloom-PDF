@@ -2700,3 +2700,24 @@ bounded register, not an exhaustive list of defects.
 - **Next step:** Reproduce the affected flows, enforce the intended locked
   semantics at the mutation boundary, and test the overlay, sidebar and saved
   document behavior. No damage to an original signed file has been established.
+
+### BUG-252: A PDF page background renders black in the editor
+
+- **Status:** Fixed for the reported PDF; broader pattern support remains open.
+- **Trigger:** Open the user-provided five-page Chromium/Skia PDF in the
+  deployed editor and view its first page.
+- **Observed:** The page background appears black, reducing text contrast;
+  an independent Poppler render of the same original page shows a light
+  background with pastel decorations. The screenshot also shows a black thumbnail.
+- **Cause:** The first page uses colored tiling patterns whose cells reference
+  images. The interpreter treats the pattern name as a numeric fill color.
+- **Fix and verification:** Bounded colored tiling pattern rendering restores
+  the reported page in Chrome, its thumbnail and PNG export. The reserialized
+  download preserved extracted text and the first-page Poppler rendering in the
+  local check. Synthetic pattern, image, mask, redaction and sanitization tests
+  pass; the private PDF is not part of the test fixtures. The canvas still has
+  pixel differences from Poppler, so this is not a claim of exact fidelity.
+- **Remaining limitations:** Pattern strokes, JPEG tiles, uncolored or shading
+  patterns, negative or zero steps, overlapping cells, certain transparency and
+  transforms, nested patterns and patterns inside soft-mask groups are rejected
+  rather than rendered. Extend support with independent visual and budget tests.

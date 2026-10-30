@@ -75,6 +75,10 @@ export interface GraphicsState {
   // Color state
   fillColor: [number, number, number]; // RGB
   strokeColor: [number, number, number];
+  fillColorSpace: string;
+  strokeColorSpace: string;
+  fillPattern: string | null;
+  strokePattern: string | null;
   fillAlpha: number;
   strokeAlpha: number;
   blendMode: string;
@@ -109,6 +113,10 @@ function defaultGraphicsState(): GraphicsState {
     ctm: identityMatrix(),
     fillColor: [0, 0, 0],
     strokeColor: [0, 0, 0],
+    fillColorSpace: 'DeviceGray',
+    strokeColorSpace: 'DeviceGray',
+    fillPattern: null,
+    strokePattern: null,
     fillAlpha: 1,
     strokeAlpha: 1,
     lineWidth: 1,
@@ -167,6 +175,8 @@ export interface TextRun {
   textMatrix: Matrix;
   /** Color */
   fillColor: [number, number, number];
+  fillPattern?: string | null;
+  strokePattern?: string | null;
   fillAlpha: number;
   /** Graphics-state stroke parameters, independent of the text fill. */
   strokeColor?: [number, number, number];
@@ -220,10 +230,14 @@ export interface PathItem {
   segments: PathSegment[];
   strokeColor: [number, number, number] | null;
   fillColor: [number, number, number] | null;
+  fillPattern?: string | null;
+  strokePattern?: string | null;
+  patternTransformAmbiguous?: boolean;
   strokeAlpha: number;
   fillAlpha: number;
   lineWidth: number;
   paintType: 'stroke' | 'fill' | 'both' | 'none';
+  fillRule?: 'nonzero' | 'evenodd';
   x: number;
   y: number;
   width: number;
@@ -506,6 +520,14 @@ export function interpretPage(
   const fonts = new Map<string, FontInfo>();
   const imageVersions = new Map<string, string | undefined>();
   const imageResourceVersion = createImageResourceVersioner(page.resources, objects);
+  const colorSpaceName = (name: string) => {
+    if (['Pattern', 'DeviceGray', 'DeviceRGB', 'DeviceCMYK'].includes(name)) return name;
+    const resource = getResource(page.resources, 'ColorSpace', name, objects);
+    const head = resource instanceof PDFArray ? resource.get(0) : resource;
+    const resolved = head ? resolveRef(head, objects) : undefined;
+    return resolved instanceof PDFName && ['Pattern', 'DeviceGray', 'DeviceRGB', 'DeviceCMYK'].includes(resolved.name)
+      ? resolved.name : name;
+  };
 
   // State machine
   let gs = defaultGraphicsState();
@@ -523,6 +545,7 @@ export function interpretPage(
 
   // Path construction
   let currentPath: PathSegment[] = [];
+  let pathTransformChanged = false;
   let pendingClip: 'nonzero' | 'evenodd' | undefined;
   let pathStartX = 0;
   let pathStartY = 0;
@@ -554,10 +577,15 @@ export function interpretPage(
 
       case 'Q':
         if (inTextBlock) textClipStateAmbiguous = true;
-        if (gsStack.length > 0) gs = gsStack.pop()!;
+        if (gsStack.length > 0) {
+          const previous = gsStack.pop()!;
+          if (currentPath.length && Object.keys(gs.ctm).some(key => gs.ctm[key as keyof Matrix] !== previous.ctm[key as keyof Matrix])) pathTransformChanged = true;
+          gs = previous;
+        }
         break;
 
       case 'cm': {
+        if (currentPath.length) pathTransformChanged = true;
         // Concatenate matrix: a b c d e f cm
         const m: Matrix = {
           a: num(ops[0]), b: num(ops[1]),
@@ -604,22 +632,27 @@ export function interpretPage(
 
       // ── Color operators ─────────────────────────────────────────────
       case 'g':
+        gs.fillColorSpace = 'DeviceGray'; gs.fillPattern = null;
         gs.fillColor = [num(ops[0]), num(ops[0]), num(ops[0])];
         break;
 
       case 'G':
+        gs.strokeColorSpace = 'DeviceGray'; gs.strokePattern = null;
         gs.strokeColor = [num(ops[0]), num(ops[0]), num(ops[0])];
         break;
 
       case 'rg':
+        gs.fillColorSpace = 'DeviceRGB'; gs.fillPattern = null;
         gs.fillColor = [num(ops[0]), num(ops[1]), num(ops[2])];
         break;
 
       case 'RG':
+        gs.strokeColorSpace = 'DeviceRGB'; gs.strokePattern = null;
         gs.strokeColor = [num(ops[0]), num(ops[1]), num(ops[2])];
         break;
 
       case 'k': {
+        gs.fillColorSpace = 'DeviceCMYK'; gs.fillPattern = null;
         // CMYK fill → approximate RGB
         const [c, m, y, k] = [num(ops[0]), num(ops[1]), num(ops[2]), num(ops[3])];
         gs.fillColor = cmykToRgb(c, m, y, k);
@@ -627,21 +660,50 @@ export function interpretPage(
       }
 
       case 'K': {
+        gs.strokeColorSpace = 'DeviceCMYK'; gs.strokePattern = null;
         const [c, m, y, k] = [num(ops[0]), num(ops[1]), num(ops[2]), num(ops[3])];
         gs.strokeColor = cmykToRgb(c, m, y, k);
         break;
       }
 
+      case 'cs':
+        gs.fillColorSpace = colorSpaceName(nameStr(ops[0]));
+        if (['DeviceGray', 'DeviceRGB', 'DeviceCMYK'].includes(gs.fillColorSpace)) gs.fillColor = [0, 0, 0];
+        gs.fillPattern = gs.fillColorSpace === 'Pattern' ? '\u0000unselected-pattern' : null;
+        break;
+      case 'CS':
+        gs.strokeColorSpace = colorSpaceName(nameStr(ops[0]));
+        if (['DeviceGray', 'DeviceRGB', 'DeviceCMYK'].includes(gs.strokeColorSpace)) gs.strokeColor = [0, 0, 0];
+        gs.strokePattern = gs.strokeColorSpace === 'Pattern' ? '\u0000unselected-pattern' : null;
+        break;
       case 'sc':
       case 'scn':
+        if (ops.some(op => op instanceof PDFName)) {
+          const pattern = ops[ops.length - 1];
+          if (!(pattern instanceof PDFName)) throw new Error('Unsupported malformed fill pattern.');
+          gs.fillPattern = gs.fillColorSpace === 'Pattern' && ops.length === 1 ? pattern.name : '\u0000unsupported-uncolored-pattern';
+          break;
+        }
+        if (gs.fillColorSpace === 'Pattern') { gs.fillPattern = '\u0000invalid-pattern-color'; break; }
+        gs.fillPattern = null;
         // Set fill color (generic — assume RGB if 3 operands, gray if 1)
-        if (ops.length >= 3) gs.fillColor = [num(ops[0]), num(ops[1]), num(ops[2])];
+        if (gs.fillColorSpace === 'DeviceCMYK' && ops.length === 4) gs.fillColor = cmykToRgb(num(ops[0]), num(ops[1]), num(ops[2]), num(ops[3]));
+        else if (ops.length >= 3) gs.fillColor = [num(ops[0]), num(ops[1]), num(ops[2])];
         else if (ops.length >= 1) gs.fillColor = [num(ops[0]), num(ops[0]), num(ops[0])];
         break;
 
       case 'SC':
       case 'SCN':
-        if (ops.length >= 3) gs.strokeColor = [num(ops[0]), num(ops[1]), num(ops[2])];
+        if (ops.some(op => op instanceof PDFName)) {
+          const pattern = ops[ops.length - 1];
+          if (!(pattern instanceof PDFName)) throw new Error('Unsupported malformed stroke pattern.');
+          gs.strokePattern = gs.strokeColorSpace === 'Pattern' && ops.length === 1 ? pattern.name : '\u0000unsupported-uncolored-pattern';
+          break;
+        }
+        if (gs.strokeColorSpace === 'Pattern') { gs.strokePattern = '\u0000invalid-pattern-color'; break; }
+        gs.strokePattern = null;
+        if (gs.strokeColorSpace === 'DeviceCMYK' && ops.length === 4) gs.strokeColor = cmykToRgb(num(ops[0]), num(ops[1]), num(ops[2]), num(ops[3]));
+        else if (ops.length >= 3) gs.strokeColor = [num(ops[0]), num(ops[1]), num(ops[2])];
         else if (ops.length >= 1) gs.strokeColor = [num(ops[0]), num(ops[0]), num(ops[0])];
         break;
 
@@ -913,11 +975,11 @@ export function interpretPage(
       case 'S': emitPath('stroke'); break;
       case 's': { currentPath.push({ type: 'Z', points: [] }); emitPath('stroke'); break; }
       case 'f': case 'F': emitPath('fill'); break;
-      case 'f*': emitPath('fill'); break;
+      case 'f*': emitPath('fill', 'evenodd'); break;
       case 'B': emitPath('both'); break;
-      case 'B*': emitPath('both'); break;
+      case 'B*': emitPath('both', 'evenodd'); break;
       case 'b': { currentPath.push({ type: 'Z', points: [] }); emitPath('both'); break; }
-      case 'b*': { currentPath.push({ type: 'Z', points: [] }); emitPath('both'); break; }
+      case 'b*': { currentPath.push({ type: 'Z', points: [] }); emitPath('both', 'evenodd'); break; }
       case 'W': {
         // PDF applies W when the current path is ended, after any paint.
         pendingClip = 'nonzero';
@@ -1100,7 +1162,7 @@ export function interpretPage(
     }
   }
 
-  function emitPath(paintType: 'stroke' | 'fill' | 'both' | 'none') {
+  function emitPath(paintType: 'stroke' | 'fill' | 'both' | 'none', fillRule: 'nonzero' | 'evenodd' = 'nonzero') {
     if (currentPath.length) {
       const bounds = computePathBounds(currentPath);
       displayList.push({
@@ -1108,10 +1170,14 @@ export function interpretPage(
         segments: [...currentPath],
         strokeColor: paintType === 'fill' ? null : [...gs.strokeColor] as [number, number, number],
         fillColor: paintType === 'stroke' ? null : [...gs.fillColor] as [number, number, number],
+        fillPattern: paintType === 'stroke' ? null : gs.fillPattern,
+        strokePattern: paintType === 'fill' ? null : gs.strokePattern,
+        patternTransformAmbiguous: pathTransformChanged,
         strokeAlpha: gs.strokeAlpha,
         fillAlpha: gs.fillAlpha,
         lineWidth: gs.lineWidth,
         paintType,
+        fillRule,
         blendMode: gs.blendMode,
         softMask: gs.softMask,
         clipPaths: [...gs.clipPaths],
@@ -1128,6 +1194,7 @@ export function interpretPage(
     }
     pendingClip = undefined;
     currentPath = [];
+    pathTransformChanged = false;
   }
 
   for (const span of markedContent) {
@@ -1164,7 +1231,8 @@ function sameClipPaths(a: ClipPathNode[], b: ClipPathNode[]): boolean {
 
 function sameTextPaint(a: TextRun, b: TextRun, logicalFillColor = false): boolean {
   if (a.renderingMode !== b.renderingMode || a.textClipSupported !== b.textClipSupported ||
-      a.blendMode !== b.blendMode || a.softMask !== b.softMask) return false;
+      a.blendMode !== b.blendMode || a.softMask !== b.softMask ||
+      a.fillPattern !== b.fillPattern || a.strokePattern !== b.strokePattern) return false;
   const mode = (a.renderingMode ?? 0) % 4;
   if ((mode === 0 || mode === 2) && (a.fillAlpha !== b.fillAlpha ||
       (!(logicalFillColor && mode === 0) && a.fillColor.some((value, i) => value !== b.fillColor[i])))) return false;
@@ -1516,6 +1584,8 @@ function showTextString(
       fontSize,
       textMatrix: { ...effectiveMatrix },
       fillColor: [...gs.fillColor] as [number, number, number],
+      fillPattern: gs.fillPattern,
+      strokePattern: gs.strokePattern,
       fillAlpha: gs.fillAlpha,
       strokeColor: [...gs.strokeColor] as [number, number, number],
       strokeAlpha: gs.strokeAlpha,

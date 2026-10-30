@@ -777,6 +777,9 @@ suggested order.
   Source review also found unguarded controls for locked signatures; browser
   reproduction and mutation-boundary protection remain open
   ([BUG-251](BUG.md#bug-251-locked-visual-signature-controls-can-change-or-delete-it)).
+  The reported Chromium-generated PDF's image-backed tiling patterns now render
+  in the tested canvas, thumbnail and PNG; broader pattern support remains open
+  ([BUG-252](BUG.md#bug-252-a-pdf-page-background-renders-black-in-the-editor)).
   Real iOS/Android tests and other mobile tasks remain open. While a
   drawing tool is active, page-area pinch and scrolling are unavailable.
 - **Priority / effort:** P1 / high. **Related:** [BUG-108](BUG.md#bug-108-drawing-highlighting-and-erasing-ignore-touch-drags).

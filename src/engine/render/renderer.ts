@@ -37,6 +37,7 @@ import { toCanvasBlendMode } from './transparency';
 import { parseSoftMask, type SoftMaskSubtype } from './soft-mask';
 import {
   PDFDict,
+  PDFBoolean,
   PDFName,
   PDFNumber,
   PDFObject,
@@ -256,7 +257,7 @@ export async function renderPageToCanvas(
 
     switch (item.type) {
       case 'path':
-        if (renderPaths) drawPath(ctx, item, softMaskMap);
+        if (renderPaths) await drawPathWithPatterns(ctx, item, page, objects, options, softMaskMap);
         break;
       case 'text':
         if (renderText) {
@@ -423,7 +424,7 @@ export async function renderPageToCanvas(
           for (let j = 0; j < annotInterpreted.displayList.length; j++) {
             const item = annotInterpreted.displayList[j];
             switch (item.type) {
-              case 'path': if (renderPaths) drawPath(ctx, item); break;
+              case 'path': if (renderPaths) await drawPathWithPatterns(ctx, item, mockPage, objects, options); break;
               case 'text': if (renderText) drawTextRun(ctx, item, annotFonts); break;
               case 'image': if (renderImages) await drawImage(ctx, item, mockPage, objects); break;
               case 'inline-image': if (renderImages) await drawImage(ctx, item, mockPage, objects); break;
@@ -646,7 +647,10 @@ async function renderSoftMaskGroup(
   for (let i = 0; i < interpreted.displayList.length; i++) {
     const item = interpreted.displayList[i];
     switch (item.type) {
-      case 'path': drawPath(rgbCtx, item, emptyMask); break;
+      case 'path':
+        if (item.fillPattern || item.strokePattern) throw new Error('Unsupported pattern inside a soft-mask group.');
+        drawPath(rgbCtx, item, emptyMask);
+        break;
       case 'text': drawTextRun(rgbCtx, item, formFonts, emptyMask); break;
       case 'image': await drawImage(rgbCtx, item, formPage, objects, emptyMask); break;
       case 'inline-image': await drawImage(rgbCtx, item, formPage, objects, emptyMask); break;
@@ -735,10 +739,193 @@ function drawWithSoftMask(
 
 // ─── Path rendering ─────────────────────────────────────────────────────────
 
+const patternBudgets = new WeakMap<RenderOptions, { pixels: number; operations: number; bytes: number; imagePixels: number; imageBytes: number }>();
+
+/** Render the bounded colored tiling subset; reject unsupported patterns rather than inventing black ink. */
+async function renderTilingPattern(
+  ctx: CanvasRenderingContext2D, name: string, page: PDFPageInfo,
+  objects: Map<string, PDFObject>, options: RenderOptions, alpha: number,
+): Promise<CanvasPattern> {
+  if (alpha !== 1) throw new Error('Unsupported transparency for tiling pattern.');
+  if (name.startsWith('\u0000')) throw new Error('Unsupported or unselected pattern color.');
+  const stream = getResource(page.resources, 'Pattern', name, objects);
+  if (!(stream instanceof PDFStream)) throw new Error('Unsupported or missing tiling pattern.');
+  const requiredNumber = (key: string): number => {
+    const entry = stream.dict.get(key);
+    if (entry === undefined) throw new Error(`Missing tiling pattern /${key}.`);
+    const value = resolveFormGeometry(entry, objects, key);
+    if (!(value instanceof PDFNumber) || !Number.isFinite(value.value)) throw new Error(`Invalid tiling pattern /${key}.`);
+    return value.value;
+  };
+  if (requiredNumber('PatternType') !== 1 || requiredNumber('PaintType') !== 1 || requiredNumber('TilingType') !== 1) {
+    throw new Error('Unsupported or missing colored tiling pattern.');
+  }
+  const bbox = readFormGeometry(stream.dict, objects, 'BBox', 4);
+  const matrix = readFormGeometry(stream.dict, objects, 'Matrix', 6, [1, 0, 0, 1, 0, 0]);
+  const xStep = requiredNumber('XStep'), yStep = requiredNumber('YStep');
+  const [a, b, c, d, e, f] = matrix;
+  const values = [...bbox, xStep, yStep, ...matrix];
+  if (!values.every(Number.isFinite) || xStep <= 0 || yStep <= 0 ||
+      bbox[2] <= bbox[0] || bbox[3] <= bbox[1] ||
+      bbox[2] - bbox[0] > xStep || bbox[3] - bbox[1] > yStep ||
+      !Number.isFinite(a * d - b * c) || Math.abs(a * d - b * c) < 1e-12) {
+    throw new Error('Unsupported tiling pattern geometry.');
+  }
+  // Keep aggregate raster work bounded even at high zoom.
+  const transform = ctx.getTransform();
+  const requested = 2 * Math.max(Math.hypot(transform.a * a + transform.c * b, transform.b * a + transform.d * b),
+    Math.hypot(transform.a * c + transform.c * d, transform.b * c + transform.d * d));
+  if (!Number.isFinite(requested) || requested <= 0) throw new Error('Invalid tiling pattern transform.');
+  const density = Math.min(requested, 4096 / xStep, 4096 / yStep, Math.sqrt(4_000_000 / (xStep * yStep)));
+  const size = checkedCanvasDimensions(xStep * density, yStep * density);
+  const budget = patternBudgets.get(options) ?? { pixels: 0, operations: 0, bytes: 0, imagePixels: 0, imageBytes: 0 };
+  if (budget.pixels + size.width * size.height > 12_000_000) throw new Error('Tiling pattern raster budget exceeded.');
+  budget.pixels += size.width * size.height;
+  patternBudgets.set(options, budget);
+  const tile = document.createElement('canvas');
+  tile.width = size.width; tile.height = size.height;
+  const tileCtx = tile.getContext('2d');
+  if (!tileCtx) throw new Error('Cannot create tiling pattern canvas.');
+  const sx = size.width / xStep, sy = size.height / yStep;
+  if (![sx, sy, 1 / sx, 1 / sy].every(Number.isFinite) || sx <= 0 || sy <= 0) throw new Error('Invalid tiling pattern scale.');
+  const offsetX = -bbox[0] * sx, offsetY = (bbox[1] + yStep) * sy;
+  if (![offsetX, offsetY].every(Number.isFinite)) throw new Error('Invalid tiling pattern offset.');
+  tileCtx.setTransform(sx, 0, 0, -sy, offsetX, offsetY);
+  tileCtx.beginPath(); tileCtx.rect(bbox[0], bbox[1], bbox[2] - bbox[0], bbox[3] - bbox[1]); tileCtx.clip();
+  const resourceEntry = stream.dict.get('Resources');
+  const resources = resourceEntry ? resolveRef(resourceEntry, objects) : undefined;
+  if (!(resources instanceof PDFDict)) throw new Error('Unsupported tiling pattern resources.');
+  if (stream.rawBytes.length > 65_536) throw new Error('Tiling pattern byte budget exceeded.');
+  if (!stream.decodedBytes) {
+    const { applyFilters } = await import('../parser/filters');
+    stream.decodedBytes = await applyFilters(stream.rawBytes, stream.getFilters(), stream.getDecodeParams(), { maxDecodedBytes: 65_536 });
+  }
+  budget.bytes += stream.getBytes().length;
+  if (stream.getBytes().length > 65_536 || budget.bytes > 262_144) throw new Error('Tiling pattern byte budget exceeded.');
+  const operations = parseContentStream(stream.getBytes());
+  budget.operations += operations.length;
+  if (operations.length > 10_000 || budget.operations > 20_000) throw new Error('Tiling pattern operation budget exceeded.');
+  const numericCounts: Record<string, number> = { cm: 6, g: 1, G: 1, rg: 3, RG: 3, k: 4, K: 4,
+    m: 2, l: 2, c: 6, v: 4, y: 4, re: 4 };
+  const noOperands = new Set(['q', 'Q', 'h', 'W', 'W*', 'n', 'f', 'F', 'f*']);
+  let depth = 0;
+  for (const operation of operations) {
+    if (operation.operator in numericCounts) {
+      if (operation.operands.length !== numericCounts[operation.operator] || operation.operands.some(value => !(value instanceof PDFNumber) || !Number.isFinite(value.value))) {
+        throw new Error('Invalid tiling pattern operation.');
+      }
+    } else if (noOperands.has(operation.operator)) {
+      if (operation.operands.length !== 0) throw new Error('Invalid tiling pattern operation.');
+      if (operation.operator === 'q' && ++depth > 128) throw new Error('Tiling pattern graphics state budget exceeded.');
+      if (operation.operator === 'Q' && --depth < 0) throw new Error('Invalid tiling pattern graphics state.');
+    } else if (operation.operator === 'gs' || operation.operator === 'Do') {
+      const name = operation.operands[0];
+      if (operation.operands.length !== 1 || !(name instanceof PDFName)) throw new Error('Invalid tiling pattern resource operation.');
+      const resource = getResource(resources, operation.operator === 'gs' ? 'ExtGState' : 'XObject', name.name, objects);
+      if (operation.operator === 'Do') {
+        if (!(resource instanceof PDFStream) || resource.dict.getName('Subtype') !== 'Image') throw new Error('Unsupported tiling pattern XObject.');
+      } else {
+        if (!(resource instanceof PDFDict) || [...resource.entries()].some(([key]) => !['Type', 'ca', 'CA', 'BM'].includes(key))) throw new Error('Unsupported tiling pattern graphics state.');
+        for (const key of ['ca', 'CA']) {
+          const value = resource.get(key);
+          if (value && (!(value instanceof PDFNumber) || !Number.isFinite(value.value) || value.value < 0 || value.value > 1)) throw new Error('Invalid tiling pattern alpha.');
+        }
+        const blend = resource.get('BM');
+        if (blend && (!(blend instanceof PDFName) || blend.name !== 'Normal')) throw new Error('Unsupported tiling pattern blend mode.');
+      }
+    } else throw new Error('Unsupported tiling pattern operation.');
+  }
+  if (depth !== 0) throw new Error('Invalid tiling pattern graphics state.');
+  const tilePage = { ...page, resources };
+  const interpreted = interpretPage(stream.getBytes(), tilePage, objects, options.optionalContent, 0, undefined,
+    { includeImageResourceVersions: false });
+  for (const item of interpreted.displayList) {
+    if (item.softMask) throw new Error('Unsupported soft mask in tiling pattern.');
+    if (item.type === 'path') {
+      if (item.fillPattern || item.strokePattern) throw new Error('Unsupported nested tiling pattern.');
+      drawPath(tileCtx, item);
+    } else if (item.type === 'image') {
+      const image = getResource(resources, 'XObject', item.name, objects);
+      if (!(image instanceof PDFStream)) throw new Error('Invalid tiling pattern image.');
+      const widthEntry = image.dict.get('Width'), heightEntry = image.dict.get('Height');
+      const width = widthEntry ? resolveFormGeometry(widthEntry, objects, 'Width') : undefined;
+      const height = heightEntry ? resolveFormGeometry(heightEntry, objects, 'Height') : undefined;
+      if (!(width instanceof PDFNumber) || !(height instanceof PDFNumber) || !Number.isSafeInteger(width.value) ||
+          !Number.isSafeInteger(height.value) || width.value <= 0 || height.value <= 0 ||
+          !Number.isSafeInteger(width.value * height.value)) throw new Error('Invalid tiling pattern image dimensions.');
+      if (image.dict.getBool('ImageMask') || image.dict.has('Mask')) throw new Error('Unsupported tiling pattern image mask mode.');
+      const colorEntry = image.dict.get('ColorSpace');
+      const colorSpace = colorEntry ? resolveRef(colorEntry, objects) : undefined;
+      if (!(colorSpace instanceof PDFName) || !['DeviceRGB', 'DeviceGray', 'DeviceCMYK'].includes(colorSpace.name)) {
+        throw new Error('Unsupported tiling pattern image color space.');
+      }
+      budget.imagePixels += width.value * height.value;
+      if (budget.imagePixels > 24_000_000) throw new Error('Tiling pattern image budget exceeded.');
+      budget.imageBytes += image.rawBytes.length;
+      if (budget.imageBytes > 32_000_000) throw new Error('Tiling pattern image byte budget exceeded.');
+      const maskEntry = image.dict.get('SMask');
+      if (maskEntry) {
+        const mask = resolveRef(maskEntry, objects);
+        if (!(mask instanceof PDFStream) || mask.dict.has('SMask') || mask.dict.getName('ColorSpace') !== 'DeviceGray') {
+          throw new Error('Unsupported tiling pattern image mask.');
+        }
+        const mw = mask.dict.getNumber('Width'), mh = mask.dict.getNumber('Height'), bits = mask.dict.getNumber('BitsPerComponent');
+        if (!Number.isSafeInteger(mw) || !Number.isSafeInteger(mh) || !mw || !mh || mw < 0 || mh < 0 ||
+            ![1, 2, 4, 8, 16].includes(bits ?? 0) || !Number.isSafeInteger(mw * mh)) throw new Error('Invalid tiling pattern mask dimensions.');
+        budget.imagePixels += mw * mh;
+        budget.imageBytes += mask.rawBytes.length;
+        if (budget.imagePixels > 24_000_000 || budget.imageBytes > 32_000_000) throw new Error('Tiling pattern image mask budget exceeded.');
+        if (!mask.decodedBytes) {
+          const { applyFilters } = await import('../parser/filters');
+          mask.decodedBytes = await applyFilters(mask.rawBytes, mask.getFilters(), mask.getDecodeParams(), { maxDecodedBytes: 32_000_000 });
+        }
+        const needed = Math.ceil(mw * bits! / 8) * mh;
+        if (!Number.isSafeInteger(needed) || mask.getBytes().length < needed) throw new Error('Truncated tiling pattern image mask.');
+      }
+      const interpolation = image.dict.get('Interpolate');
+      const resolvedInterpolation = interpolation ? resolveRef(interpolation, objects) : undefined;
+      if (resolvedInterpolation && !(resolvedInterpolation instanceof PDFBoolean)) throw new Error('Invalid tiling pattern image interpolation.');
+      if (image.getFilters().some(filter => filter === 'DCTDecode' || filter === 'DCT')) {
+        throw new Error('Unsupported JPEG tiling pattern image.');
+      }
+      const bpc = image.dict.getNumber('BitsPerComponent') ?? 8;
+      if (![1, 2, 4, 8, 16].includes(bpc)) throw new Error('Unsupported tiling pattern image bit depth.');
+      const components = colorSpace.name === 'DeviceRGB' ? 3 : colorSpace.name === 'DeviceCMYK' ? 4 : 1;
+      const needed = Math.ceil(width.value * components * bpc / 8) * height.value;
+      if (!Number.isSafeInteger(needed) || image.getBytes().length < needed) throw new Error('Truncated tiling pattern image.');
+      tileCtx.imageSmoothingEnabled = resolvedInterpolation instanceof PDFBoolean && resolvedInterpolation.value;
+      await drawImage(tileCtx, item, tilePage, objects, new Map(), true);
+    } else {
+      throw new Error('Unsupported content in tiling pattern.');
+    }
+  }
+  const result = ctx.createPattern(tile, 'repeat');
+  if (!result || typeof result.setTransform !== 'function') throw new Error('Cannot transform tiling pattern.');
+  const patternTransform = { a: a / sx, b: b / sx, c: -c / sy, d: -d / sy,
+    e: e + a * bbox[0] + c * (bbox[1] + yStep), f: f + b * bbox[0] + d * (bbox[1] + yStep) };
+  if (!Object.values(patternTransform).every(Number.isFinite)) throw new Error('Invalid tiling pattern transform.');
+  result.setTransform(patternTransform);
+  return result;
+}
+
+async function drawPathWithPatterns(
+  ctx: CanvasRenderingContext2D, item: PathItem, page: PDFPageInfo,
+  objects: Map<string, PDFObject>, options: RenderOptions,
+  maskMap: Map<PDFDict, HTMLCanvasElement> = new Map(),
+): Promise<void> {
+  if ((item.fillPattern || item.strokePattern) && item.patternTransformAmbiguous) {
+    throw new Error('Unsupported pattern transform changed during path construction.');
+  }
+  if (item.strokePattern) throw new Error('Unsupported pattern stroke geometry and line style.');
+  const fill = item.fillPattern ? await renderTilingPattern(ctx, item.fillPattern, page, objects, options, item.fillAlpha) : undefined;
+  drawPath(ctx, item, maskMap, fill);
+}
+
 function drawPath(
   ctx: CanvasRenderingContext2D,
   item: PathItem,
   maskMap: Map<PDFDict, HTMLCanvasElement> = new Map(),
+  fillPattern?: CanvasPattern,
 ): void {
   if (item.segments.length === 0) return;
 
@@ -773,16 +960,21 @@ function drawPath(
 
     if (item.paintType === 'fill' || item.paintType === 'both') {
       if (item.fillColor) {
-        ctx.fillStyle = rgbToCSSColor(item.fillColor, item.fillAlpha);
-        ctx.fill();
+        ctx.save();
+        ctx.fillStyle = fillPattern ?? rgbToCSSColor(item.fillColor, item.fillAlpha);
+        if (fillPattern) { ctx.globalAlpha *= item.fillAlpha; ctx.imageSmoothingEnabled = false; }
+        ctx.fill(item.fillRule ?? 'nonzero');
+        ctx.restore();
       }
     }
 
     if (item.paintType === 'stroke' || item.paintType === 'both') {
       if (item.strokeColor) {
+        ctx.save();
         ctx.strokeStyle = rgbToCSSColor(item.strokeColor, item.strokeAlpha);
         ctx.lineWidth = item.lineWidth;
         ctx.stroke();
+        ctx.restore();
       }
     }
 
@@ -907,6 +1099,13 @@ function paintVerifiedTextOutline(ctx: CanvasRenderingContext2D, run: TextRun,
   ctx.restore();
 }
 
+function assertTextPatternSupported(run: TextRun): void {
+  const mode = (run.renderingMode ?? 0) % 4;
+  if (((mode === 0 || mode === 2) && run.fillPattern) || ((mode === 1 || mode === 2) && run.strokePattern)) {
+    throw new Error('Unsupported pattern-painted text.');
+  }
+}
+
 function drawTextRunWithFlow(
   ctx: CanvasRenderingContext2D,
   run: TextRun,
@@ -916,6 +1115,7 @@ function drawTextRunWithFlow(
   maskMap: Map<PDFDict, HTMLCanvasElement> = new Map(),
 ): void {
   if ((run.renderingMode ?? 0) % 4 === 3) return;
+  assertTextPatternSupported(run);
   if (drawnJustifiedRuns.has(run)) return;
 
   if (run.textClipSupported) { drawTextRun(ctx, run, fonts, maskMap); return; }
@@ -965,6 +1165,7 @@ function drawTextRunAtPositions(
   positions: FlowGlyphDraw[],
   maskMap: Map<PDFDict, HTMLCanvasElement> = new Map(),
 ): void {
+  assertTextPatternSupported(run);
   if ((run.renderingMode ?? 0) % 4 === 3) return;
   if (positions.length === 0) return;
   if (run.textClipSupported) { drawTextRun(ctx, run, fonts, maskMap); return; }
@@ -1119,6 +1320,7 @@ function drawTextRun(
   maskMap: Map<PDFDict, HTMLCanvasElement> = new Map(),
 ): void {
   if ((run.renderingMode ?? 0) % 4 === 3 || run.glyphs.length === 0) return;
+  assertTextPatternSupported(run);
 
   const bounds = { x: run.x, y: run.y, width: run.width, height: run.height };
   drawWithSoftMask(ctx, run.softMask, maskMap, run.blendMode, ctx => {
@@ -1586,6 +1788,7 @@ async function drawImage(
   page: PDFPageInfo,
   objects: Map<string, PDFObject>,
   maskMap: Map<PDFDict, HTMLCanvasElement> = new Map(),
+  strict = false,
 ): Promise<void> {
   if (item.softMask && !maskMap.has(item.softMask)) throw new Error('Unsupported unresolved image soft mask.');
   // Inline streams are render-only and never added to the document object map.
@@ -1625,6 +1828,7 @@ async function drawImage(
     decoded = await decodeImage(xobj, objects);
     if (!decoded && item.type === 'inline-image') throw new UnsupportedImageFilterError('invalid inline image data');
   } catch (error) {
+    if (strict) throw error;
     if (!(error instanceof UnsupportedImageFilterError)) throw error;
     drawWithSoftMask(ctx, item.softMask, maskMap, item.blendMode, ctx => {
       ctx.save();
@@ -1654,7 +1858,10 @@ async function drawImage(
     });
     return;
   }
-  if (!decoded) return;
+  if (!decoded) {
+    if (strict) throw new Error('Unsupported tiling pattern image.');
+    return;
+  }
 
   try {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1682,7 +1889,7 @@ async function drawImage(
       ctx.restore();
     });
   } catch (e) {
-    if (item.softMask) throw e;
+    if (strict || item.softMask) throw e;
     console.warn(`[Renderer] Failed to draw ${item.type === 'image' ? `image ${item.name}` : 'inline image'}:`, e);
   }
 }
@@ -1796,7 +2003,7 @@ class CanvasPool {
 // ─── Form rendering ─────────────────────────────────────────────────────────
 
 /** Resolve Form geometry without trusting cycles or unbounded reference chains. */
-function resolveFormGeometry(value: PDFObject, objects: Map<string, PDFObject>, key: 'BBox' | 'Matrix'): PDFObject {
+function resolveFormGeometry(value: PDFObject, objects: Map<string, PDFObject>, key: string): PDFObject {
   const seen = new Set<string>();
   while (value instanceof PDFRef) {
     const ref = value.toKey();
@@ -1948,7 +2155,7 @@ async function drawFormXObject(
       for (const item of formInterpreted.displayList) {
         switch (item.type) {
           case 'path':
-            if (renderPaths) drawPath(targetCtx, item);
+            if (renderPaths) await drawPathWithPatterns(targetCtx, item, formPageMock, objects, options);
             break;
           case 'text':
             if (renderText) drawTextRun(targetCtx, item, formFonts);
