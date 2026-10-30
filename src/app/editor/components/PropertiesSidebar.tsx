@@ -1,4 +1,4 @@
-import React, { MutableRefObject } from 'react';
+import React, { MutableRefObject, useEffect, useRef } from 'react';
 import {
   Type, TextCursorInput, Image, PenTool, Highlighter, Eraser, MousePointer2,
   X, Trash2, Bold, Italic, Underline, AlignLeft, AlignCenter, AlignRight, Minus, Plus, Stamp, Link2,
@@ -80,6 +80,7 @@ interface PropertiesSidebarProps {
 
   formFields?: AcroFormWidget[];
   selectedFormField?: AcroFormWidget | null;
+  mobileFormReveal?: { fieldKey: string; request: number } | null;
   formFieldDraft?: string;
   onFormFieldSelect?: (field: AcroFormWidget) => void;
   onFormFieldChange?: (value: string) => void;
@@ -193,7 +194,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
     hasSelectedLink = false, linkCreatePending = false,
     selectedDisplayItem, setSelectedDisplayItem, onDeleteSelectedDisplayItem, onReplaceSelectedImage, onClearImageReplaceMode, displayItems,
     onCommitSelectedImageBox, onPreviewSelectedImageBox, selectedImagePageBox,
-    formFields = [], selectedFormField, formFieldDraft = '',
+    formFields = [], selectedFormField, mobileFormReveal, formFieldDraft = '',
     onFormFieldSelect, onFormFieldChange, onFormFieldDraftChange, onFormFieldCommit, onFormFieldCompositionChange, onFlattenForms,
     onDuplicateLineBelow,
     tableInfo = null,
@@ -244,6 +245,27 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
     revisionEntries = [],
   } = props;
 
+  const panelRef = useRef<HTMLDivElement>(null);
+  const formEditorRef = useRef<HTMLDivElement>(null);
+  const selectedFormKey = selectedFormField?.ref.toKey();
+  useEffect(() => {
+    if (!props.isMobile || !mobileFormReveal || mobileFormReveal.fieldKey !== selectedFormKey || activeTool !== 'select') return;
+    const frame = requestAnimationFrame(() => {
+      const panel = panelRef.current;
+      const editor = formEditorRef.current;
+      const header = panel?.querySelector<HTMLElement>('[data-options-header]');
+      if (!panel || !editor || !header) return;
+      const panelBox = panel.getBoundingClientRect();
+      const editorBox = editor.getBoundingClientRect();
+      const top = header.getBoundingClientRect().bottom + 8;
+      const bottom = panelBox.bottom - 8;
+      // Scroll only the sheet, leaving page position and keyboard focus alone.
+      if (editorBox.height > bottom - top || editorBox.top < top) panel.scrollTop += editorBox.top - top;
+      else if (editorBox.bottom > bottom) panel.scrollTop += editorBox.bottom - bottom;
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [props.isMobile, mobileFormReveal, selectedFormKey, activeTool]);
+
   if (!['text', 'addtext', 'draw', 'highlight', 'erase', 'select', 'watermark', 'sign'].includes(activeTool)) return null;
 
   const FONT_FAMILIES = [
@@ -291,6 +313,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
         />
       )}
       <div
+        ref={panelRef}
         className={isMobile
           ? 'fixed bottom-0 left-0 right-0 z-[400] bg-panel/98 backdrop-blur-xl border-t border-app flex flex-col overflow-y-auto mobile-sheet-up shadow-[0_-8px_40px_rgba(0,0,0,0.15)]'
           : 'w-64 bg-panel/95 backdrop-blur-md border-r border-app flex flex-col shrink-0 z-[100] overflow-y-auto shadow-[4px_0_24px_rgba(0,0,0,0.08)] min-h-0 h-full'
@@ -302,7 +325,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
         {isMobile && <div className="sheet-handle" />}
         {/* Top Bar with Hide Panel Button */}
         {onClose && (
-          <div className={`flex items-center justify-between px-4 pt-3 pb-2 border-b border-app/40 text-xs text-app-muted ${isMobile ? 'sticky top-0 z-10 shrink-0 bg-panel' : ''}`}>
+          <div data-options-header className={`flex items-center justify-between px-4 pt-3 pb-2 border-b border-app/40 text-xs text-app-muted ${isMobile ? 'sticky top-0 z-10 shrink-0 bg-panel' : ''}`}>
             <span className="text-[10px] font-bold uppercase tracking-wider text-app-muted">Options Panel</span>
           <button
             type="button"
@@ -947,7 +970,14 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
             ))}
           </div>
 
-          {selectedFormField && selectedFormField.fieldType === 'Tx' && onFormFieldChange && (
+          {selectedFormField && <div ref={formEditorRef}>
+          {isMobile && <p className="mb-1 truncate text-[11px] font-medium text-app" title={selectedFormField.fieldName || 'Unnamed field'}>
+            Selected: {selectedFormField.fieldName || 'Unnamed field'}
+          </p>}
+          {isMobile && selectedFormField.fieldType === 'Sig' && (
+            <p className="text-xs text-app-muted">Use the Sign tool to manage this signature field.</p>
+          )}
+          {selectedFormField.fieldType === 'Tx' && onFormFieldChange && (
             <div className="space-y-2">
               <label htmlFor="form-text-value" className="text-[10px] font-bold tracking-widest text-app-faint uppercase">Value</label>
               <FormDraftInput
@@ -963,7 +993,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
             </div>
           )}
 
-          {selectedFormField && selectedFormField.fieldType === 'Btn' && onFormFieldChange && (
+          {selectedFormField.fieldType === 'Btn' && onFormFieldChange && (
             <div className="space-y-2">
               <label className="text-[10px] font-bold tracking-widest text-app-faint uppercase">Checkbox / Radio</label>
               <button
@@ -984,7 +1014,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
             </div>
           )}
 
-          {selectedFormField && selectedFormField.fieldType === 'Ch' && onFormFieldChange && (
+          {selectedFormField.fieldType === 'Ch' && onFormFieldChange && (
             <div className="space-y-2">
               <label htmlFor="form-choice-value" className="text-[10px] font-bold tracking-widest text-app-faint uppercase">Choice value</label>
               {(selectedFormField.choiceFlags & (1 << 21)) && selectedFormField.choiceOptions ? (
@@ -1051,6 +1081,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
               )}
             </div>
           )}
+          </div>}
           </>
           )}
         </div>

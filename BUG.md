@@ -2438,20 +2438,29 @@ bounded register, not an exhaustive list of defects.
 
 ### BUG-239: Mobile form-field selection does not open its editor
 
-- **Status:** Open.
+- **Status:** Fixed for tested simulated mobile viewports.
 - **Trigger:** Select a generated ordinary text form field in mobile Chrome at
   390×844 with simulated touch.
-- **Observed:** The field editor did not open on mobile; the same fixture was
-  compared in desktop Chrome. The original saved value remained intact.
-- **Limit:** Checkbox, dropdown and other widget types, as well as real mobile
-  devices, have not been verified.
+- **Original behavior:** The field was selected but its editor did not open;
+  the same fixture opened the editor on desktop.
+- **Fix:** A valid page selection opens the mobile options sheet and reveals
+  the selected field's name and editor without taking keyboard focus. Stale
+  selections are discarded if their document, page or subsequent intent changes.
+  A signature field directs users to the Sign tool without altering its value.
+- **Verification:** Chrome simulated touch checked text fields at 390×844,
+  320×568 and 568×320, plus checkbox, dropdown, unsigned signature field,
+  save/reopen, undo, IME draft protection, delayed selection and breakpoint
+  changes. Desktop closed-panel preference and Focus Mode remained unchanged.
+  Real iOS and Android devices, soft keyboards and other widget variants have
+  not been verified.
 
-### BUG-240: Existing text-widget appearances are missing from the main canvas
+### BUG-240: Existing text-widget appearances are missing from the canvas and image exports
 
 - **Status:** Open.
 - **Trigger:** Open the independently generated PDF with an ordinary text form
   field and an existing value.
-- **Observed:** The main canvas did not show the field appearance; the page
-  thumbnail and Poppler did, and the saved field value was preserved.
+- **Observed:** The main canvas and downloaded PNG, JPEG and SVG did not show
+  the field appearance; the page thumbnail and Poppler did, and the saved PDF
+  field value was preserved. Ordinary page text remained visible in every output.
 - **Limit:** Checkbox, dropdown and other widget types, as well as real mobile
   devices, have not been verified.

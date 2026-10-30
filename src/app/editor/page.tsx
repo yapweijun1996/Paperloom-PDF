@@ -126,6 +126,8 @@ export default function EditorPage() {
   // ── Core state ──
   const [doc, setDocumentState] = useState<PDFDocumentData | null>(null);
   const documentOwnerRef = useRef(new EditorDocumentOwner());
+  const formSelectionRequestRef = useRef(0);
+  const [mobileFormReveal, setMobileFormReveal] = useState<{ fieldKey: string; request: number } | null>(null);
   const editSubmitInFlightRef = useRef<{ doc: PDFDocumentData; line: TextLine; promise: Promise<boolean> } | null>(null);
   const lineComposingRef = useRef(false);
   const [isLineComposing, setIsLineComposing] = useState(false);
@@ -136,6 +138,8 @@ export default function EditorPage() {
   }, []);
   useEffect(() => () => { editSubmitInFlightRef.current = null; documentOwnerRef.current.replace(null); }, []);
   const setDoc = useCallback((next: PDFDocumentData | null) => {
+    formSelectionRequestRef.current++;
+    setMobileFormReveal(null);
     editSubmitInFlightRef.current = null;
     setIsLineSubmitting(false);
     setLineComposition(false);
@@ -182,6 +186,10 @@ export default function EditorPage() {
   const [activeTool, setActiveTool] = useState<EditorTool>('text');
   const isMobile = useIsMobile();
   const { isPanelOpen, setIsPanelOpen, isThumbnailsOpen, setIsThumbnailsOpen, isFocusMode, setIsFocusMode } = usePanelLayout(isMobile);
+  const formPanelViewportRef = useRef({ isMobile, setIsPanelOpen });
+  useLayoutEffect(() => {
+    formPanelViewportRef.current = { isMobile, setIsPanelOpen };
+  }, [isMobile, setIsPanelOpen]);
   const [showMobileThumbnails, setShowMobileThumbnails] = useState(false);
   const [selectedLine, setSelectedLine] = useState<TextLine | null>(null);
   const [editingLineState, setEditingLineState] = useState<TextLine | null>(null);
@@ -344,6 +352,8 @@ export default function EditorPage() {
       setError('Finish the form field edit before changing pages.');
       return;
     }
+    formSelectionRequestRef.current++;
+    setMobileFormReveal(null);
     currentPageRef.current = page;
     setActiveFloatingTextId(null);
     setActiveFloatingImageId(null);
@@ -711,9 +721,22 @@ export default function EditorPage() {
     void commitFormFieldDraft();
   }, [handleFormFieldDraftChange, commitFormFieldDraft]);
 
-  const handleFormFieldSelect = useCallback(async (field: AcroFormWidget) => {
+  const handleFormFieldSelect = useCallback(async (field: AcroFormWidget, options?: {
+    revealMobile?: boolean; finishText?: () => Promise<boolean>;
+  }) => {
+    if (!doc) return;
+    const request = ++formSelectionRequestRef.current;
+    setMobileFormReveal(null);
+    const lease = documentOwnerRef.current.lease(doc);
+    const pageKey = doc.pages[currentPageRef.current]?.ref.toKey();
+    if (!pageKey) return;
+    const isCurrent = () => request === formSelectionRequestRef.current && lease.isCurrent() &&
+      doc.pages[currentPageRef.current]?.ref.toKey() === pageKey;
+    if (!isCurrent()) return;
+    if (options?.finishText && !await options.finishText()) return;
+    if (!isCurrent()) return;
     if (!await commitFormFieldDraft()) return;
-    if (!doc || !engineRef.current) return;
+    if (!isCurrent() || !engineRef.current) return;
     const latest = engineRef.current.detectFormFieldsOnPage(doc, currentPageRef.current)
       .find(candidate => candidate.ref.toKey() === field.ref.toKey());
     if (!latest) { setError('The form field is no longer available.'); return; }
@@ -723,6 +746,10 @@ export default function EditorPage() {
         ? encodeMultiChoiceDraft(Array.isArray(latest.value) ? latest.value : typeof latest.value === 'string' ? [latest.value] : [])
         : typeof latest.value === 'string' ? latest.value : '');
     setActiveTool('select');
+    if (options?.revealMobile && formPanelViewportRef.current.isMobile) {
+      setMobileFormReveal({ fieldKey: latest.ref.toKey(), request });
+      formPanelViewportRef.current.setIsPanelOpen(true);
+    }
   }, [doc, commitFormFieldDraft]);
 
   const commitSignatureChange = useCallback(async (
@@ -2748,6 +2775,7 @@ export default function EditorPage() {
   }, [findText, caseSensitive, doc, renderKey, updateActiveMatchIndex]);
 
   const handleNextMatch = useCallback(async () => {
+    formSelectionRequestRef.current++;
     if (searchResults.length === 0 || !await commitFormFieldDraft()) return;
     const nextIdx = (activeMatchIndex + 1) % searchResults.length;
     updateActiveMatchIndex(nextIdx);
@@ -2758,6 +2786,7 @@ export default function EditorPage() {
   }, [searchResults, activeMatchIndex, currentPage, updateActiveMatchIndex, commitFormFieldDraft]);
 
   const handlePrevMatch = useCallback(async () => {
+    formSelectionRequestRef.current++;
     if (searchResults.length === 0 || !await commitFormFieldDraft()) return;
     const prevIdx = (activeMatchIndex - 1 + searchResults.length) % searchResults.length;
     updateActiveMatchIndex(prevIdx);
@@ -3062,6 +3091,8 @@ export default function EditorPage() {
   // ── Canvas click handler — caret-based, no boxes ──
   const handleCanvasClick = useCallback(async (e: React.MouseEvent) => {
     if (!renderResult || !doc) return;
+    formSelectionRequestRef.current++;
+    setMobileFormReveal(null);
     const wrapper = canvasContainerRef.current;
     if (!wrapper) return;
     const rect = wrapper.getBoundingClientRect();
@@ -3098,8 +3129,10 @@ export default function EditorPage() {
       if (formFields.length > 0 && engineRef.current) {
         const formHit = engineRef.current.hitTestFormField(formFields, pdfX, pdfY);
         if (formHit) {
-          if (editingLine && !await handleEditSubmit()) return;
-          await handleFormFieldSelect(formHit);
+          await handleFormFieldSelect(formHit, {
+            revealMobile: true,
+            finishText: editingLine ? () => handleEditSubmit() : undefined,
+          });
           return;
         }
       }
@@ -4739,6 +4772,7 @@ export default function EditorPage() {
 
   // ── Navigation handlers ──
   const goToPrev = useCallback(async () => {
+    formSelectionRequestRef.current++;
     if (!await commitFormFieldDraft()) return;
     try {
       await prepareOverlayText();
@@ -4756,6 +4790,7 @@ export default function EditorPage() {
   }, [commitDrawingsToPdf, closeLinkPopover, handleEditSubmit, showUnsupportedGlyphWarning, prepareOverlayText, commitFormFieldDraft]);
 
   const goToNext = useCallback(async () => {
+    formSelectionRequestRef.current++;
     if (!await commitFormFieldDraft()) return;
     try {
       await prepareOverlayText();
@@ -5260,6 +5295,8 @@ export default function EditorPage() {
   }, [doc, fileName, handleDownload, commitDrawingsToPdf, handleEditSubmit, showUnsupportedGlyphWarning, prepareOverlayText, searchBusy, cryptoSignBusy, commitFormFieldDraft]);
 
   const closeDocument = useCallback(async (preserveSavedCopy = false) => {
+    formSelectionRequestRef.current++;
+    setMobileFormReveal(null);
     if (!preserveSavedCopy) await clearPdfFromStorage();
     formDraftControllerRef.current.clear();
     editSubmitInFlightRef.current = null;
@@ -5991,7 +6028,11 @@ export default function EditorPage() {
         {/* ── Left sidebar (Tools only) — on mobile renders as fixed bottom strip ── */}
         <ToolsSidebar
           activeTool={activeTool}
-          setActiveTool={setActiveTool}
+          setActiveTool={tool => {
+            formSelectionRequestRef.current++;
+            setMobileFormReveal(null);
+            setActiveTool(tool);
+          }}
           highlightColor={highlightColor}
           isPanelOpen={isPanelOpen && !isFocusMode}
           isFocusMode={isFocusMode}
@@ -6001,6 +6042,10 @@ export default function EditorPage() {
               setIsFocusMode(false);
               setIsPanelOpen(true);
             } else {
+              if (isPanelOpen) {
+                formSelectionRequestRef.current++;
+                setMobileFormReveal(null);
+              }
               setIsPanelOpen(v => !v);
             }
           }}
@@ -6039,7 +6084,11 @@ export default function EditorPage() {
             <PropertiesSidebar
               activeTool={activeTool}
               setActiveTool={setActiveTool}
-              onClose={() => setIsPanelOpen(false)}
+              onClose={() => {
+                formSelectionRequestRef.current++;
+                setMobileFormReveal(null);
+                setIsPanelOpen(false);
+              }}
               selectedRun={selectedLine?.runs[0] ?? null}
           textFontFamily={textFontFamily}
           setTextFontFamily={handleTextFontFamily}
@@ -6168,6 +6217,7 @@ export default function EditorPage() {
           displayItems={displayItems}
           formFields={formFields}
           selectedFormField={selectedFormField}
+          mobileFormReveal={mobileFormReveal}
           formFieldDraft={formFieldDraft}
           onFormFieldSelect={handleFormFieldSelect}
           onFormFieldChange={handleFormFieldChange}
@@ -7218,6 +7268,7 @@ export default function EditorPage() {
             thumbnails={thumbnails}
             isGeneratingThumbnails={isGeneratingThumbnails}
             onPageSelect={async (i) => {
+              formSelectionRequestRef.current++;
               if (!await commitFormFieldDraft()) return;
               try {
                 await prepareOverlayText();
@@ -7296,6 +7347,7 @@ export default function EditorPage() {
             thumbnails={thumbnails}
             isGeneratingThumbnails={isGeneratingThumbnails}
             onPageSelect={async (i) => {
+              formSelectionRequestRef.current++;
               if (!await commitFormFieldDraft()) return;
               try {
                 await prepareOverlayText();

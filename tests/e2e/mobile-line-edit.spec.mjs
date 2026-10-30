@@ -328,7 +328,10 @@ for (const changed of [false, true]) test(`selecting a form field exits the ${ch
     await surface.tap({ position: { x: 100, y: 182 } });
     await expect(page.getByRole('textbox', { name: 'Edit line' })).toHaveCount(0);
     await expect(page.getByRole('group', { name: 'Text edit actions' })).toHaveCount(0, { timeout: 3_000 });
-    if (changed) expect(await downloadedText(page)).toContain('CHANGED TEXT');
+    if (changed) {
+      await page.getByTitle('Hide panel').tap();
+      expect(await downloadedText(page)).toContain('CHANGED TEXT');
+    }
   } finally { await context.close(); }
 });
 
