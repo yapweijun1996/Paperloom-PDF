@@ -42,6 +42,7 @@ import { renderFieldSignaturePreviews } from './field-signature-previews';
 import { signatureBoxOnPage, signatureFieldBoxOnPage, signaturePagePoint, signaturePageRotation } from './signature-page-geometry';
 import { findMatchingFlowLine } from './flowLineMatch';
 import { EditorDocumentOwner } from './document-owner';
+import { runSignatureChange } from './signature-change';
 import { parseRecoveryOverlay } from './recovery-overlay';
 import { FormDraftController, resolveRecoveredFormDraft } from './form-draft-controller';
 import { decodeMultiChoiceDraft, encodeMultiChoiceDraft } from './multi-choice-draft';
@@ -788,29 +789,31 @@ export default function EditorPage() {
   ) => {
     if (!doc) return false;
     try {
-      await queueNativeEdit(doc, async isCurrent => {
-        const previous = signaturesRef.current;
-        const next = update(previous);
-        const editor = new SessionDocumentEditor();
-        await editor.edit(doc, label, async staged => {
-          for (const signature of previous) {
-            if (!next.some(item => item.id === signature.id)) removeVisualSignature(staged, signature.id);
-          }
-          for (const signature of next) {
-            if (previous.includes(signature)) continue;
-            const image = signature.appearanceImageDataUrl ?? getSignatureLibrary().get(signature.appearanceId)?.imageDataUrl;
-            if (!image) throw new Error('Signature appearance is unavailable');
-            await placeVisualSignature(staged, signature, image);
-          }
-        }, { isCurrent });
-        signaturesRef.current = next;
-        setSignatures(next);
-        pushEditorHistory(label, { signatures: next }, undefined, false, editor);
-        setIsDirty(true);
-        setRenderKey(k => k + 1);
-        setThumbnailKey(k => k + 1);
+      return await runSignatureChange({
+        enqueue: apply => queueNativeEdit(doc, apply),
+        current: () => signaturesRef.current,
+        update,
+        apply: async (previous, next, isCurrent) => {
+          const editor = new SessionDocumentEditor();
+          await editor.edit(doc, label, async staged => {
+            for (const signature of previous) {
+              if (!next.some(item => item.id === signature.id)) removeVisualSignature(staged, signature.id);
+            }
+            for (const signature of next) {
+              if (previous.includes(signature)) continue;
+              const image = signature.appearanceImageDataUrl ?? getSignatureLibrary().get(signature.appearanceId)?.imageDataUrl;
+              if (!image) throw new Error('Signature appearance is unavailable');
+              await placeVisualSignature(staged, signature, image);
+            }
+          }, { isCurrent });
+          signaturesRef.current = next;
+          setSignatures(next);
+          pushEditorHistory(label, { signatures: next }, undefined, false, editor);
+          setIsDirty(true);
+          setRenderKey(k => k + 1);
+          setThumbnailKey(k => k + 1);
+        },
       });
-      return true;
     } catch (error) {
       setError(error instanceof Error ? error.message : 'Signature edit failed');
       return false;

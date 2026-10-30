@@ -780,6 +780,8 @@ suggested order.
   The reported Chromium-generated PDF's image-backed tiling patterns now render
   in the tested canvas, thumbnail and PNG; broader pattern support remains open
   ([BUG-252](BUG.md#bug-252-a-pdf-page-background-renders-black-in-the-editor)).
+  Unchanged signature edits no longer create unsaved state or undo entries
+  ([BUG-253](BUG.md#bug-253-an-unchanged-signature-edit-creates-an-undo-entry)).
   Real iOS/Android tests and other mobile tasks remain open. While a
   drawing tool is active, page-area pinch and scrolling are unavailable.
 - **Priority / effort:** P1 / high. **Related:** [BUG-108](BUG.md#bug-108-drawing-highlighting-and-erasing-ignore-touch-drags).

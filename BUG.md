@@ -2721,3 +2721,15 @@ bounded register, not an exhaustive list of defects.
   patterns, negative or zero steps, overlapping cells, certain transparency and
   transforms, nested patterns and patterns inside soft-mask groups are rejected
   rather than rendered. Extend support with independent visual and budget tests.
+
+### BUG-253: An unchanged signature edit creates an undo entry
+
+- **Status:** Fixed.
+- **Trigger:** Lock a visual signature, save, then press Rotate in the sidebar.
+- **Observed:** The model rejected the rotation, but the queued editor still
+  marked the document unsaved and added an empty history entry.
+- **Fix:** Compare the current and updated signatures inside the document queue;
+  skip the transaction and history when their elements and order are unchanged.
+- **Verification:** Queue and model tests pass; Chrome reproduction fails on
+  the previous version and passes after the fix, including save and undo.
+  Lock semantics for deletion and opacity remain tracked separately in BUG-251.

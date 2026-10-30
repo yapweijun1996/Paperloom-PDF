@@ -164,3 +164,43 @@ test('tapping a signature field fills the field rather than adding a free stamp'
     expect(annotation.get(PDFName.of('AP'))).toBeTruthy();
   } finally { await context.close(); }
 });
+
+test('locked rotation creates no unsaved change or undo entry', async ({ page }) => {
+  await openPdf(page, await blankPdf());
+  await createSignature(page);
+  const surface = page.locator('[data-page-render-surface]');
+  const card = page.locator('[draggable="true"]').filter({ has: page.getByText('This session only', { exact: true }) });
+  await card.dragTo(surface, { targetPosition: { x: 200, y: 180 } });
+  const image = surface.getByAltText('Signature');
+  await expect(image).toHaveCount(1);
+  await image.locator('..').click();
+  const rotate = page.getByRole('button', { name: 'Rotate', exact: true });
+  await rotate.click();
+  await expect(image.locator('..')).toHaveCSS('transform', /matrix\(0\.9659/);
+  const saved = await stamps(await download(page));
+  expect(saved).toHaveLength(1);
+  expect(saved[0].get(PDFName.of('AP'))).toBeTruthy();
+  await page.getByRole('button', { name: 'Lock', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Unlock', exact: true })).toBeVisible();
+  await download(page);
+  await page.getByTitle('Toggle Find & Replace').click();
+  await expect(page.getByText('Unsaved', { exact: true })).toHaveCount(0);
+  await rotate.click();
+  // Allow the queued native edit to settle before checking that it had no effect.
+  await page.waitForTimeout(500);
+  await expect(page.getByText('Unsaved', { exact: true })).toHaveCount(0);
+  await page.getByTitle('Close Search').click();
+  await page.getByTitle('Undo (Ctrl+Z)').click();
+  await image.click();
+  await expect(page.getByRole('button', { name: 'Lock', exact: true })).toBeVisible();
+  await expect(image.locator('..')).toHaveCSS('transform', /matrix\(0\.9659/);
+  await page.getByTitle('Undo (Ctrl+Z)').click();
+  await expect(image.locator('..')).toHaveCSS('transform', /matrix\(1, 0, 0, 1/);
+  const undone = await stamps(await download(page));
+  expect(undone).toHaveLength(1);
+  const width = stamp => {
+    const rect = stamp.lookup(PDFName.of('Rect')).asArray().map(value => value.asNumber());
+    return rect[2] - rect[0];
+  };
+  expect(width(saved[0])).toBeGreaterThan(width(undone[0]) + 1);
+});
