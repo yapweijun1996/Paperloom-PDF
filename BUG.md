@@ -2456,11 +2456,26 @@ bounded register, not an exhaustive list of defects.
 
 ### BUG-240: Existing text-widget appearances are missing from the canvas and image exports
 
-- **Status:** Open.
+- **Status:** Fixed for supported existing text-widget appearances.
 - **Trigger:** Open the independently generated PDF with an ordinary text form
   field and an existing value.
 - **Observed:** The main canvas and downloaded PNG, JPEG and SVG did not show
   the field appearance; the page thumbnail and Poppler did, and the saved PDF
   field value was preserved. Ordinary page text remained visible in every output.
-- **Limit:** Checkbox, dropdown and other widget types, as well as real mobile
-  devices, have not been verified.
+- **Fix:** Render existing text-field appearances in the editor, selected-image
+  background and image exports, resolving inherited field types and retaining
+  annotation visibility and signature-overlay exclusion. No appearance is
+  synthesized for an absent or invalid appearance. SVG uses the rendered crop
+  and rotation dimensions. Page-resource fallback includes inherited resources;
+  appearance-provided resources remain authoritative.
+- **Verification:** Chrome downloads and canvas pixels were compared with a
+  generated field and Poppler; the page-text control, shared-field commit,
+  undo and reopen, and cropped/rotated exports were checked. Renderer tests
+  cover hidden/NoView fields, inherited types and page resources, explicit
+  appearance resources, indirect non-text widget types, invalid geometry and a
+  corrupted Flate stream. Existing signature-placement
+  and mobile form tests passed in simulated Chrome.
+- **Limit:** Existing unsupported or stale appearances and NeedAppearances are
+  not repaired; the existing decoder warns and passes unknown filters through.
+  Checkbox, dropdown and other widget appearances and real mobile devices are
+  outside this fix's verified scope.

@@ -63,8 +63,8 @@ export interface RenderOptions {
   renderPaths?: boolean;
   /** Whether to render images (default: true) */
   renderImages?: boolean;
-  /** Draw existing widget appearances, e.g. for thumbnails without editor overlays. */
-  renderWidgets?: boolean;
+  /** Draw all widget appearances, or only existing text-field appearances. */
+  renderWidgets?: boolean | 'text';
   /**
    * Override devicePixelRatio used for canvas backing store.
    * Pass `1` for export/compression so Retina screens don't inflate file size.
@@ -119,6 +119,23 @@ function isOmittedImage(item: ImageItem, omitted?: ImageItem): boolean {
     item.width === omitted.width && item.height === omitted.height;
 }
 
+/** /FT is inherited from the field tree, and must not be guessed for widgets. */
+function isTextWidget(widget: PDFDict, objects: Map<string, PDFObject>): boolean {
+  const seen = new Set<PDFDict>();
+  let current: PDFObject | undefined = widget;
+  while (current instanceof PDFDict && !seen.has(current)) {
+    seen.add(current);
+    const type = current.get('FT');
+    if (type) {
+      const resolved = resolveRef(type, objects);
+      return resolved instanceof PDFName && resolved.name === 'Tx';
+    }
+    const parent = current.get('Parent');
+    current = parent ? resolveRef(parent, objects) : undefined;
+  }
+  return false;
+}
+
 export interface ImagePreviewLayers {
   background: HTMLCanvasElement;
   image: HTMLCanvasElement;
@@ -137,7 +154,7 @@ export async function renderImagePreviewLayers(
   assertCanvasScale(dpr);
   const size = checkedCanvasDimensions(item.width * scale * dpr, item.height * scale * dpr);
   const optionalContent = new OptionalContentVisibility(catalog, objects);
-  const { canvas: background } = await renderPageToCanvas(page, objects, { scale, omitImage: item, optionalContent });
+  const { canvas: background } = await renderPageToCanvas(page, objects, { scale, omitImage: item, optionalContent, renderWidgets: 'text' });
   const image = document.createElement('canvas');
   image.width = size.width;
   image.height = size.height;
@@ -276,11 +293,13 @@ export async function renderPageToCanvas(
       const annotLayer = annotDict.get('OC');
       if (annotLayer && options.optionalContent && !options.optionalContent.isVisible(annotLayer)) continue;
 
-      // The editor draws interactive widgets separately; previews can opt in to
-      // the existing appearances when they do not have those overlays.
-      const subtype = annotDict.get('Subtype');
+      // Editors can render existing text appearances without also painting
+      // signature widgets that may have separate interactive overlays.
+      const subtypeEntry = annotDict.get('Subtype');
+      const subtype = subtypeEntry ? resolveRef(subtypeEntry, objects) : undefined;
       const subtypeName = subtype instanceof PDFName ? subtype.name : '';
-      if (subtypeName === 'Link' || (subtypeName === 'Widget' && !options.renderWidgets)) continue;
+      if (subtypeName === 'Link' || (subtypeName === 'Widget' &&
+        (!options.renderWidgets || (options.renderWidgets === 'text' && !isTextWidget(annotDict, objects))))) continue;
       
       const apRef = annotDict.get('AP');
       let apDict = apRef;
@@ -304,7 +323,7 @@ export async function renderPageToCanvas(
           const appearanceLayer = nStream.dict.get('OC');
           if (appearanceLayer && options.optionalContent && !options.optionalContent.isVisible(appearanceLayer)) continue;
           // Interpret this Appearance stream
-          const annotResources = nStream.dict.get('Resources') || annotDict.get('Resources') || page.dict.get('Resources');
+          const annotResources = nStream.dict.get('Resources') || annotDict.get('Resources') || page.resources;
           const mockPage = {
             ...page,
             resources: annotResources instanceof PDFRef ? resolveRef(annotResources, objects) as PDFDict : (annotResources as PDFDict) || new PDFDict(),

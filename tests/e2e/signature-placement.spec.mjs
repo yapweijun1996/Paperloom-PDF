@@ -80,8 +80,18 @@ test('mobile touch places a selected library signature and saves its appearance'
     const annotations = await stamps(output);
     expect(annotations).toHaveLength(1);
     expect(annotations[0].get(PDFName.of('AP'))).toBeTruthy();
+    // The current editor has a live signature overlay: its saved appearance
+    // must not also be painted into the underlying otherwise-blank canvas.
+    await expect(surface.getByAltText('Signature')).toHaveCount(1);
+    await expect.poll(() => surface.locator('canvas.pdf-canvas').evaluate(canvas => {
+      const data = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
+      let count = 0;
+      for (let i = 0; i < data.length; i += 4) if (data[i + 3] && data[i] < 128 && data[i + 1] < 128 && data[i + 2] < 128) count++;
+      return count;
+    })).toBe(0);
     const reopenedContext = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
     const reopened = await reopenedContext.newPage();
+    await (await reopenedContext.newCDPSession(reopened)).send('Emulation.setFocusEmulationEnabled', { enabled: true });
     await openPdf(reopened, output);
     const darkPixels = await reopened.locator('[data-page-render-surface] canvas.pdf-canvas').evaluate(canvas => {
       const data = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;

@@ -3,7 +3,7 @@ import type { PDFDocumentData } from '@/engine/browser-core';
 import { EXPORT_FORMATS, exportDocument, type ExportFormat, type ExportOptions } from './export-formats';
 
 const doc = { pages: Array.from({ length: 3 }, () => ({ mediaBox: { width: 200, height: 300 } })) } as unknown as PDFDocumentData;
-const renderPage = vi.fn(async () => ({ canvas: {
+const renderPage = vi.fn(async () => ({ pageWidth: 200, pageHeight: 300, canvas: {
   toDataURL: () => 'data:image/png;base64,UE5H',
   toBlob: (callback: (blob: Blob) => void, type: string) => callback(new Blob(['image'], { type })),
 } }));
@@ -32,11 +32,12 @@ describe('export page selection', () => {
     const result = await exportDocument(doc, engine, options('svg', [0]));
     expect(await result.blob.text()).toContain('<image');
     expect(await result.blob.text()).toContain('data:image/png;base64,UE5H');
+    expect(await result.blob.text()).toContain('viewBox="0 0 200 300"');
   });
 
   it.each(['png', 'jpeg'] as const)('renders %s with a DPI scale independent of display density', async format => {
     renderPage.mockClear();
     await exportDocument(doc, engine, options(format, [0]));
-    expect(renderPage).toHaveBeenCalledWith(doc, 0, { scale: 150 / 72, devicePixelRatio: 1 });
+    expect(renderPage).toHaveBeenCalledWith(doc, 0, { scale: 150 / 72, devicePixelRatio: 1, renderWidgets: 'text' });
   });
 });

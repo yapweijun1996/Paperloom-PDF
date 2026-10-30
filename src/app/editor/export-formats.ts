@@ -116,7 +116,7 @@ export async function exportPageToImage(
 
   const scale = dpi / 72;
   // Export dimensions depend on the selected DPI, not the display density.
-  const result = await engine.renderPage(doc, pageIndex, { scale, devicePixelRatio: 1 });
+  const result = await engine.renderPage(doc, pageIndex, { scale, devicePixelRatio: 1, renderWidgets: 'text' });
   const canvas = result.canvas;
 
   return new Promise<Blob>((resolve, reject) => {
@@ -177,11 +177,8 @@ export async function exportPageToSVG(
   if (!page) throw new Error(`Page ${pageIndex} not found`);
 
   const scale = 2;
-  const mediaBox = page.mediaBox;
-  const pageWidth = mediaBox.width;
-  const pageHeight = mediaBox.height;
-
-  const result = await engine.renderPage(doc, pageIndex, { scale, devicePixelRatio: 1 });
+  const result = await engine.renderPage(doc, pageIndex, { scale, devicePixelRatio: 1, renderWidgets: 'text' });
+  const { pageWidth, pageHeight } = result;
   const canvas = result.canvas;
   const dataUrl = canvas.toDataURL('image/png');
 
