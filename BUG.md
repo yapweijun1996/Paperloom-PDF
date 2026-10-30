@@ -2512,17 +2512,24 @@ bounded register, not an exhaustive list of defects.
 
 ### BUG-242: Push-button fields offer an invalid checkbox action
 
-- **Status:** Open.
+- **Status:** Fixed for detected push-button fields with the tested inherited
+  field flags.
 - **Trigger:** Select an ordinary generated PDF push-button field in Chrome.
-- **Observed:** The options panel presents “Unchecked — click to check”;
-  clicking it reports “Pushbutton values cannot be toggled.” The field's
-  existing appearance is visible, but the checkbox action does not apply.
-- **Evidence:** Independent Chrome reproduction is recorded in
-  `/private/tmp/paperloom-bug241-push.log`. This interaction issue predates
-  BUG-241 and was not changed by its appearance-rendering fix.
-- **Next step:** Distinguish push buttons from checkboxes and radio widgets in
-  the field editor, avoid offering an invalid toggle, and test interactions
-  without executing PDF actions that the application does not support.
+- **Original behavior:** The options panel presented “Unchecked — click to check”;
+  clicking it reported “Pushbutton values cannot be toggled.”
+- **Fix:** Push buttons show a non-interactive explanation that their actions
+  are unsupported. Checkbox and radio controls retain their existing behavior;
+  the editor does not execute the push button's PDF action.
+- **Verification:** Desktop and simulated mobile Chrome tested direct and
+  indirect inherited flags, PDF JavaScript action preservation without
+  execution, checkbox and radio changes, undo, save and reopen. The explanation
+  was revealed at 390×844, 320×568 and 568×320 without focusing an input. A temporary
+  self-signed PDF remained byte-identical after selecting the push button and
+  `pdfsig` reported its mathematical signature valid. Independent tests also
+  exercised deeper flag inheritance, keyboard selection, read-only checkboxes
+  and radio NoToggleToOff behavior.
+- **Limit:** Other push-button action types and physical devices were not
+  verified. A widget with indirect `/Subtype` may not be selectable; see BUG-246.
 
 ### BUG-243: Signature-widget appearances are missing from image exports
 
@@ -2586,3 +2593,18 @@ bounded register, not an exhaustive list of defects.
   every possible stale or mixed build, nor non-empty corrupted scripts. A build
   retaining only one executable Next chunk can pass even when other required
   scripts are missing; browser tests remain necessary to establish runtime behavior.
+
+### BUG-246: A push widget with an indirect Subtype is omitted from form selection
+
+- **Status:** Open.
+- **Trigger:** Open a generated push-button widget whose `/Subtype` is an
+  indirect reference resolving to `/Widget`.
+- **Observed:** Its existing appearance renders, but the field is missing from
+  the form list and cannot be selected to see its field-specific explanation.
+  The directly encoded `/Subtype /Widget` control is detected normally.
+- **Evidence:** Independent Chrome reproduction is in
+  `/private/tmp/paperloom-bug242-subtype-review.log`. The investigation exercised
+  a push button; other field types and real devices were not verified.
+- **Next step:** Resolve the widget subtype when detecting form fields, and
+  verify inherited attributes, desktop and mobile selection, editing and save
+  behavior for the supported field types.

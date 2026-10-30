@@ -993,7 +993,14 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
             </div>
           )}
 
-          {selectedFormField.fieldType === 'Btn' && onFormFieldChange && (
+          {selectedFormField.fieldType === 'Btn' && !!(selectedFormField.buttonFlags & (1 << 16)) && (
+            <div className="space-y-2">
+              <p className="text-[10px] font-bold tracking-widest text-app-faint uppercase">Push button</p>
+              <p className="text-xs text-app-muted">Push button actions are not supported.</p>
+            </div>
+          )}
+
+          {selectedFormField.fieldType === 'Btn' && !(selectedFormField.buttonFlags & (1 << 16)) && onFormFieldChange && (
             <div className="space-y-2">
               <label className="text-[10px] font-bold tracking-widest text-app-faint uppercase">Checkbox / Radio</label>
               <button

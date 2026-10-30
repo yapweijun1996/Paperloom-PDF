@@ -811,8 +811,10 @@ suggested order.
   ([BUG-240](BUG.md#bug-240-existing-text-widget-appearances-are-missing-from-the-canvas-and-image-exports));
   tested checkbox and choice appearances also render
   ([BUG-241](BUG.md#bug-241-checkbox-and-choice-widget-appearances-are-missing-from-the-canvas-and-image-exports)).
-  Push-button editing still offers an invalid checkbox toggle and needs a
-  separate fix ([BUG-242](BUG.md#bug-242-push-button-fields-offer-an-invalid-checkbox-action)).
+  Push-button fields show an explanation instead of an invalid toggle
+  ([BUG-242](BUG.md#bug-242-push-button-fields-offer-an-invalid-checkbox-action)).
+  A push widget with indirect /Subtype remains undetected
+  ([BUG-246](BUG.md#bug-246-a-push-widget-with-an-indirect-subtype-is-omitted-from-form-selection)).
   Grouped editing keeps
   independently painted segments and rejects unsupported low-level replacements
   ([BUG-171](BUG.md#bug-171-grouped-text-edits-can-lose-later-paint-styles));
