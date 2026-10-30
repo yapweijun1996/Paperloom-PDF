@@ -2350,3 +2350,19 @@ bounded register, not an exhaustive list of defects.
   across rendering, search and editing; compare independent readers without
   breaking conforming stream boundaries. Removing all separators is not
   sufficient: independent operators also need correct boundary handling.
+
+### BUG-234: Linux CI rejects standard Courier stroke and assumes one qpdf precedence
+
+- **Status:** Fixed in tested Ubuntu and macOS configurations; hosted CI remains
+  to be verified for the resulting commit.
+- **Trigger:** Render stroked Courier text on Linux without a metric-compatible
+  fallback, or inspect a deliberately conflicting hybrid xref with qpdf 11.
+- **Original behavior:** The Linux canvas could choose a proportional font,
+  causing normal Courier text to fail the nonuniform-transform safety check.
+  The independent xref test also assumed qpdf 12's interpretation, whereas
+  qpdf 11 resolves the conflict differently.
+- **Verification:** Linux and macOS tests cover Courier rendering, including
+  independent Poppler checks and rejection of actual unsupported transforms.
+  Both qpdf 11.9 and 12.4 tests independently verify the conflicting xref
+  entries and require the application to reject object-number reuse. CI and
+  Pages workflows install the compatible Liberation fonts and PDF tools.

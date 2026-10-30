@@ -531,7 +531,9 @@ local processing, existing PDF content, unrelated changes, and static hosting.
   the required tools and runs release, coverage and static E2E checks; actionlint
   validates it locally, but a hosted run has not yet been observed. The Pages
   workflow builds and deploys main and includes a post-deployment smoke check;
-  its hosted result remains to be verified.
+  its hosted result remains to be verified. Linux Courier fallback and qpdf
+  version differences found in hosted CI are addressed with Ubuntu and macOS
+  regression checks ([BUG-234](BUG.md#bug-234-linux-ci-rejects-standard-courier-stroke-and-assumes-one-qpdf-precedence)).
 - **Priority / effort:** P2 / medium. **Related:** [BUG-014](BUG.md#bug-014-the-documented-node-minimum-is-incompatible-with-the-locked-nextjs-version),
   [BUG-015](BUG.md#bug-015-deployment-guide-references-an-absent-actions-workflow).
 - **First step:** Confirm the actual Pages deployment mechanism, select a

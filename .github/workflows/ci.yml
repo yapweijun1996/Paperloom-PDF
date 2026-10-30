@@ -27,7 +27,7 @@ jobs:
       - name: Install PDF interoperability tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends openssl qpdf poppler-utils
+          sudo apt-get install -y --no-install-recommends openssl qpdf poppler-utils fonts-liberation
       - name: Install dependencies
         run: npm ci
       - name: Install Chromium and system dependencies

@@ -348,7 +348,18 @@ it('does not silently authorize reuse when hybrid xref table and supplement conf
     try {
       const file = join(folder, 'hybrid.pdf'); writeFileSync(file, bytes);
       execFileSync('qpdf', ['--check', file], { stdio: 'ignore' });
-      expect(execFileSync('qpdf', ['--show-object=5', file], { encoding: 'utf8' }).trim()).toBe('null');
+      // qpdf 11 and 12 resolve this deliberately conflicting hybrid xref in
+      // opposite ways. Verify the conflicting entries independently instead of
+      // assuming a particular reader's precedence; both outcomes are unsafe
+      // evidence for reusing the object number.
+      expect(Buffer.from(bytes).toString('latin1')).toMatch(/\n5 1\n0000000000 00000 f \n/);
+      expect(execFileSync('qpdf', ['--show-object=11', '--raw-stream-data', file]))
+        .toEqual(Buffer.from([2, 0, 0, 0, 10, 0, 0]));
+      const object = execFileSync('qpdf', ['--show-object=5', file], { encoding: 'utf8' }).trim();
+      const xref = execFileSync('qpdf', ['--show-xref', file], { encoding: 'utf8' });
+      expect(['null', '(compressed value)']).toContain(object);
+      if (object === 'null') expect(xref).not.toMatch(/^5\/0:/m);
+      else expect(xref).toMatch(/^5\/0: compressed; stream = 10, index = 0$/m);
     } finally { rmSync(folder, { recursive: true, force: true }); }
   } else if (process.env.CI) throw new Error('qpdf is required for the hybrid xref audit');
   const doc = await parsePDF(bytes), raw = doc.rawBytes, before = new Uint8Array(raw);

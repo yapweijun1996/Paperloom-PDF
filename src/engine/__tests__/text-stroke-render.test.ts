@@ -251,6 +251,23 @@ describe('PDF text stroke modes', () => {
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
+  it('uses a compatible monospace fallback before scaling stroked Courier text', async () => {
+    const canvas = createCanvas(1, 1);
+    const ctx = canvas.getContext('2d');
+    const measure = ctx.measureText.bind(ctx);
+    const widths = vi.spyOn(ctx, 'measureText').mockImplementation(text => {
+      const metrics = measure(text);
+      // Model a Linux environment where generic monospace resolves to a wide
+      // proportional fallback, but Liberation Mono has Courier's 600-unit advance.
+      const width = text.length * (ctx.font.includes('Liberation Mono') ? 28.8 : 42.67);
+      return new Proxy(metrics, { get: (target, key) => key === 'width' ? width : Reflect.get(target, key, target) });
+    });
+    vi.stubGlobal('document', { createElement: () => Object.assign(canvas, { style: {} }) });
+    const doc = await parsePDF(fixture('BT /F1 48 Tf 1 Tr 1 0 0 1 20 65 Tm (MMMM) Tj ET'));
+    await expect(renderPage(doc, 0, { scale: 1, devicePixelRatio: 1 })).resolves.toBeDefined();
+    expect(widths).toHaveBeenCalled();
+  });
+
   it('preserves each stroke state rather than merging adjacent differently styled text', async () => {
     canvasSetup();
     const doc = await parsePDF(fixture('BT /F1 24 Tf 1 Tr 1 0 0 RG 2 w 1 0 0 1 20 60 Tm (A) Tj 0 0 1 RG 5 w (B) Tj ET'));

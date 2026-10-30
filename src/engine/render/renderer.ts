@@ -789,6 +789,10 @@ function isDingbatOrSymbolFamily(baseFont: string): boolean {
   return lower.includes('zapf') || lower.includes('dingbat') || lower === 'symbol' || lower.endsWith('symbol');
 }
 
+// Some Linux canvas implementations do not resolve generic monospace to a
+// metric-compatible face. These common substitutes retain Courier advances.
+const COURIER_CANVAS_FAMILY = '"Courier New", Courier, "Liberation Mono", "Nimbus Mono PS", "Noto Sans Mono", monospace';
+
 type FlowDrawIndex = ReturnType<typeof buildFlowDrawIndex>;
 
 /** Canvas strokes in text space; PDF strokes in graphics-state space. Only
@@ -1480,7 +1484,7 @@ function getCanvasFontProperties(
       // FontFace failed to load and we fall back to a system family.
       let fallback = 'serif';
       if (lower.includes('courier') || lower.includes('mono') || lower.includes('cumberland')) {
-        fallback = '"Courier New", Courier, monospace';
+        fallback = COURIER_CANVAS_FAMILY;
       } else if (lower.includes('helv') || lower.includes('arial') || lower.includes('sans') || lower.includes('albany')) {
         fallback = 'Helvetica, Arial, sans-serif';
       } else if (
@@ -1502,14 +1506,15 @@ function getCanvasFontProperties(
         style = 'normal';
       }
     } else if (fontData.standardMetrics) {
-      family = fontData.standardMetrics.cssFamily;
+      family = fontData.standardMetrics.name.startsWith('Courier')
+        ? COURIER_CANVAS_FAMILY : fontData.standardMetrics.cssFamily;
       if (isDingbatOrSymbolFamily(fontData.baseFont)) {
         family = '"Segoe UI Symbol", "Apple Symbols", "Noto Sans Symbols", sans-serif';
       }
     } else if (isDingbatOrSymbolFamily(fontData.baseFont)) {
       family = '"Segoe UI Symbol", "Apple Symbols", "Noto Sans Symbols", sans-serif';
     } else if (lower.includes('courier') || lower.includes('mono') || lower.includes('cmtt') || lower.includes('lmtt') || lower.includes('cumberland')) {
-      family = '"Courier New", Courier, monospace';
+      family = COURIER_CANVAS_FAMILY;
     } else if (
       lower.includes('times') || lower.includes('roman') ||
       lower.includes('cmr') || lower.includes('lmr') || lower.includes('ptm') || lower.includes('thorndale')
