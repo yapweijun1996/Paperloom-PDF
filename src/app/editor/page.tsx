@@ -39,6 +39,7 @@ import { findVisualSignatureRefs, placeVisualSignature, removeVisualSignature } 
 import { PDFDict, PDFString } from '@/engine/types';
 import { annotationSubtype } from '@/engine/content/annotation-subtype';
 import { renderFieldSignaturePreviews } from './field-signature-previews';
+import { signatureBoxOnPage, signatureFieldBoxOnPage, signaturePagePoint, signaturePageRotation } from './signature-page-geometry';
 import { findMatchingFlowLine } from './flowLineMatch';
 import { EditorDocumentOwner } from './document-owner';
 import { parseRecoveryOverlay } from './recovery-overlay';
@@ -3145,12 +3146,7 @@ export default function EditorPage() {
     const cssX = e.clientX - rect.left;
     const cssY = e.clientY - rect.top;
     const page = doc.pages[currentPage];
-    const { mediaBox } = page;
-    const { pdfX, pdfY } = canvasToPdf(
-      cssX, cssY, scale,
-      renderResult.pageWidth, renderResult.pageHeight,
-      mediaBox.x, mediaBox.y, page.rotate, page.cropBox.x, page.cropBox.y,
-    );
+    const { pdfX, pdfY } = signaturePagePoint(page, { x: cssX, y: cssY }, scale);
 
     if (activeTool === 'text' || activeTool === 'select') {
       if (blurTimeoutRef.current) {
@@ -3435,12 +3431,7 @@ export default function EditorPage() {
 
     const page = doc.pages[currentPage];
     if (!page) return;
-    const { mediaBox } = page;
-    const { pdfX, pdfY } = canvasToPdf(
-      cssX, cssY, scale,
-      renderResult.pageWidth, renderResult.pageHeight,
-      mediaBox.x, mediaBox.y, page.rotate, page.cropBox.x, page.cropBox.y,
-    );
+    const { pdfX, pdfY } = signaturePagePoint(page, { x: cssX, y: cssY }, scale);
 
     await placeLibrarySignatureAt(signatureId, pdfX, pdfY);
   }, [doc, renderResult, currentPage, scale, placeLibrarySignatureAt]);
@@ -6688,7 +6679,6 @@ export default function EditorPage() {
             {/* Visual signatures — render above page contents */}
             {renderResult && doc && signatures.filter((s) => s.pageIndex === currentPage).map((sig) => {
               const page = doc.pages[currentPage];
-              const { mediaBox } = page;
               return (
                 <SignatureOverlay
                   key={sig.id}
@@ -6696,24 +6686,11 @@ export default function EditorPage() {
                   imageDataUrl={trackedFieldSignatureIds.has(sig.id) ? (fieldSignaturePreviews[sig.id] ?? null) : resolveSignatureImage(sig)}
                   fieldPreview={trackedFieldSignatureIds.has(sig.id)}
                   scale={scale}
+                  pageRotation={signaturePageRotation(page)}
+                  clipViewport={{ width: renderResult.pageWidth * scale, height: renderResult.pageHeight * scale }}
                   selected={selectedSignatureId === sig.id}
                   interactive={!editingLine}
-                  toCss={(b) => {
-                    const tl = pdfToCanvas(
-                      b.x, b.y + b.height,
-                      scale, renderResult.pageHeight, mediaBox.x, mediaBox.y,
-                    );
-                    const br = pdfToCanvas(
-                      b.x + b.width, b.y,
-                      scale, renderResult.pageHeight, mediaBox.x, mediaBox.y,
-                    );
-                    return {
-                      left: Math.min(tl.cssX, br.cssX),
-                      top: Math.min(tl.cssY, br.cssY),
-                      width: Math.abs(br.cssX - tl.cssX),
-                      height: Math.abs(br.cssY - tl.cssY),
-                    };
-                  }}
+                  toCss={(b) => signatureBoxOnPage(page, b, scale)}
                   onSelect={handleSignatureSelect}
                   onCommitMove={handleSignatureMove}
                   onCommitResize={handleSignatureResize}
@@ -6728,15 +6705,11 @@ export default function EditorPage() {
             {(activeTool === 'sign' || selectedPdfSigFieldId) && renderResult && doc &&
               pdfSignatureFields.map((field) => {
                 const page = doc.pages[currentPage];
-                const { mediaBox } = page;
-                const tl = pdfToCanvas(
-                  field.rect.x, field.rect.y + field.rect.height,
-                  scale, renderResult.pageHeight, mediaBox.x, mediaBox.y,
-                );
-                const br = pdfToCanvas(
-                  field.rect.x + field.rect.width, field.rect.y,
-                  scale, renderResult.pageHeight, mediaBox.x, mediaBox.y,
-                );
+                const box = signatureFieldBoxOnPage(page, field.rect, scale);
+                const clipTop = Math.max(0, -box.top);
+                const clipLeft = Math.max(0, -box.left);
+                const clipRight = Math.max(0, box.left + box.width - renderResult.pageWidth * scale);
+                const clipBottom = Math.max(0, box.top + box.height - renderResult.pageHeight * scale);
                 const selected = selectedPdfSigFieldId === field.id;
                 return (
                   <div
@@ -6745,10 +6718,12 @@ export default function EditorPage() {
                       selected ? 'border-emerald-400 bg-emerald-400/10' : 'border-sky-400/80 bg-sky-400/5'
                     }`}
                     style={{
-                      left: Math.min(tl.cssX, br.cssX),
-                      top: Math.min(tl.cssY, br.cssY),
-                      width: Math.abs(br.cssX - tl.cssX),
-                      height: Math.abs(br.cssY - tl.cssY),
+                      left: box.left,
+                      top: box.top,
+                      width: box.width,
+                      height: box.height,
+                      clipPath: clipTop || clipRight || clipBottom || clipLeft
+                        ? `inset(${clipTop}px ${clipRight}px ${clipBottom}px ${clipLeft}px)` : undefined,
                     }}
                   >
                     <span className="absolute -top-5 left-0 text-[9px] px-1 rounded bg-sky-700 text-white whitespace-nowrap">

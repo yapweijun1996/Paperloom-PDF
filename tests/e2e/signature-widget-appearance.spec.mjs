@@ -10,7 +10,7 @@ let directory;
 test.beforeEach(() => { directory = mkdtempSync(join(tmpdir(), 'paperloom-signature-widget-')); });
 test.afterEach(() => { rmSync(directory, { recursive: true, force: true }); });
 
-async function fixture(mode, { rotated = false, transparent = false, withImage = false, largeField = false, omitModDate = false } = {}) {
+async function fixture(mode, { rotated = false, rotation = null, transparent = false, withImage = false, largeField = false, fieldRect = null, omitModDate = false } = {}) {
   const pdf = await PDFDocument.create();
   if (omitModDate) {
     // The writer updates existing /ModDate on every save, including unchanged PDFs.
@@ -20,9 +20,9 @@ async function fixture(mode, { rotated = false, transparent = false, withImage =
     info.delete(PDFName.of('ModDate'));
   }
   const page = pdf.addPage([400, 400]);
-  if (rotated) {
+  if (rotated || rotation !== null) {
     page.setCropBox(50, 75, 300, 250);
-    page.setRotation(degrees(90));
+    page.setRotation(degrees(rotation ?? 90));
   }
   if (withImage) {
     const image = createCanvas(4, 4);
@@ -31,7 +31,7 @@ async function fixture(mode, { rotated = false, transparent = false, withImage =
   }
   if (mode !== 'stamp') {
     const widget = pdf.context.obj({ Type: 'Annot', Subtype: 'Widget', FT: 'Sig',
-      T: PDFString.of('Signature1'), Rect: largeField ? [-300, -300, 700, 700] : [100, 150, 300, 230], F: 4, P: page.ref });
+      T: PDFString.of('Signature1'), Rect: fieldRect ?? (largeField ? [-300, -300, 700, 700] : [100, 150, 300, 230]), F: 4, P: page.ref });
     if (mode === 'native') {
       const content = `${transparent ? '/GS1 gs ' : ''}0 0 0 rg 10 10 180 60 re f`;
       const resources = transparent ? { ExtGState: { GS1: { Type: 'ExtGState', ca: 0.5 } } } : {};
@@ -115,7 +115,7 @@ async function poppler(bytes, name) {
   return pixels(readFileSync(join(directory, `${name}.png`)));
 }
 
-async function placeVisualSignature(page) {
+async function placeVisualSignature(page, xFraction = 0.5, yFraction = 0.525) {
   await page.getByRole('button', { name: 'Sign', exact: true }).tap();
   await page.getByRole('button', { name: 'Create signature' }).tap();
   const dialog = page.getByRole('dialog', { name: 'Create signature' });
@@ -128,12 +128,127 @@ async function placeVisualSignature(page) {
   await surface.scrollIntoViewIfNeeded();
   const box = await surface.boundingBox();
   if (!box) throw new Error('Missing PDF page');
-  await page.touchscreen.tap(box.x + box.width * 0.5, box.y + box.height * 0.525);
+  await page.touchscreen.tap(box.x + box.width * xFraction, box.y + box.height * yFraction);
   await expect(surface.getByAltText('Signature')).toHaveCount(1);
   await expect.poll(() => signatureRegionDark(surface.locator('canvas.pdf-canvas'))).toBe(0);
 }
 
 const expectAppearance = (result, label) => expect(result.dark, `${label} signature appearance`).toBeGreaterThan(20);
+for (const [rotation, left, top, width, height] of [[0,50,95,200,80],[90,75,50,80,200],[180,50,75,200,80],[270,95,50,80,200]]) {
+  test(`field overlay matches cropped page at ${rotation} degrees`, async ({ browser }) => {
+    const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, hasTouch: true });
+    try {
+      const page = await context.newPage();
+      await openPdf(page, await fixture('field', { rotation }));
+      await placeVisualSignature(page);
+      const surface = page.locator('[data-page-render-surface]'), surfaceBox = await surface.boundingBox();
+      const image = surface.getByAltText('Signature');
+      await expect.poll(async () => {
+        const box = await image.boundingBox();
+        return box && [box.x - surfaceBox.x, box.y - surfaceBox.y, box.width, box.height].map(Math.round);
+      }).toEqual([left, top, width, height]);
+      const live = await surface.screenshot();
+      await page.getByTitle('Export to PNG, JPEG, SVG, or text').click();
+      const panel = page.getByRole('dialog', { name: 'Export Document' });
+      await panel.getByRole('button', { name: /^PNG Image/ }).click();
+      const [download] = await Promise.all([page.waitForEvent('download'), panel.getByRole('button', { name: 'Export as PNG Image' }).click()]);
+      const exported = readFileSync(await download.path());
+      const raster = async bytes => {
+        const bitmap = await loadImage(bytes), canvas = createCanvas(Math.round(surfaceBox.width), Math.round(surfaceBox.height));
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+        return ctx.getImageData(left + 3, top + 3, width - 6, height - 6).data;
+      };
+      const actual = await raster(live), reference = await raster(exported);
+      let delta = 0;
+      for (let i = 0; i < actual.length; i += 4) delta += Math.abs(actual[i] - reference[i]) + Math.abs(actual[i + 1] - reference[i + 1]) + Math.abs(actual[i + 2] - reference[i + 2]);
+      expect(delta / (actual.length / 4 * 3)).toBeLessThan(8);
+    } finally { await context.close(); }
+  });
+}
+test('clipped signature does not intercept clicks outside the page', async ({ browser }) => {
+  const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, hasTouch: true });
+  try {
+    const page = await context.newPage();
+    await openPdf(page, await fixture('field', { rotation: 0, fieldRect: [25, 150, 125, 230] }));
+    await placeVisualSignature(page, 35 / 300, 135 / 250);
+    const surface = page.locator('[data-page-render-surface]'), surfaceBox = await surface.boundingBox();
+    await expect(surface.locator('[data-handle]')).toHaveCount(0);
+    const point = { x: surfaceBox.x - 10, y: surfaceBox.y + 135 };
+    expect(await page.evaluate(({ x, y }) => !!document.elementFromPoint(x, y)?.closest('[data-page-render-surface]'), point)).toBe(false);
+    await page.mouse.click(point.x, point.y);
+    await expect(surface.locator('[data-handle]')).toHaveCount(0);
+    await page.mouse.click(surfaceBox.x + 35, surfaceBox.y + 135);
+    await expect(surface.locator('[data-handle]')).toHaveCount(8);
+  } finally { await context.close(); }
+});
+for (const rotation of [0, 90, 180, 270]) test(`rotated signature resize keeps its opposite corner on page ${rotation}`, async ({ browser }) => {
+  const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, hasTouch: true });
+  try {
+    const page = await context.newPage();
+    await openPdf(page, await fixture('field', { rotation }));
+    await placeVisualSignature(page);
+    const surface = page.locator('[data-page-render-surface]'), image = surface.getByAltText('Signature');
+    await image.locator('..').click();
+    const box = await image.boundingBox(), turn = await page.getByTitle('Drag to rotate').boundingBox();
+    const center = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+    await page.mouse.move(turn.x + turn.width / 2, turn.y + turn.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(center.x + (rotation === 0 ? 150 : rotation === 180 ? -150 : 0),
+      center.y + (rotation === 90 ? 150 : rotation === 270 ? -150 : 0), { steps: 5 });
+    await page.mouse.up();
+    await expect(image).toHaveCount(1);
+    await expect.poll(() => image.locator('..').evaluate(el => el.style.transform)).toContain(`rotate(${rotation - 270}deg)`);
+    const beforePdf = await PDFDocument.load(await downloadPdf(page, `rotated-before-resize-${rotation}`));
+    const beforeStamp = beforePdf.getPages()[0].node.Annots().asArray().map(ref => beforePdf.context.lookup(ref))
+      .find(a => a.get(PDFName.of('Subtype')) === PDFName.of('Stamp'));
+    const beforeRect = beforeStamp.lookup(PDFName.of('Rect')).asArray().map(value => value.asNumber());
+    const opposite = surface.locator('[data-handle="nw"]'), resize = surface.locator('[data-handle="se"]');
+    const before = await opposite.boundingBox(), drag = await resize.boundingBox();
+    await page.mouse.move(drag.x + drag.width / 2, drag.y + drag.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(drag.x + drag.width / 2 + 30, drag.y + drag.height / 2 + 20, { steps: 5 });
+    await page.mouse.up();
+    await expect.poll(async () => {
+      const after = await opposite.boundingBox();
+      return Math.hypot(after.x - before.x, after.y - before.y);
+    }).toBeLessThan(1);
+    const saved = await PDFDocument.load(await downloadPdf(page, `rotated-resize-${rotation}`));
+    const annots = saved.getPages()[0].node.Annots().asArray().map(ref => saved.context.lookup(ref));
+    const stamp = annots.find(a => a.get(PDFName.of('Subtype')) === PDFName.of('Stamp'));
+    expect(stamp.get(PDFName.of('AP'))).toBeTruthy();
+    expect(stamp.lookup(PDFName.of('Rect')).asArray().map(value => value.asNumber())).not.toEqual(beforeRect);
+    await page.getByTitle('Undo (Ctrl+Z)').click();
+    const undone = await PDFDocument.load(await downloadPdf(page, `rotated-resize-undo-${rotation}`));
+    const restored = undone.getPages()[0].node.Annots().asArray().map(ref => undone.context.lookup(ref))
+      .find(a => a.get(PDFName.of('Subtype')) === PDFName.of('Stamp'));
+    expect(restored.lookup(PDFName.of('Rect')).asArray().map(value => value.asNumber())).toEqual(beforeRect);
+  } finally { await context.close(); }
+});
+test('cancelled simulated touch restores the field before a later drag', async ({ browser }) => {
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+  try {
+    const page = await context.newPage();
+    await openPdf(page, await fixture('field', { rotation: 0 }));
+    await placeVisualSignature(page);
+    const image = page.locator('[data-page-render-surface]').getByAltText('Signature');
+    const initial = await image.boundingBox(), cdp = await context.newCDPSession(page);
+    const start = { x: initial.x + initial.width / 2, y: initial.y + initial.height / 2 };
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [start] });
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{x: start.x + 30, y: start.y + 10}] });
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchCancel', touchPoints: [] });
+    await expect.poll(async () => (await image.boundingBox()).x).toBeCloseTo(initial.x, 0);
+    const saved = await PDFDocument.load(await downloadPdf(page, 'touch-cancelled'));
+    const annots = saved.getPages()[0].node.Annots().asArray().map(ref => saved.context.lookup(ref));
+    expect(annots.filter(a => a.get(PDFName.of('Subtype')) === PDFName.of('Stamp'))).toHaveLength(0);
+    expect(annots.find(a => a.get(PDFName.of('Subtype')) === PDFName.of('Widget')).get(PDFName.of('AP'))).toBeTruthy();
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [start] });
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{x: start.x + 30, y: start.y + 10}] });
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    await cdp.detach();
+    await expect.poll(async () => (await image.boundingBox()).x).toBeGreaterThan(initial.x + 20);
+  } finally { await context.close(); }
+});
 for (const mode of ['field', 'stamp']) {
   test(`${mode} signature appears before saving, after saving and after reopening`, async ({ browser }) => {
     const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });

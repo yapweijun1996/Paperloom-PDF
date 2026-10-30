@@ -768,7 +768,7 @@ suggested order.
   ([BUG-243](BUG.md#bug-243-signature-widget-appearances-are-missing-from-image-exports));
   typed live field-signature previews match the tested PDF appearance
   ([BUG-244](BUG.md#bug-244-live-field-signature-preview-differs-from-the-pdf-appearance)).
-  Rotated/cropped field overlays remain misplaced
+  Tested rotated/cropped field overlays and signature gestures use page geometry
   ([BUG-248](BUG.md#bug-248-signature-overlay-is-misplaced-on-a-rotated-cropped-page));
   moving a field signature can lose appearance details
   ([BUG-249](BUG.md#bug-249-moving-a-field-signature-loses-appearance-details)).

@@ -72,3 +72,16 @@ export function resizeBox(
     height,
   };
 }
+
+/** Resize in the signature's local axes and preserve the opposite rotated anchor. */
+export function resizeRotatedBox(origin: ResizeBox, handle: ResizeHandle, options: ResizeOptions, rotation: number): ResizeBox {
+  if (rotation % 360 === 0) return resizeBox(origin, handle, options);
+  const angle = rotation * Math.PI / 180;
+  const c = Math.cos(angle), s = Math.sin(angle);
+  const local = resizeBox(origin, handle, { ...options,
+    dx: c * options.dx + s * options.dy, dy: -s * options.dx + c * options.dy });
+  const originX = origin.x + origin.width / 2, originY = origin.y + origin.height / 2;
+  const dx = local.x + local.width / 2 - originX, dy = local.y + local.height / 2 - originY;
+  return { x: originX + c * dx - s * dy - local.width / 2,
+    y: originY + s * dx + c * dy - local.height / 2, width: local.width, height: local.height };
+}

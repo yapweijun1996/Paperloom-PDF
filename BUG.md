@@ -2644,7 +2644,7 @@ bounded register, not an exhaustive list of defects.
 
 ### BUG-248: Signature overlay is misplaced on a rotated, cropped page
 
-- **Status:** Open.
+- **Status:** Fixed for the tested page geometries and interactions.
 - **Trigger:** Place a library signature in a field on a page with CropBox
   [50, 75, 350, 325] and Rotate 90.
 - **Observed:** In desktop Chrome with a generated 400×400 PDF, the widget
@@ -2653,11 +2653,15 @@ bounded register, not an exhaustive list of defects.
 - **Evidence:** `/private/tmp/paperloom-bug244-rotated-before.log` records the
   browser bounds. An isolated renderer comparison also found misalignment for
   rotations 0, 90, 180 and 270 with an offset CropBox; component-level pointer
-  tests show drag direction is not transformed for rotated pages. Browser
-  gestures at those other rotations, partially clipped fields and real devices
-  have not been verified.
-- **Next step:** Correct page geometry for signature overlays and pointer
-  gestures together, including movement, resize, rotation and clipping.
+  tests showed drag direction was not transformed for rotated pages.
+- **Fix:** Signature overlays and field outlines use the renderer's intersected
+  page box and rotation. Gestures account for page and signature rotation,
+  preserve the opposite resize anchor, clip page-exterior hits and cancel safely.
+- **Verification:** Chrome tests cover cropped pages at all four right-angle
+  rotations, saved geometry, undo and simulated touch cancellation. Component
+  tests cover eight resize handles at four signature angles. Physical devices,
+  arbitrary malformed geometry and non-orthogonal browser save remain untested;
+  the separate field appearance loss is tracked by BUG-249.
 
 ### BUG-249: Moving a field signature loses appearance details
 

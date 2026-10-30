@@ -143,16 +143,21 @@ describe('embedded image Shift interactions', () => {
 });
 
 describe('signature resize interactions', () => {
-  it('preserves rotation and the existing screen-axis resize convention', async () => {
+  it('preserves rotation and the opposite rotated corner during proportional resize', async () => {
     const props = signatureProps(false, 37);
     const overlay = await mount(createElement(SignatureOverlay, props));
     await pointer(overlay.querySelector('[data-handle="se"]')!, 'pointerdown', 400, 400);
     await pointer(window, 'pointermove', 600, 420);
-    expect(overlay.style.width).toBe('600px');
-    expect(overlay.style.height).toBe('300px');
+    expect(parseFloat(overlay.style.width) / parseFloat(overlay.style.height)).toBeCloseTo(2, 8);
+    expect(parseFloat(overlay.style.width)).toBeGreaterThan(400);
     expect(overlay.style.transform).toBe('translate(-50%, -50%) rotate(-37deg)');
     await pointer(window, 'pointerup', 600, 420);
-    expect(props.onCommitResize).toHaveBeenCalledWith('sig-1', { x: 30, y: 0, width: 300, height: 150 });
+    const changed = props.onCommitResize.mock.calls[0][1];
+    const angle = 37 * Math.PI / 180, c = Math.cos(angle), s = Math.sin(angle);
+    const anchor = (box: typeof bounds) => ({ x: box.x + box.width / 2 - c * box.width / 2 - s * box.height / 2,
+      y: box.y + box.height / 2 - s * box.width / 2 + c * box.height / 2 });
+    expect(anchor(changed).x).toBeCloseTo(anchor(bounds).x, 8);
+    expect(anchor(changed).y).toBeCloseTo(anchor(bounds).y, 8);
     expect(props.onCommitRotate).not.toHaveBeenCalled();
     expect(props.onCommitMove).not.toHaveBeenCalled();
   });
@@ -179,11 +184,15 @@ describe('signature resize interactions', () => {
     const overlay = await mount(createElement(SignatureOverlay, props));
     await pointer(overlay.querySelector('[data-handle="se"]')!, 'pointerdown', 400, 400, true);
     await pointer(window, 'pointermove', 600, 420, true);
-    expect(overlay.style.width).toBe('600px');
-    expect(overlay.style.height).toBe('220px');
+    expect(parseFloat(overlay.style.width)).toBeCloseTo(380, 6);
+    expect(parseFloat(overlay.style.height)).toBeCloseTo(400, 6);
     expect(overlay.style.transform).toBe('translate(-50%, -50%) rotate(-90deg)');
     await pointer(window, 'pointerup', 600, 420, true);
-    expect(props.onCommitResize).toHaveBeenCalledWith('sig-1', { x: 30, y: 40, width: 300, height: 110 });
+    const changed = props.onCommitResize.mock.calls[0][1];
+    expect(changed.x).toBeCloseTo(85, 8);
+    expect(changed.y).toBeCloseTo(-5, 8);
+    expect(changed.width).toBeCloseTo(190, 8);
+    expect(changed.height).toBeCloseTo(200, 8);
     expect(props.onCommitRotate).not.toHaveBeenCalled();
   });
 
@@ -320,6 +329,47 @@ describe.each(overlayKinds)('$kind eight-handle resizing', ({ kind, setup }) => 
       expect(handle.style.transform).toBe('translateY(-50%)');
       expect(handle.style[direction === 'e' ? 'right' : 'left']).toBe('-5px');
     }
+  });
+});
+
+describe('signature page rotation and cancellation', () => {
+  it.each([[0,10,0],[90,0,10],[180,-10,0],[270,0,-10]])('maps screen-right movement at %i', async (pageRotation, dx, dy) => {
+    const props = { ...signatureProps(), pageRotation };
+    const overlay = await mount(createElement(SignatureOverlay, props));
+    await pointer(overlay, 'pointerdown', 200, 200);
+    await pointer(window, 'pointermove', 220, 200);
+    await pointer(window, 'pointerup', 220, 200);
+    expect(props.onCommitMove).toHaveBeenCalledWith('sig-1', dx, dy);
+  });
+  it.each([[0,20,10],[90,-10,20],[180,-20,-10],[270,10,-20]])('maps southeast resize at %i', async (pageRotation, sx, sy) => {
+    const props = { ...signatureProps(), pageRotation };
+    const overlay = await mount(createElement(SignatureOverlay, props));
+    await pointer(overlay.querySelector('[data-handle="se"]')!, 'pointerdown', 200, 200, true);
+    await pointer(window, 'pointermove', 200 + sx, 200 + sy, true);
+    await pointer(window, 'pointerup', 200 + sx, 200 + sy, true);
+    expect(props.onCommitResize).toHaveBeenCalledWith('sig-1', {x: 30, y: 45, width: 210, height: 105});
+  });
+  it.each([[0,20,10],[90,-10,20],[180,-20,-10],[270,10,-20]])('keeps a rotated signature anchor at page rotation %i', async (pageRotation, sx, sy) => {
+    const props = { ...signatureProps(false, 37), pageRotation };
+    const overlay = await mount(createElement(SignatureOverlay, props));
+    await pointer(overlay.querySelector('[data-handle="se"]')!, 'pointerdown', 200, 200, true);
+    await pointer(window, 'pointermove', 200 + sx, 200 + sy, true);
+    await pointer(window, 'pointerup', 200 + sx, 200 + sy, true);
+    const changed = props.onCommitResize.mock.calls[0][1];
+    const angle = 37 * Math.PI / 180, c = Math.cos(angle), s = Math.sin(angle);
+    const anchor = (box: typeof bounds) => ({ x: box.x + box.width / 2 - c * box.width / 2 - s * box.height / 2,
+      y: box.y + box.height / 2 - s * box.width / 2 + c * box.height / 2 });
+    expect(anchor(changed).x).toBeCloseTo(anchor(bounds).x, 8);
+    expect(anchor(changed).y).toBeCloseTo(anchor(bounds).y, 8);
+  });
+  it('restores the committed box on pointer cancel', async () => {
+    const props = signatureProps();
+    const overlay = await mount(createElement(SignatureOverlay, props));
+    await pointer(overlay, 'pointerdown', 200, 200);
+    await pointer(window, 'pointermove', 220, 200);
+    await pointer(window, 'pointercancel', 220, 200);
+    await pointer(window, 'pointerup', 220, 200);
+    expect(props.onCommitMove).not.toHaveBeenCalled();
   });
 });
 

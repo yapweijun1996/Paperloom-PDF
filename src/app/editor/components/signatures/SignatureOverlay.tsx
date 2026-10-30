@@ -3,13 +3,15 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { PenLine, Lock, Trash2, RotateCw, X } from 'lucide-react';
 import type { VisualSignature } from '@/engine/browser-core';
-import { resizeBox, type ResizeHandle } from '../resizeGeometry';
+import { resizeRotatedBox, type ResizeHandle } from '../resizeGeometry';
 import { Z_LAYERS } from '../../zLayers';
 
 export interface SignatureOverlayProps {
   signature: VisualSignature;
   /** Resolved appearance image (PNG/SVG data URL). */
   imageDataUrl: string | null;
+  pageRotation?: number;
+  clipViewport?: { width: number; height: number };
   /** The image is an optional native field appearance, not a library fallback. */
   fieldPreview?: boolean;
   scale: number;
@@ -39,6 +41,8 @@ export function SignatureOverlay(props: SignatureOverlayProps) {
   const {
     signature: sig,
     imageDataUrl,
+    pageRotation = 0,
+    clipViewport,
     fieldPreview = false,
     scale,
     selected,
@@ -59,10 +63,13 @@ export function SignatureOverlay(props: SignatureOverlayProps) {
     height: sig.height,
     rotation: sig.rotation,
   });
+  const overlayRef = useRef<HTMLDivElement>(null);
   const liveRef = useRef(live);
-  liveRef.current = live;
+  useLayoutEffect(() => { liveRef.current = live; }, [live]);
 
   useEffect(() => {
+    // External undo/redo replaces the committed signature while a local preview may exist.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setLive({
       x: sig.x,
       y: sig.y,
@@ -73,6 +80,9 @@ export function SignatureOverlay(props: SignatureOverlayProps) {
   }, [sig.x, sig.y, sig.width, sig.height, sig.rotation, sig.id]);
 
   const dragMode = useRef<DragMode>(null);
+  const pointerId = useRef<number | null>(null);
+  const cleanupGesture = useRef<() => void>(() => {});
+  useEffect(() => () => cleanupGesture.current(), []);
   const interactiveRef = useRef(interactive);
   const gestureAllowedRef = useRef(interactive);
   useLayoutEffect(() => {
@@ -92,11 +102,13 @@ export function SignatureOverlay(props: SignatureOverlayProps) {
   const onPointerMove = useCallback(
     (e: PointerEvent) => {
       const mode = dragMode.current;
-      if (!mode || sig.locked || !interactiveRef.current || !gestureAllowedRef.current) return;
+      if (!mode || e.pointerId !== pointerId.current || sig.locked || !interactiveRef.current || !gestureAllowedRef.current) return;
       const dxCss = e.clientX - origin.current.clientX;
       const dyCss = e.clientY - origin.current.clientY;
-      const dx = dxCss / scale;
-      const dy = -dyCss / scale;
+      const sx = dxCss / scale;
+      const sy = dyCss / scale;
+      const dx = pageRotation === 90 ? sy : pageRotation === 180 ? -sx : pageRotation === 270 ? -sy : sx;
+      const dy = pageRotation === 90 ? sx : pageRotation === 180 ? sy : pageRotation === 270 ? -sx : -sy;
 
       if (mode === 'move') {
         setLive({
@@ -107,44 +119,32 @@ export function SignatureOverlay(props: SignatureOverlayProps) {
       } else if (mode.startsWith('resize-')) {
         const handle = mode.slice('resize-'.length) as ResizeHandle;
         const edge = handle.length === 1;
-        const resized = resizeBox(origin.current, handle, {
+        const resized = resizeRotatedBox(origin.current, handle, {
           dx, dy, minWidth: edge ? 8 : 24, minHeight: edge ? 8 : 16, free: e.shiftKey,
-        });
+        }, origin.current.rotation);
         setLive({
           ...liveRef.current,
           ...resized,
         });
       } else if (mode === 'rotate') {
-        const box = toCss({
-          x: origin.current.x,
-          y: origin.current.y,
-          width: origin.current.width,
-          height: origin.current.height,
-        });
-        const cx = box.left + box.width / 2;
-        const cy = box.top + box.height / 2;
-        // Approximate: use viewport coords from page wrapper — angle from center
         const angle =
-          (Math.atan2(e.clientY - (origin.current as { cy?: number }).cy! , e.clientX - (origin.current as { cx?: number }).cx!) *
-            180) /
-            Math.PI +
-          90;
-        void cx;
-        void cy;
+          pageRotation - ((Math.atan2(e.clientY - (origin.current as { cy?: number }).cy!, e.clientX - (origin.current as { cx?: number }).cx!) *
+            180) / Math.PI + 90);
         setLive({
           ...liveRef.current,
           rotation: ((angle % 360) + 360) % 360,
         });
       }
     },
-    [scale, sig.locked, toCss],
+    [scale, sig.locked, pageRotation],
   );
 
-  const endDrag = useCallback(function handlePointerUp() {
+  const endDrag = useCallback(function handlePointerUp(e: PointerEvent) {
+    if (e.pointerId !== pointerId.current) return;
     const mode = dragMode.current;
     dragMode.current = null;
-    window.removeEventListener('pointermove', onPointerMove);
-    window.removeEventListener('pointerup', handlePointerUp);
+    pointerId.current = null;
+    cleanupGesture.current();
     if (!mode || sig.locked) return;
 
     if (!interactiveRef.current || !gestureAllowedRef.current) {
@@ -171,21 +171,21 @@ export function SignatureOverlay(props: SignatureOverlayProps) {
         onCommitRotate(sig.id, cur.rotation);
       }
     }
-  }, [onCommitMove, onCommitResize, onCommitRotate, onPointerMove, sig.id, sig.locked, sig.x, sig.y, sig.width, sig.height, sig.rotation]);
+  }, [onCommitMove, onCommitResize, onCommitRotate, sig.id, sig.locked, sig.x, sig.y, sig.width, sig.height, sig.rotation]);
 
   const begin = useCallback(
     (mode: DragMode, e: React.PointerEvent) => {
-      if (!mode || !interactiveRef.current) return;
+      if (!mode || !interactiveRef.current || dragMode.current) return;
       gestureAllowedRef.current = true;
       e.preventDefault();
       e.stopPropagation();
       onSelect(sig.id);
       if (sig.locked && mode !== null) return;
       dragMode.current = mode;
-      const box = toCss(liveRef.current);
-      // Store screen center for rotate (page-relative → use event target parent)
-      const parent = (e.currentTarget as HTMLElement).offsetParent as HTMLElement | null;
-      const prect = parent?.getBoundingClientRect();
+      pointerId.current = e.pointerId;
+      const target = e.currentTarget;
+      target.setPointerCapture(e.pointerId);
+      const rect = overlayRef.current?.getBoundingClientRect();
       origin.current = {
         clientX: e.clientX,
         clientY: e.clientY,
@@ -195,30 +195,50 @@ export function SignatureOverlay(props: SignatureOverlayProps) {
         height: liveRef.current.height,
         rotation: liveRef.current.rotation,
         ...( {
-          cx: (prect?.left ?? 0) + box.left + box.width / 2,
-          cy: (prect?.top ?? 0) + box.top + box.height / 2,
+          cx: (rect?.left ?? 0) + (rect?.width ?? 0) / 2,
+          cy: (rect?.top ?? 0) + (rect?.height ?? 0) / 2,
         } as object),
       };
       window.addEventListener('pointermove', onPointerMove);
       window.addEventListener('pointerup', endDrag);
+      const cancel = (event: PointerEvent) => {
+        if (event.pointerId !== pointerId.current) return;
+        gestureAllowedRef.current = false;
+        endDrag(event);
+      };
+      window.addEventListener('pointercancel', cancel);
+      cleanupGesture.current = () => {
+        window.removeEventListener('pointermove', onPointerMove);
+        window.removeEventListener('pointerup', endDrag);
+        window.removeEventListener('pointercancel', cancel);
+        if (target.hasPointerCapture(e.pointerId)) target.releasePointerCapture(e.pointerId);
+      };
     },
-    [endDrag, onPointerMove, onSelect, sig.id, sig.locked, toCss],
+    [endDrag, onPointerMove, onSelect, sig.id, sig.locked],
   );
 
   const box = toCss(live);
+  const angle = (pageRotation - live.rotation) * Math.PI / 180;
+  const centerX = box.left + box.width / 2, centerY = box.top + box.height / 2;
+  const clip = clipViewport ? [[0, 0], [clipViewport.width, 0], [clipViewport.width, clipViewport.height], [0, clipViewport.height]]
+    .map(([x, y]) => {
+      const dx = x - centerX, dy = y - centerY;
+      return `${Math.cos(angle) * dx + Math.sin(angle) * dy + box.width / 2}px ${-Math.sin(angle) * dx + Math.cos(angle) * dy + box.height / 2}px`;
+    }).join(', ') : null;
 
   return (
     <div
-      className="absolute pointer-events-auto"
+      ref={overlayRef}
+      className="absolute pointer-events-none"
       style={{
         zIndex: Z_LAYERS.canvasOverlay,
         left: box.left + box.width / 2,
         top: box.top + box.height / 2,
         width: box.width,
         height: box.height,
-        transform: `translate(-50%, -50%) rotate(${-live.rotation}deg)`,
+        transform: `translate(-50%, -50%) rotate(${pageRotation - live.rotation}deg)`,
         opacity: sig.opacity,
-        pointerEvents: interactive ? undefined : 'none',
+        touchAction: interactive && !sig.locked ? 'none' : undefined,
       }}
       onPointerDown={(e) => {
         if (!interactiveRef.current) return;
@@ -234,12 +254,13 @@ export function SignatureOverlay(props: SignatureOverlayProps) {
           src={imageDataUrl}
           alt="Signature"
           draggable={false}
-          className="w-full h-full object-contain pointer-events-none select-none"
+          className="w-full h-full object-contain select-none"
+          style={{ pointerEvents: interactive ? 'auto' : 'none', ...(clip ? { clipPath: `polygon(${clip})` } : {}) }}
         />
       ) : fieldPreview ? (
-        <div aria-label="Signature field preview unavailable" className="w-full h-full border border-dashed border-zinc-400 pointer-events-none" />
+        <div aria-label="Signature field preview unavailable" className="w-full h-full border border-dashed border-zinc-400" style={{ pointerEvents: interactive ? 'auto' : 'none', ...(clip ? { clipPath: `polygon(${clip})` } : {}) }} />
       ) : (
-        <div className="w-full h-full border border-dashed border-zinc-400 bg-zinc-100/40 flex items-center justify-center">
+        <div className="w-full h-full border border-dashed border-zinc-400 bg-zinc-100/40 flex items-center justify-center" style={{ pointerEvents: interactive ? 'auto' : 'none', ...(clip ? { clipPath: `polygon(${clip})` } : {}) }}>
           <PenLine size={16} className="text-zinc-400" />
         </div>
       )}
@@ -249,7 +270,7 @@ export function SignatureOverlay(props: SignatureOverlayProps) {
           <div
             className={`absolute inset-0 border-2 ${sig.locked ? 'border-amber-500' : 'border-accent'} border-dashed pointer-events-none`}
           />
-          <div className="absolute -top-8 left-0 flex items-center gap-1 whitespace-nowrap">
+          <div className="absolute -top-8 left-0 flex items-center gap-1 whitespace-nowrap pointer-events-auto">
             <span className="flex items-center gap-1 px-1.5 py-0.5 bg-bloom-500 text-white text-[10px] rounded shadow">
               <PenLine size={10} /> Signature
               {sig.locked && <Lock size={10} />}
@@ -316,7 +337,7 @@ export function SignatureOverlay(props: SignatureOverlayProps) {
                 />
               ))}
               <div
-                className="absolute w-2.5 h-2.5 bg-emerald-500 border border-white rounded-full cursor-grab"
+                className="absolute w-2.5 h-2.5 bg-emerald-500 border border-white rounded-full cursor-grab pointer-events-auto"
                 style={{ zIndex: Z_LAYERS.canvasHandle, left: '50%', top: -18, transform: 'translateX(-50%)' }}
                 onPointerDown={(e) => begin('rotate', e)}
                 title="Drag to rotate"
