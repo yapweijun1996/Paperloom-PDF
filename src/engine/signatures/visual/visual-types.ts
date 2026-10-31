@@ -31,6 +31,8 @@ export interface VisualSignature {
   appearanceId: string;
   /** Copy needed to edit the placed signature if its library entry is unavailable. */
   appearanceImageDataUrl?: string;
+  /** The complete field appearance must remain associated with this overlay. */
+  requiresCompositeAppearance?: boolean;
 }
 
 export type SignatureSourceKind = 'draw' | 'upload' | 'typed';

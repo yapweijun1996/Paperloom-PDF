@@ -292,6 +292,8 @@ export interface FormItem {
   ctm: Matrix;
   /** The text rendering mode is part of the inherited PDF graphics state. */
   renderingMode?: number;
+  /** Nonstroking alpha applies once when an isolated group is composited. */
+  fillAlpha?: number;
   blendMode: string;
   softMask: PDFDict | null;
   clipPaths: ClipPathNode[];
@@ -1030,6 +1032,7 @@ export function interpretPage(
                 sourceInstructionIndex: i,
                 ctm: { ...gs.ctm },
                 renderingMode: gs.textRenderMode,
+                fillAlpha: gs.fillAlpha,
                 blendMode: gs.blendMode,
                 softMask: gs.softMask,
                 clipPaths: [...gs.clipPaths],

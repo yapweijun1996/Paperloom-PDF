@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { PDFDocument, PDFName, PDFString, degrees } from 'pdf-lib';
+import { PDFDocument, PDFName, PDFRef, PDFString, degrees } from 'pdf-lib';
 import { createCanvas, loadImage } from '@napi-rs/canvas';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -444,7 +444,7 @@ test('field appearance follows signature editing and undo without changing the P
   await page.mouse.move(initialBox.x + initialBox.width / 2 + 35, initialBox.y + initialBox.height / 2 + 25, { steps: 5 });
   await page.mouse.up();
   await expect.poll(async () => (await image.boundingBox())?.x).toBeGreaterThan(initialBox.x + 25);
-  await expect.poll(async () => image.evaluate(el => el.currentSrc)).not.toBe(initialSource);
+  await expect.poll(async () => image.evaluate(el => el.currentSrc)).toBe(initialSource);
   const moved = await PDFDocument.load(await downloadPdf(page, 'moved'));
   const annots = moved.getPages()[0].node.Annots().asArray().map(ref => moved.context.lookup(ref));
   expect(annots.filter(a => a.get(PDFName.of('Subtype')) === PDFName.of('Stamp'))).toHaveLength(1);
@@ -590,5 +590,314 @@ test('a failed field appearance raster does not hide the page or fall back to th
     await page.getByRole('button', { name: 'Zoom out' }).click();
     await expect(page.getByText(/signature field preview unavailable/i)).toHaveCount(0);
     await expect(surface.getByAltText('Signature')).toHaveCount(1);
+  } finally { await context.close(); }
+});
+
+test('field composite appearance survives conversion to a moved stamp', async ({ browser }) => {
+  const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, hasTouch: true });
+  try {
+    const page = await context.newPage();
+    await openPdf(page, await fixture('field'));
+    await placeVisualSignature(page);
+    const surface = page.locator('[data-page-render-surface]');
+    const image = surface.getByAltText('Signature');
+    const original = await image.evaluate(el => el.currentSrc);
+    const before = await downloadPdf(page, 'composite-before');
+    const box = await image.boundingBox();
+    if (!box) throw new Error('Missing signature overlay');
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width / 2 + 35, box.y + box.height / 2 + 25, { steps: 5 });
+    await page.mouse.up();
+    await expect.poll(async () => (await image.boundingBox())?.x).toBeGreaterThan(box.x + 25);
+    const after = await downloadPdf(page, 'composite-after');
+    const current = await image.evaluate(el => el.currentSrc);
+    const render = async (bytes, name, x, y) => {
+      const path = join(directory, `${name}.pdf`);
+      writeFileSync(path, bytes);
+      execFileSync('pdftoppm', ['-f', '1', '-singlefile', '-r', '72', '-png', path, join(directory, name)]);
+      const bitmap = await loadImage(readFileSync(join(directory, `${name}.png`)));
+      const canvas = createCanvas(200, 80);
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(bitmap, x, y, 200, 80, 0, 0, 200, 80);
+      return ctx.getImageData(0, 0, 200, 80).data;
+    };
+    const beforePixels = await render(before, 'poppler-before', 100, 170);
+    const afterPixels = await render(after, 'poppler-after', 135, 195);
+    const diff = beforePixels.reduce((sum, v, i) => sum + Math.abs(v - afterPixels[i]), 0) / beforePixels.length;
+    const overlayPixels = async src => {
+      const bitmap = await loadImage(Buffer.from(src.split(',')[1], 'base64'));
+      const canvas = createCanvas(200, 80);
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(bitmap, 0, 0, 200, 80);
+      return ctx.getImageData(0, 0, 200, 80).data;
+    };
+    const uiBefore = await overlayPixels(original), uiAfter = await overlayPixels(current);
+    const uiDiff = uiBefore.reduce((sum, v, i) => sum + Math.abs(v - uiAfter[i]), 0) / uiBefore.length;
+    console.log(`COMPOSITE_DIFF poppler=${diff} ui=${uiDiff}`);
+    expect(diff).toBeLessThan(3);
+    expect(uiDiff).toBeLessThan(3);
+  } finally { await context.close(); }
+});
+
+test('moved composite signature survives recovery and another edit', async ({ browser }) => {
+  test.setTimeout(45000);
+  const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, hasTouch: true });
+  try {
+    const page = await context.newPage();
+    await openPdf(page, await fixture('field'));
+    await placeVisualSignature(page);
+    const image = page.locator('[data-page-render-surface]').getByAltText('Signature');
+    const appearance = await image.evaluate(el => el.currentSrc);
+    const before = await downloadPdf(page, 'recovery-composite-before');
+    const drag = async (dx, dy) => {
+      const b = await image.boundingBox();
+      if (!b) throw new Error('Missing signature overlay');
+      await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2);
+      await page.mouse.down();
+      await page.mouse.move(b.x + b.width / 2 + dx, b.y + b.height / 2 + dy, { steps: 5 });
+      await page.mouse.up();
+      await expect.poll(async () => (await image.boundingBox())?.x).toBeGreaterThan(b.x + dx - 2);
+    };
+    await drag(35, 25);
+    const recovered = () => page.evaluate(() => new Promise((resolve, reject) => {
+      const request = indexedDB.open('pdf-editor-db');
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => {
+        const db = request.result, tx = db.transaction('pdf-files', 'readonly');
+        const get = tx.objectStore('pdf-files').get('editor-session');
+        get.onsuccess = () => resolve(get.result?.overlays?.signaturesJson ?? null);
+        get.onerror = () => reject(get.error);
+        tx.oncomplete = () => db.close();
+      };
+    }));
+    await expect.poll(async () => JSON.parse((await recovered()) ?? '[]')[0]?.x, { timeout: 15000 }).toBeCloseTo(135, 0);
+    page.on('dialog', dialog => dialog.accept());
+    await page.reload();
+    await expect(image).toHaveCount(1);
+    await expect.poll(async () => image.evaluate(el => el.currentSrc)).toBe(appearance);
+    await drag(20, 10);
+    const after = await downloadPdf(page, 'recovery-composite-after');
+    const pdf = await PDFDocument.load(after);
+    const annotations = pdf.getPages()[0].node.Annots().asArray().map(ref => pdf.context.lookup(ref));
+    expect(annotations.filter(a => a.get(PDFName.of('Subtype')) === PDFName.of('Stamp'))).toHaveLength(1);
+    const render = async (bytes, name, x, y) => {
+      const path = join(directory, `${name}.pdf`);
+      writeFileSync(path, bytes);
+      execFileSync('pdftoppm', ['-f', '1', '-singlefile', '-r', '72', '-png', path, join(directory, name)]);
+      const bitmap = await loadImage(readFileSync(join(directory, `${name}.png`)));
+      const canvas = createCanvas(200, 80), ctx = canvas.getContext('2d');
+      ctx.drawImage(bitmap, x, y, 200, 80, 0, 0, 200, 80);
+      return ctx.getImageData(0, 0, 200, 80).data;
+    };
+    const original = await render(before, 'recovery-render-before', 100, 170);
+    const current = await render(after, 'recovery-render-after', 155, 205);
+    const diff = original.reduce((sum, v, i) => sum + Math.abs(v - current[i]), 0) / original.length;
+    expect(diff).toBeLessThan(3);
+  } finally { await context.close(); }
+});
+
+for (const corruption of ['missing annotation', 'missing canonical form', 'dangling canonical form', 'missing stamp appearance', 'empty wrapper', 'no-op wrapper', 'empty isolated group']) test(`recovery with ${corruption} cannot silently save ink alone`, async ({ browser }) => {
+  test.setTimeout(45000);
+  const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, hasTouch: true });
+  try {
+    const page = await context.newPage();
+    const clean = await fixture('field');
+    await openPdf(page, clean);
+    await placeVisualSignature(page);
+    const image = page.locator('[data-page-render-surface]').getByAltText('Signature');
+    const box = await image.boundingBox();
+    if (!box) throw new Error('Missing signature overlay');
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width / 2 + 35, box.y + box.height / 2 + 25, { steps: 5 });
+    await page.mouse.up();
+    await expect.poll(async () => page.evaluate(() => new Promise((resolve, reject) => {
+      const request = indexedDB.open('pdf-editor-db');
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => {
+        const db = request.result, tx = db.transaction('pdf-files', 'readonly');
+        const get = tx.objectStore('pdf-files').get('editor-session');
+        get.onsuccess = () => resolve(JSON.parse(get.result?.overlays?.signaturesJson ?? '[]')[0]?.x);
+        tx.oncomplete = () => db.close();
+      };
+    })), { timeout: 15000 }).toBeCloseTo(135, 0);
+    let replacement = clean;
+    if (corruption !== 'missing annotation') {
+      const bytes = await page.evaluate(() => new Promise((resolve, reject) => {
+        const request = indexedDB.open('pdf-editor-db');
+        request.onerror = () => reject(request.error);
+        request.onsuccess = () => {
+          const db = request.result, tx = db.transaction('pdf-files', 'readonly');
+          const get = tx.objectStore('pdf-files').get('editor-session');
+          get.onsuccess = () => resolve(Array.from(new Uint8Array(get.result.bytes)));
+          tx.oncomplete = () => db.close();
+        };
+      }));
+      const pdf = await PDFDocument.load(Uint8Array.from(bytes));
+      const stamp = pdf.getPages()[0].node.Annots().asArray().map(ref => pdf.context.lookup(ref))
+        .find(a => a.get(PDFName.of('Subtype')) === PDFName.of('Stamp'));
+      if (corruption === 'missing canonical form') stamp.delete(PDFName.of('PaperloomCompositeAppearance'));
+      else if (corruption === 'dangling canonical form') stamp.set(PDFName.of('PaperloomCompositeAppearance'), PDFRef.of(999999, 0));
+      else if (corruption === 'missing stamp appearance') stamp.delete(PDFName.of('AP'));
+      else {
+        const ap = stamp.lookup(PDFName.of('AP'));
+        const ref = ap.get(PDFName.of('N'));
+        const wrapper = pdf.context.lookup(ref);
+        if (corruption === 'empty isolated group') {
+          const resources = wrapper.dict.lookup(PDFName.of('Resources'));
+          const xobjects = resources.lookup(PDFName.of('XObject'));
+          const groupRef = xobjects.get(PDFName.of('PaperloomGroup'));
+          const group = pdf.context.lookup(groupRef);
+          pdf.context.assign(groupRef, pdf.context.stream('q Q\n', group.dict));
+        } else {
+          pdf.context.assign(ref, pdf.context.stream(corruption === 'empty wrapper' ? '' : 'q Q\n', wrapper.dict));
+        }
+      }
+      replacement = await pdf.save({ useObjectStreams: false });
+    }
+    await page.evaluate(bytes => new Promise((resolve, reject) => {
+      const request = indexedDB.open('pdf-editor-db');
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => {
+        const db = request.result, tx = db.transaction('pdf-files', 'readwrite');
+        const store = tx.objectStore('pdf-files'), get = store.get('editor-session');
+        get.onsuccess = () => { const record = get.result; record.bytes = Uint8Array.from(bytes).buffer; store.put(record, 'editor-session'); };
+        tx.oncomplete = () => { db.close(); resolve(); };
+        tx.onerror = () => reject(tx.error);
+      };
+    }), Array.from(replacement));
+    page.on('dialog', dialog => dialog.accept());
+    await page.reload();
+    await expect(page.getByText(/signature field preview unavailable/i)).toBeVisible();
+    await expect(page.getByLabel('Signature field preview unavailable')).toHaveCSS('pointer-events', 'none');
+    await page.getByTitle('Download original / edited PDF (no recompression)').click();
+    await expect(page.getByText(/signature field appearance is unavailable/i)).toBeVisible();
+  } finally { await context.close(); }
+});
+
+test('composite signature supports repeated resize rotation opacity and export', async ({ browser }) => {
+  test.setTimeout(45000);
+  const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, hasTouch: true });
+  try {
+    const page = await context.newPage();
+    await openPdf(page, await fixture('field'));
+    await placeVisualSignature(page);
+    const surface = page.locator('[data-page-render-surface]');
+    const image = surface.getByAltText('Signature');
+    const box = await image.boundingBox();
+    if (!box) throw new Error('Missing signature overlay');
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width / 2 + 25, box.y + box.height / 2 + 15, { steps: 5 });
+    await page.mouse.up();
+    const first = await PDFDocument.load(await downloadPdf(page, 'composite-edit-first'));
+    const firstStamp = first.getPages()[0].node.Annots().asArray().map(ref => first.context.lookup(ref))
+      .find(a => a.get(PDFName.of('Subtype')) === PDFName.of('Stamp'));
+    const originalRef = firstStamp.get(PDFName.of('PaperloomCompositeAppearance')).toString();
+    await image.click();
+    const handle = surface.locator('[data-handle="se"]');
+    const h = await handle.boundingBox();
+    if (!h) throw new Error('Missing signature resize handle');
+    await page.mouse.move(h.x + h.width / 2, h.y + h.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(h.x + h.width / 2 + 25, h.y + h.height / 2 + 10, { steps: 5 });
+    await page.mouse.up();
+    await expect.poll(async () => (await image.boundingBox())?.width).toBeGreaterThan(box.width + 15);
+    await page.getByTitle('Rotate 15°').click();
+    await expect(image.locator('..')).toHaveCSS('transform', /matrix\(0\.9659/);
+    await page.getByRole('button', { name: 'Sign', exact: true }).click();
+    const slider = page.getByText('Opacity', { exact: true }).locator('..').locator('input[type="range"]');
+    const sliderBox = await slider.boundingBox();
+    if (!sliderBox) throw new Error('Missing signature opacity control');
+    await slider.click({ position: { x: sliderBox.width * 0.55, y: sliderBox.height / 2 } });
+    await expect.poll(async () => Number(await slider.inputValue())).toBeLessThan(80);
+    const saved = await downloadPdf(page, 'composite-edit-final');
+    const parsed = await PDFDocument.load(saved);
+    const annots = parsed.getPages()[0].node.Annots().asArray().map(ref => parsed.context.lookup(ref));
+    const stamp = annots.find(a => a.get(PDFName.of('Subtype')) === PDFName.of('Stamp'));
+    expect(annots.filter(a => a.get(PDFName.of('Subtype')) === PDFName.of('Stamp'))).toHaveLength(1);
+    expect(stamp.get(PDFName.of('PaperloomCompositeAppearance')).toString()).toBe(originalRef);
+    const source = parsed.context.lookup(stamp.get(PDFName.of('PaperloomCompositeAppearance')));
+    const contents = Buffer.from(source.getContents()).toString('latin1');
+    expect(contents).toContain('Alex Example');
+    expect(contents).toContain('Date:');
+    await page.getByTitle('Export to PNG, JPEG, SVG, or text').click();
+    const panel = page.getByRole('dialog', { name: 'Export Document' });
+    await panel.getByRole('button', { name: /^PNG Image/ }).click();
+    const [png] = await Promise.all([page.waitForEvent('download'), panel.getByRole('button', { name: 'Export as PNG Image' }).click()]);
+    const browserPng = readFileSync(await png.path());
+    const pdfPath = join(directory, 'composite-edit-reference.pdf');
+    writeFileSync(pdfPath, saved);
+    execFileSync('pdftoppm', ['-f', '1', '-singlefile', '-r', '72', '-png', pdfPath, join(directory, 'composite-edit-reference')]);
+    const raster = async bytes => {
+      const bitmap = await loadImage(bytes), canvas = createCanvas(400, 400), ctx = canvas.getContext('2d');
+      ctx.drawImage(bitmap, 0, 0, 400, 400);
+      return ctx.getImageData(75, 145, 275, 155).data;
+    };
+    const browserPixels = await raster(browserPng);
+    const pdfPixels = await raster(readFileSync(join(directory, 'composite-edit-reference.png')));
+    const diff = browserPixels.reduce((sum, value, i) => sum + Math.abs(value - pdfPixels[i]), 0) / browserPixels.length;
+    console.log(`COMPOSITE_TRANSFORMS_DIFF poppler=${diff}`);
+    expect(diff).toBeLessThan(5);
+  } finally { await context.close(); }
+});
+
+for (const rotation of [0, 90, 180, 270]) test(`moved composite on cropped page ${rotation} preserves its appearance`, async ({ browser }) => {
+  const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, hasTouch: true });
+  try {
+    const page = await context.newPage();
+    await openPdf(page, await fixture('field', { rotation }));
+    await placeVisualSignature(page);
+    const surface = page.locator('[data-page-render-surface]'), image = surface.getByAltText('Signature');
+    const original = await image.evaluate(el => el.currentSrc);
+    const box = await image.boundingBox(), pageBox = await surface.boundingBox();
+    if (!box || !pageBox) throw new Error('Missing signature overlay');
+    const exportPng = async () => {
+      await page.getByTitle('Export to PNG, JPEG, SVG, or text').click();
+      const panel = page.getByRole('dialog', { name: 'Export Document' });
+      await panel.getByRole('button', { name: /^PNG Image/ }).click();
+      const [png] = await Promise.all([page.waitForEvent('download'), panel.getByRole('button', { name: 'Export as PNG Image' }).click()]);
+      const bytes = readFileSync(await png.path());
+      await panel.getByRole('button', { name: 'Close export panel' }).click();
+      return bytes;
+    };
+    const before = await downloadPdf(page, `rotated-composite-before-${rotation}`);
+    const browserBefore = await exportPng();
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width / 2 + 20, box.y + box.height / 2 + 10, { steps: 5 });
+    await page.mouse.up();
+    await expect.poll(async () => (await image.boundingBox())?.x).toBeGreaterThan(box.x + 15);
+    await expect.poll(async () => image.evaluate(el => el.currentSrc)).toBe(original);
+    const moved = await image.boundingBox();
+    if (!moved) throw new Error('Missing moved signature overlay');
+    const pdf = await downloadPdf(page, `rotated-composite-after-${rotation}`);
+    const browserAfter = await exportPng();
+    const renderPdf = (bytes, label) => {
+      const pdfPath = join(directory, `${label}.pdf`), prefix = join(directory, label);
+      writeFileSync(pdfPath, bytes);
+      execFileSync('pdftoppm', ['-f', '1', '-singlefile', '-cropbox', '-r', '72', '-png', pdfPath, prefix]);
+      return readFileSync(`${prefix}.png`);
+    };
+    const width = Math.round(pageBox.width), height = Math.round(pageBox.height);
+    const x = Math.round(moved.x - pageBox.x), y = Math.round(moved.y - pageBox.y);
+    const beforeX = Math.round(box.x - pageBox.x), beforeY = Math.round(box.y - pageBox.y);
+    const w = Math.round(moved.width), h = Math.round(moved.height);
+    const region = async (bytes, left, top) => {
+      const bitmap = await loadImage(bytes), canvas = createCanvas(width, height), ctx = canvas.getContext('2d');
+      ctx.drawImage(bitmap, 0, 0, width, height);
+      return ctx.getImageData(left, top, w, h).data;
+    };
+    const expectedBefore = await region(renderPdf(before, `rotated-reference-before-${rotation}`), beforeX, beforeY);
+    const expectedAfter = await region(renderPdf(pdf, `rotated-reference-after-${rotation}`), x, y);
+    const preserved = expectedBefore.reduce((sum, value, i) => sum + Math.abs(value - expectedAfter[i]), 0) / expectedBefore.length;
+    const actualBefore = await region(browserBefore, beforeX, beforeY);
+    const actualAfter = await region(browserAfter, x, y);
+    const difference = (a, b) => a.reduce((sum, value, i) => sum + Math.abs(value - b[i]), 0) / a.length;
+    const baseline = difference(actualBefore, expectedBefore), after = difference(actualAfter, expectedAfter);
+    console.log(`CROPPED_COMPOSITE_PRESERVATION rotation=${rotation} poppler=${preserved} crossBefore=${baseline} crossAfter=${after}`);
+    expect(preserved).toBeLessThan(3);
+    expect(after).toBeLessThan(baseline + 2);
   } finally { await context.close(); }
 });

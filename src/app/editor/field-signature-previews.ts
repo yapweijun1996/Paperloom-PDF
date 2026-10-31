@@ -1,5 +1,7 @@
 import { annotationSubtype } from '@/engine/content/annotation-subtype';
-import { PDFArray, PDFDict, type PDFDocumentData, type PDFRef } from '@/engine/types';
+import { PDFArray, PDFDict, PDFName, PDFNumber, PDFRef, PDFStream, type PDFDocumentData } from '@/engine/types';
+import { getNextObjNum } from '@/engine/writer/serializer';
+import { assertVisualSignatureAppearancePresent } from '@/engine/session/signature-edit';
 import type { VisualSignature } from '@/engine/browser-core';
 
 // Field previews are optional. Bound their individual and combined raster cost.
@@ -25,12 +27,22 @@ export async function renderFieldSignaturePreviews(
   for (const sig of signatures) {
     if (isCancelled()) return null;
     const ref = tracked.get(sig.id);
-    if (sig.pageIndex !== pageIndex || !ref) continue;
+    if (sig.pageIndex !== pageIndex) continue;
+    if (!ref) {
+      if (sig.requiresCompositeAppearance) { previews[sig.id] = null; failed = true; }
+      continue;
+    }
     const widget = doc.objects.get(ref.toKey());
-    if (!(widget instanceof PDFDict)) continue;
+    if (!(widget instanceof PDFDict)) {
+      if (sig.requiresCompositeAppearance) { previews[sig.id] = null; failed = true; }
+      continue;
+    }
     try {
-      if (annotationSubtype(widget, doc.objects) !== 'Widget') continue;
+      const subtype = annotationSubtype(widget, doc.objects);
+      const composite = widget.get('PaperloomCompositeAppearance');
+      if (subtype !== 'Widget' && composite === undefined && !sig.requiresCompositeAppearance) continue;
       previews[sig.id] = null;
+      if (sig.requiresCompositeAppearance) assertVisualSignatureAppearancePresent(doc, sig);
       const width = Math.ceil(Math.ceil(sig.width * scale) * dpr);
       const height = Math.ceil(Math.ceil(sig.height * scale) * dpr);
       const pixels = width * height;
@@ -43,13 +55,29 @@ export async function renderFieldSignaturePreviews(
       // Failed renders also consume the per-page work budget.
       previewPixels += pixels;
       const bounds = { x: sig.x, y: sig.y, width: sig.width, height: sig.height };
+      let previewRef = ref;
+      let objects = doc.objects;
+      if (subtype !== 'Widget') {
+        if (subtype !== 'Stamp' || !(composite instanceof PDFRef) || !(doc.objects.get(composite.toKey()) instanceof PDFStream)) {
+          throw new Error('The composite signature appearance is unavailable.');
+        }
+        // Preview the canonical unrotated source; CSS applies the overlay's rotation and opacity.
+        previewRef = new PDFRef(getNextObjNum(doc), 0);
+        objects = new Map(doc.objects);
+        objects.set(previewRef.toKey(), new PDFDict([
+          ['Type', new PDFName('Annot')], ['Subtype', new PDFName('Widget')],
+          ['FT', new PDFName('Sig')], ['F', new PDFNumber(4)],
+          ['Rect', new PDFArray([sig.x, sig.y, sig.x + sig.width, sig.y + sig.height].map(value => new PDFNumber(value)))],
+          ['AP', new PDFDict([['N', composite]])],
+        ]));
+      }
       const dict = new PDFDict([...original.dict.entries()]);
-      dict.set('Annots', new PDFArray([ref]));
+      dict.set('Annots', new PDFArray([previewRef]));
       const page = { ...original, dict, mediaBox: bounds, cropBox: bounds, rotate: 0,
         contentRefs: [], contentInspectionComplete: true };
       const pages = [...doc.pages];
       pages[pageIndex] = page;
-      const preview = await renderPage({ ...doc, pages }, pageIndex,
+      const preview = await renderPage({ ...doc, pages, objects }, pageIndex,
         { scale, devicePixelRatio: dpr, renderWidgets: 'supported', background: 'transparent' });
       if (isCancelled()) return null;
       previews[sig.id] = preview.canvas.toDataURL('image/png');

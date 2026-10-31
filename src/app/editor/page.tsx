@@ -35,7 +35,7 @@ import { UnsupportedGlyphsError, SessionDocumentEditor } from '@/engine/browser-
 import { SessionEditorHistory } from '@/engine/session/editor-history';
 import { addDrawingAnnotations, collectDrawingRemovals, collectMarkupRemovals, previewMarkupRemoval, removeMarkupReferences } from '@/engine/session/document-edit';
 import { signDocumentTransaction } from '@/engine/session/signature-transaction';
-import { findVisualSignatureRefs, placeVisualSignature, removeVisualSignature } from '@/engine/session/signature-edit';
+import { assertVisualSignatureAppearancePresent, findVisualSignatureRefs, placeVisualSignature, removeVisualSignature } from '@/engine/session/signature-edit';
 import { PDFDict, PDFString } from '@/engine/types';
 import { annotationSubtype } from '@/engine/content/annotation-subtype';
 import { renderFieldSignaturePreviews } from './field-signature-previews';
@@ -104,6 +104,15 @@ import { DocumentSearchIndex, SearchChangedError, SearchPageError, assertCurrent
 import { searchHighlightBounds } from './search-highlight';
 import { redactionRegionFromDrag } from './redaction-selection';
 import { hasDocumentSignature } from '@/engine/writer/save-pipeline';
+
+function assertExistingCompositeSignature(doc: PDFDocumentData, signature: VisualSignature): void {
+  const ref = findVisualSignatureRefs(doc, new Set([signature.id])).get(signature.id);
+  const native = ref && doc.objects.get(ref.toKey());
+  if (signature.requiresCompositeAppearance || (native instanceof PDFDict &&
+      (annotationSubtype(native, doc.objects) === 'Widget' || native.has('PaperloomCompositeAppearance')))) {
+    assertVisualSignatureAppearancePresent(doc, signature);
+  }
+}
 
 async function restoreHistoryGraph(
   doc: PDFDocumentData,
@@ -525,10 +534,12 @@ export default function EditorPage() {
     if (!doc) return new Set<string>();
     try {
       const refs = findVisualSignatureRefs(doc, new Set(signatures.map(sig => sig.id)));
-      return new Set([...refs].filter(([, ref]) => {
+      const compositeIds = new Set(signatures.filter(sig => sig.requiresCompositeAppearance).map(sig => sig.id));
+      for (const [id, ref] of refs) {
         const object = doc.objects.get(ref.toKey());
-        return object instanceof PDFDict && annotationSubtype(object, doc.objects) === 'Widget';
-      }).map(([id]) => id));
+        if (object instanceof PDFDict && (annotationSubtype(object, doc.objects) === 'Widget' || object.has('PaperloomCompositeAppearance'))) compositeIds.add(id);
+      }
+      return compositeIds;
     } catch {
       // The page render reports a broken matching annotation; never substitute
       // the library image while its native appearance cannot be classified.
@@ -792,18 +803,29 @@ export default function EditorPage() {
       return await runSignatureChange({
         enqueue: apply => queueNativeEdit(doc, apply),
         current: () => signaturesRef.current,
-        update,
+        update: current => {
+          const next = update(current);
+          const refs = findVisualSignatureRefs(doc, new Set(next.map(sig => sig.id)));
+          return next.map(sig => {
+            if (current.includes(sig) || sig.requiresCompositeAppearance) return sig;
+            const ref = refs.get(sig.id);
+            const native = ref && doc.objects.get(ref.toKey());
+            return native instanceof PDFDict && (annotationSubtype(native, doc.objects) === 'Widget' || native.has('PaperloomCompositeAppearance'))
+              ? { ...sig, requiresCompositeAppearance: true } : sig;
+          });
+        },
         apply: async (previous, next, isCurrent) => {
           const editor = new SessionDocumentEditor();
           await editor.edit(doc, label, async staged => {
             for (const signature of previous) {
-              if (!next.some(item => item.id === signature.id)) removeVisualSignature(staged, signature.id);
+              if (!next.includes(signature)) assertExistingCompositeSignature(staged, signature);
+              if (!next.some(item => item.id === signature.id)) removeVisualSignature(staged, signature.id, signature.requiresCompositeAppearance, signature.pageIndex);
             }
             for (const signature of next) {
               if (previous.includes(signature)) continue;
               const image = signature.appearanceImageDataUrl ?? getSignatureLibrary().get(signature.appearanceId)?.imageDataUrl;
-              if (!image) throw new Error('Signature appearance is unavailable');
-              await placeVisualSignature(staged, signature, image);
+              if (!image && !signature.requiresCompositeAppearance) throw new Error('Signature appearance is unavailable');
+              await placeVisualSignature(staged, signature, image ?? '');
             }
           }, { isCurrent });
           signaturesRef.current = next;
@@ -2586,7 +2608,7 @@ export default function EditorPage() {
     }
     try {
       // Also keep a visual overlay aligned to the field for immediate feedback
-      const overlay = createVisualSignature({
+      const overlay = { ...createVisualSignature({
         pageIndex: field.pageIndex,
         x: field.rect.x + field.rect.width / 2,
         y: field.rect.y + field.rect.height / 2,
@@ -2596,7 +2618,7 @@ export default function EditorPage() {
           entry.source === 'draw' ? 'drawn' : entry.source === 'typed' ? 'typed' : 'uploaded',
         width: field.rect.width,
         height: field.rect.height,
-      });
+      }), requiresCompositeAppearance: true };
       await queueNativeEdit(doc, async isCurrent => {
         const withoutOverlapping = signaturesRef.current.filter(
           s => !(
@@ -2613,7 +2635,10 @@ export default function EditorPage() {
             throw new Error('This signature field is unavailable, already signed, or read-only.');
           }
           for (const previous of signaturesRef.current) {
-            if (!withoutOverlapping.includes(previous)) removeVisualSignature(staged, previous.id);
+            if (!withoutOverlapping.includes(previous)) {
+              assertExistingCompositeSignature(staged, previous);
+              removeVisualSignature(staged, previous.id, previous.requiresCompositeAppearance, previous.pageIndex);
+            }
           }
           await applySignatureFieldAppearanceAsync(staged, field.ref, {
             width: field.rect.width,
@@ -3714,6 +3739,12 @@ export default function EditorPage() {
       imagesUnchanged(floatingImagesRef.current) && signaturesUnchanged(signaturesRef.current);
     const nativeSignatures = findVisualSignatureRefs(doc, new Set(signatures.map(signature => signature.id)));
     const uncommittedSignatures = signatures.filter(signature => !nativeSignatures.has(signature.id));
+    for (const signature of signatures) {
+      try { assertExistingCompositeSignature(doc, signature); }
+      catch (error) {
+        throw new Error('A signature field appearance is unavailable. Your recovery remains preserved; restore an intact backup before saving.', { cause: error });
+      }
+    }
     for (const signature of signatures) {
       if (!doc.pages[signature.pageIndex]) throw new Error('A recovered signature has no valid page. Its local recovery is preserved; restore an intact backup before saving.');
     }
@@ -6692,7 +6723,7 @@ export default function EditorPage() {
                   pageRotation={signaturePageRotation(page)}
                   clipViewport={{ width: renderResult.pageWidth * scale, height: renderResult.pageHeight * scale }}
                   selected={selectedSignatureId === sig.id}
-                  interactive={!editingLine}
+                  interactive={!editingLine && !(trackedFieldSignatureIds.has(sig.id) && fieldSignaturePreviews[sig.id] === null)}
                   toCss={(b) => signatureBoxOnPage(page, b, scale)}
                   onSelect={handleSignatureSelect}
                   onCommitMove={handleSignatureMove}

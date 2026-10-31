@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import { parsePDF } from '@/engine/parser/parser';
 import { rawPDF } from '@/engine/__tests__/audit-p1-fixtures';
-import { PDFDict, PDFName, PDFRef } from '@/engine/types';
+import { PDFArray, PDFDict, PDFName, PDFNumber, PDFRef, PDFString } from '@/engine/types';
 import { createVisualSignature } from '@/engine/signatures/visual/signature-model';
+import { applySignatureFieldAppearance } from '@/engine/signatures/fields/appearance-stream';
+import { findVisualSignatureRefs, placeVisualSignature } from '@/engine/session/signature-edit';
 import { renderFieldSignaturePreviews } from './field-signature-previews';
 
 async function fixture(count: number, size = 100) {
@@ -28,6 +30,61 @@ const image = { canvas: { toDataURL: () => 'data:image/png;base64,preview' } };
 type Renderer = Parameters<typeof renderFieldSignaturePreviews>[6];
 
 describe('field signature preview isolation', () => {
+  it('previews a composite stamp from its canonical unrotated form without mutating the document', async () => {
+    const { doc, signatures, tracked } = await fixture(1);
+    const sig = { ...signatures[0], requiresCompositeAppearance: true, rotation: 45 };
+    const ref = tracked.get(sig.id)!;
+    const widget = doc.objects.get(ref.toKey()) as PDFDict;
+    widget.set('FT', new PDFName('Sig'));
+    widget.set('F', new PDFNumber(4));
+    widget.set('PaperloomSignatureId', new PDFString(sig.id));
+    doc.pages[0].dict.set('Annots', new PDFArray([ref]));
+    applySignatureFieldAppearance(doc, ref, { width: sig.width, height: sig.height, backgroundColor: [1, 1, 1], typedName: 'Signer' });
+    await placeVisualSignature(doc, sig, '');
+    const stampRef = findVisualSignatureRefs(doc, new Set([sig.id])).get(sig.id)!;
+    tracked.set(sig.id, stampRef);
+    const stamp = doc.objects.get(stampRef.toKey()) as PDFDict;
+    const source = stamp.get('PaperloomCompositeAppearance');
+    const originalKeys = [...doc.objects.keys()];
+    const render: Renderer = async preview => {
+      expect(preview.objects).not.toBe(doc.objects);
+      const annots = preview.pages[0].dict.get('Annots') as PDFArray;
+      const synthetic = preview.objects.get((annots.get(0) as PDFRef).toKey()) as PDFDict;
+      expect(synthetic.getName('Subtype')).toBe('Widget');
+      expect((synthetic.get('AP') as PDFDict).get('N')).toBe(source);
+      return image;
+    };
+    expect(await renderFieldSignaturePreviews(doc, 0, [sig], tracked, 1, 1, render, () => false))
+      .toEqual({ failed: false, previews: { [sig.id]: 'data:image/png;base64,preview' } });
+    expect([...doc.objects.keys()]).toEqual(originalKeys);
+    expect((doc.objects.get(stampRef.toKey()) as PDFDict).getName('Subtype')).toBe('Stamp');
+  });
+
+  it('does not fall back to ink when a required composite is missing', async () => {
+    const { doc, signatures, tracked } = await fixture(1);
+    const sig = { ...signatures[0], requiresCompositeAppearance: true };
+    tracked.clear();
+    const render = vi.fn();
+    expect(await renderFieldSignaturePreviews(doc, 0, [sig], tracked, 1, 1, render, () => false))
+      .toEqual({ failed: true, previews: { [sig.id]: null } });
+    expect(render).not.toHaveBeenCalled();
+  });
+
+  it('reports a tracked widget whose required appearance is absent', async () => {
+    const { doc, signatures, tracked } = await fixture(1);
+    const sig = { ...signatures[0], requiresCompositeAppearance: true };
+    const ref = tracked.get(sig.id)!;
+    (doc.objects.get(ref.toKey()) as PDFDict).set('PaperloomSignatureId', new PDFString(sig.id));
+    doc.pages[0].dict.set('Annots', new PDFArray([ref]));
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const render = vi.fn();
+    try {
+      expect(await renderFieldSignaturePreviews(doc, 0, [sig], tracked, 1, 1, render, () => false))
+        .toEqual({ failed: true, previews: { [sig.id]: null } });
+      expect(render).not.toHaveBeenCalled();
+    } finally { log.mockRestore(); }
+  });
+
   it('keeps other previews when an individual renderer fails', async () => {
     const { doc, signatures, tracked } = await fixture(2);
     const render = vi.fn().mockRejectedValueOnce(new Error('failed')).mockResolvedValueOnce(image);

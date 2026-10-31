@@ -10,8 +10,8 @@ import { findVisualSignatureRefs, placeVisualSignature, removeVisualSignature } 
 import { applySignatureFieldAppearance } from '../signatures/fields/appearance-stream';
 import { createSignatureFieldAtPoint } from '../signatures/fields/signature-field';
 import { createVisualSignature } from '../signatures/visual/signature-model';
-import { PDFArray, PDFDict, PDFName, PDFRef, PDFStream, PDFString, type PDFDocumentData } from '../types';
-import { getNextObjNum, serializeDocument } from '../writer/serializer';
+import { PDFArray, PDFDict, PDFRef, PDFStream, PDFString, type PDFDocumentData } from '../types';
+import { serializeDocument } from '../writer/serializer';
 import { installPNGEnvironment, rawPDF, tinyJPEG, tinyPNG } from './audit-p1-fixtures';
 
 function fixture(indirect: boolean): Uint8Array {
@@ -237,12 +237,9 @@ describe('signature and AcroForm session boundaries', () => {
     }
   });
 
-  it('removes a placed field appearance without removing its field or cryptographic value', async () => {
+  it('removes an unsigned field appearance without removing its field', async () => {
     const doc = await parsePDF(fixture(true));
     const field = createSignatureFieldAtPoint(doc, 0, 120, 160);
-    const valueRef = new PDFRef(getNextObjNum(doc), 0);
-    doc.objects.set(valueRef.toKey(), new PDFDict([['Type', new PDFName('Sig')]]));
-    (doc.objects.get(field.ref.toKey()) as PDFDict).set('V', valueRef);
     const before = await serializeDocument(doc);
     const appearance = new SessionDocumentEditor();
     const apply = async (staged: PDFDocumentData) => {
@@ -260,7 +257,7 @@ describe('signature and AcroForm session boundaries', () => {
     await removal.edit(doc, 'delete-signature', async staged => { removeVisualSignature(staged, 'visual-field'); });
     const removed = await serializeDocument(doc);
     expect((doc.objects.get(field.ref.toKey()) as PDFDict).has('AP')).toBe(false);
-    expect((doc.objects.get(field.ref.toKey()) as PDFDict).getRef('V')).toEqual(valueRef);
+    expect((doc.objects.get(field.ref.toKey()) as PDFDict).get('V')).toBeUndefined();
     expect(detectFormFieldsOnPage(doc, 0).some(widget => widget.ref.toKey() === field.ref.toKey())).toBe(true);
     await removal.undo(doc);
     expect(await serializeDocument(doc)).toEqual(placed);

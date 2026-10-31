@@ -138,17 +138,30 @@ describe('indirect widget subtype', () => {
     expect(saved.getForm().getRadioGroup('Radio').getSelected()).toBe('Two');
   });
 
-  it('removes only the visual appearance from an indirect signature widget', async () => {
+  it('removes only the visual appearance from an unsigned indirect signature widget', async () => {
     const doc = await fixture();
     const field = detectFormFieldsOnPage(doc, 0).find(w => w.fieldName === 'Signature')!;
     expect(field).toBeDefined();
     field.dict.set('AP', new PDFDict());
-    const value = new PDFRef(5000, 0); doc.objects.set(value.toKey(), new PDFDict([['Type', new PDFName('Sig')]]));
-    field.dict.set('V', value);
     removeVisualSignature(doc, 'signature-id');
-    expect(field.dict.get('V')).toBe(value);
+    expect(field.dict.get('V')).toBeUndefined();
     expect(field.dict.has('AP')).toBe(false);
     expect(detectFormFieldsOnPage(doc, 0).some(w => w.ref.toKey() === field.ref.toKey())).toBe(true);
+  });
+
+  it('refuses to remove an indirect signed widget appearance without changing the document', async () => {
+    const doc = await fixture();
+    const field = detectFormFieldsOnPage(doc, 0).find(w => w.fieldName === 'Signature')!;
+    field.dict.set('AP', new PDFDict());
+    const value = new PDFRef(5000, 0);
+    doc.objects.set(value.toKey(), new PDFDict([['Type', new PDFName('Sig')]]));
+    field.dict.set('V', value);
+    const before = await serializeDocument(doc);
+    expect(() => removeVisualSignature(doc, 'signature-id')).toThrow(/signed or read.only/i);
+    expect(field.dict.get('V')).toBe(value);
+    expect(field.dict.has('AP')).toBe(true);
+    expect(field.dict.has('PaperloomSignatureId')).toBe(true);
+    expect(await serializeDocument(doc)).toEqual(before);
   });
 
   it('skips missing and dangling subtype values, and reports a cyclic subtype', async () => {

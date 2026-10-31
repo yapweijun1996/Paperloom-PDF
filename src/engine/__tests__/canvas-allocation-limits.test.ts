@@ -1,4 +1,5 @@
 import { PDFDocument } from 'pdf-lib';
+import { createCanvas } from '@napi-rs/canvas/node-canvas';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { parsePDF } from '../parser/parser';
 import { renderPageToCanvas, renderImagePreviewLayers } from '../render/renderer';
@@ -30,6 +31,25 @@ function canvasHarness() {
   vi.stubGlobal('document', { createElement, fonts: { check: () => true, add: () => {} } });
   vi.stubGlobal('window', { devicePixelRatio: 1 });
   return { dimensions, createElement };
+}
+
+let realCanvasAssignments: { axis: 'width' | 'height'; value: number }[] = [];
+function realCanvasHarness() {
+  realCanvasAssignments = [];
+  const canvases: ReturnType<typeof createCanvas>[] = [];
+  vi.stubGlobal('document', { createElement: () => {
+    const canvas = Object.assign(createCanvas(1, 1), { style: {} });
+    for (const axis of ['width', 'height'] as const) {
+      const descriptor = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(canvas), axis)!;
+      Object.defineProperty(canvas, axis, {
+        get: () => descriptor.get!.call(canvas),
+        set: (value: number) => { realCanvasAssignments.push({ axis, value }); descriptor.set!.call(canvas, value); },
+      });
+    }
+    canvases.push(canvas);
+    return canvas;
+  }, fonts: { check: () => true, add: () => {} } });
+  return canvases;
 }
 
 afterEach(() => vi.unstubAllGlobals());
@@ -77,20 +97,44 @@ describe('canvas allocation limits', () => {
     expect(harness.dimensions).toEqual([200, 300]);
   });
 
-  it('rejects oversized transparency group buffers before allocating them', async () => {
+  it('clips a large transparency group to the actual page before allocation', async () => {
     const doc = await fixture();
     const ref = new PDFRef(501, 0);
+    const content = new TextEncoder().encode('1 0 0 rg 0 0 100000 200 re f');
     const form = new PDFStream(new PDFDict([
       ['Subtype', new PDFName('Form')],
       ['BBox', new PDFArray([0, 0, 100000, 200].map(value => new PDFNumber(value)))],
       ['Group', new PDFDict([['S', new PDFName('Transparency')], ['I', new PDFBoolean(true)]])],
-    ]), new Uint8Array(), new Uint8Array());
+    ]), content, content);
     doc.objects.set(ref.toKey(), form);
     doc.pages[0].resources.set('XObject', new PDFDict([['Form', ref]]));
     await updatePageContent(doc.pages[0].contentRefs, new TextEncoder().encode('/Form Do'), doc.objects, false);
-    const harness = canvasHarness();
-    await expect(renderPageToCanvas(doc.pages[0], doc.objects, { scale: 1 })).rejects.toThrow(/canvas.*limit/i);
-    expect(harness.dimensions).toEqual([200, 300]);
+    const canvases = realCanvasHarness();
+    const result = await renderPageToCanvas(doc.pages[0], doc.objects, { scale: 1 });
+    expect(canvases.map(canvas => [canvas.width, canvas.height])).toContainEqual([200, 200]);
+    expect(canvases.every(canvas => canvas.width <= 200 && canvas.height <= 300)).toBe(true);
+    const ctx = result.canvas.getContext('2d')!;
+    expect([...ctx.getImageData(100, 200, 1, 1).data]).toEqual([255, 0, 0, 255]);
+    expect([...ctx.getImageData(100, 50, 1, 1).data]).toEqual([255, 255, 255, 255]);
+  });
+
+  it('rejects cumulative transparency group work before allocating the over-budget group', async () => {
+    const doc = await fixture();
+    const ref = new PDFRef(502, 0);
+    const form = new PDFStream(new PDFDict([
+      ['Subtype', new PDFName('Form')],
+      ['BBox', new PDFArray([0, 0, 200, 200].map(value => new PDFNumber(value)))],
+      ['Group', new PDFDict([['S', new PDFName('Transparency')], ['I', new PDFBoolean(true)]])],
+    ]), new Uint8Array(), new Uint8Array());
+    doc.objects.set(ref.toKey(), form);
+    doc.pages[0].resources.set('XObject', new PDFDict([['Form', ref]]));
+    await updatePageContent(doc.pages[0].contentRefs, new TextEncoder().encode('/Form Do '.repeat(1601)), doc.objects, false);
+    const canvases = realCanvasHarness();
+    await expect(renderPageToCanvas(doc.pages[0], doc.objects, { scale: 1 })).rejects.toThrow(/isolated form.*budget/i);
+    // Exactly 1600 groups fit; the 1601st must fail before either dimension is assigned.
+    expect(realCanvasAssignments.filter(event => event.axis === 'height' && event.value === 200)).toHaveLength(1600);
+    expect(canvases.length).toBeLessThanOrEqual(2);
+    expect(canvases.every(canvas => canvas.width <= 200 && canvas.height <= 300)).toBe(true);
   });
 
   it('rejects an oversized selected-image preview before allocating the image canvas', async () => {

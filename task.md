@@ -770,8 +770,9 @@ suggested order.
   ([BUG-244](BUG.md#bug-244-live-field-signature-preview-differs-from-the-pdf-appearance)).
   Tested rotated/cropped field overlays and signature gestures use page geometry
   ([BUG-248](BUG.md#bug-248-signature-overlay-is-misplaced-on-a-rotated-cropped-page));
-  moving a field signature can lose appearance details
-  ([BUG-249](BUG.md#bug-249-moving-a-field-signature-loses-appearance-details)).
+  tested application-created field signatures retain their complete appearance
+  through conversion, edits and recovery, with unsupported appearance structures
+  rejected ([BUG-249](BUG.md#bug-249-moving-a-field-signature-loses-appearance-details)).
   The preview renderer test contract passes TypeScript checking
   ([BUG-250](BUG.md#bug-250-signature-preview-test-fails-typescript-checking)).
   Source review also found unguarded controls for locked signatures; browser

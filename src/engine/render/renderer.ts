@@ -2002,6 +2002,9 @@ class CanvasPool {
 
 // ─── Form rendering ─────────────────────────────────────────────────────────
 
+// Bound aggregate isolated group surfaces over an entire page render.
+const isolatedFormWork = new WeakMap<RenderOptions, number>();
+
 /** Resolve Form geometry without trusting cycles or unbounded reference chains. */
 function resolveFormGeometry(value: PDFObject, objects: Map<string, PDFObject>, key: string): PDFObject {
   const seen = new Set<string>();
@@ -2056,7 +2059,7 @@ async function drawFormItem(
       item.ctm.e, item.ctm.f,
     );
 
-    await drawFormXObject(ctx, xobj, objects, page, options, activeForms, item.renderingMode ?? 0);
+    await drawFormXObject(ctx, xobj, objects, page, options, activeForms, item.renderingMode ?? 0, item.fillAlpha ?? 1);
   
   } finally {
     ctx.restore();
@@ -2071,6 +2074,7 @@ async function drawFormXObject(
   options: RenderOptions,
   activeForms: Set<PDFStream>,
   initialTextRenderingMode: number,
+  groupAlpha: number,
 ): Promise<void> {
   // PDF object identity is stable across resource references; dictionaries do
   // not carry an ObjNum field. Bound acyclic nesting as well as actual cycles.
@@ -2095,6 +2099,8 @@ async function drawFormXObject(
     const isTransparencyGroup = groupDict !== undefined && groupDict.getName('S') === 'Transparency';
     const isolated = groupDict?.getBool('I') ?? false;
 
+    let offscreenCanvas: HTMLCanvasElement | null = null;
+    let offscreenSaved = false;
     ctx.save();
     try {
 
@@ -2131,15 +2137,40 @@ async function drawFormXObject(
       };
 
       let targetCtx = ctx;
-      let offscreenCanvas: HTMLCanvasElement | null = null;
+      let offscreenX = 0;
+      let offscreenY = 0;
       const width = bboxArr[2] - bboxArr[0];
       const height = bboxArr[3] - bboxArr[1];
 
       if (isTransparencyGroup && isolated && width > 0 && height > 0) {
-        offscreenCanvas = CanvasPool.acquire(width, height);
+        const transform = ctx.getTransform();
+        const corners = [[bboxArr[0], bboxArr[1]], [bboxArr[2], bboxArr[1]],
+          [bboxArr[0], bboxArr[3]], [bboxArr[2], bboxArr[3]]].map(([x, y]) => ({
+          x: transform.a * x + transform.c * y + transform.e,
+          y: transform.b * x + transform.d * y + transform.f,
+        }));
+        if (!corners.every(point => Number.isFinite(point.x) && Number.isFinite(point.y))) {
+          throw new Error('Invalid isolated Form device transform.');
+        }
+        const left = Math.max(0, Math.floor(Math.min(...corners.map(point => point.x))));
+        const top = Math.max(0, Math.floor(Math.min(...corners.map(point => point.y))));
+        const right = Math.min(ctx.canvas.width, Math.ceil(Math.max(...corners.map(point => point.x))));
+        const bottom = Math.min(ctx.canvas.height, Math.ceil(Math.max(...corners.map(point => point.y))));
+        if (right <= left || bottom <= top) return;
+        const size = checkedCanvasDimensions(right - left, bottom - top);
+        const pixels = size.width * size.height;
+        const used = isolatedFormWork.get(options) ?? 0;
+        if (pixels > 64_000_000 - used) throw new Error('Isolated Form rendering budget exceeded.');
+        isolatedFormWork.set(options, used + pixels);
+        offscreenX = left; offscreenY = top;
+        offscreenCanvas = CanvasPool.acquire(size.width, size.height);
         targetCtx = offscreenCanvas.getContext('2d')!;
         targetCtx.save();
-        targetCtx.translate(-bboxArr[0], -bboxArr[1]); // Normalize to local origin
+        offscreenSaved = true;
+        targetCtx.setTransform(transform.a, transform.b, transform.c, transform.d, transform.e - left, transform.f - top);
+        targetCtx.beginPath();
+        targetCtx.rect(bboxArr[0], bboxArr[1], width, height);
+        targetCtx.clip();
       }
 
       const formFonts = loadPageFonts(formResources, objects);
@@ -2174,14 +2205,21 @@ async function drawFormXObject(
       }
 
       if (offscreenCanvas) {
-        targetCtx.restore(); // Restore the translate
+        targetCtx.restore();
+        offscreenSaved = false;
         ctx.save();
-        ctx.drawImage(offscreenCanvas, bboxArr[0], bboxArr[1]);
-        ctx.restore();
-        CanvasPool.release(offscreenCanvas);
+        try {
+          ctx.setTransform(1, 0, 0, 1, 0, 0);
+          ctx.globalAlpha *= groupAlpha;
+          ctx.drawImage(offscreenCanvas, offscreenX, offscreenY);
+        } finally { ctx.restore(); }
       }
 
     } finally {
+      if (offscreenCanvas) {
+        if (offscreenSaved) offscreenCanvas.getContext('2d')?.restore();
+        CanvasPool.release(offscreenCanvas);
+      }
       ctx.restore();
     }
   } finally {
