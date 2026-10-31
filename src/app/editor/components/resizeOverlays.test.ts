@@ -121,7 +121,7 @@ function signatureProps(locked = false, rotation = 0, zoom = scale) {
   return {
     signature, toCss: toCssAtScale(zoom), scale: zoom, imageDataUrl: null, selected: true,
     onSelect: vi.fn(), onCommitMove: vi.fn(), onCommitResize: vi.fn(),
-    onCommitRotate: vi.fn(), onDelete: vi.fn(), onDeselect: vi.fn(),
+    onCommitRotate: vi.fn(), onStepResize: vi.fn(), onStepRotate: vi.fn(), onDelete: vi.fn(), onDeselect: vi.fn(),
   };
 }
 
@@ -437,4 +437,47 @@ describe('embedded image preview lifecycle', () => {
     expect(overlay.style.width).toBe('240px');
     expect(props.onCommitResize).not.toHaveBeenCalled();
   });
+});
+
+describe('signature touch gesture lifecycle', () => {
+  for (const reason of ['deselect', 'noninteractive', 'locked', 'fine pointer'] as const) {
+    it(`cancels a panel gesture and releases keyboard when ${reason}`, async () => {
+      let coarse = true;
+      const listeners = new Set<() => void>();
+      vi.stubGlobal('matchMedia', () => ({
+        get matches() { return coarse; },
+        addEventListener: (_: string, listener: () => void) => listeners.add(listener),
+        removeEventListener: (_: string, listener: () => void) => listeners.delete(listener),
+      }));
+      const props = signatureProps();
+      const overlay = await mount(createElement(SignatureOverlay, props));
+      const show = document.querySelector<HTMLButtonElement>('[aria-label="Show signature resize and rotation controls"]')!;
+      await act(async () => show.click());
+      const east = document.querySelector<HTMLElement>('[data-touch-handle="e"]')!;
+      await pointer(east, 'pointerdown', 100, 100);
+      await pointer(window, 'pointermove', 120, 100);
+      expect(overlay.style.width).toBe('420px');
+      const blocked = new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'a' });
+      window.dispatchEvent(blocked);
+      expect(blocked.defaultPrevented).toBe(true);
+      await act(async () => {
+        if (reason === 'fine pointer') {
+          coarse = false;
+          listeners.forEach(listener => listener());
+        } else {
+          root!.render(createElement(SignatureOverlay, {
+            ...props,
+            selected: reason !== 'deselect',
+            interactive: reason !== 'noninteractive',
+            signature: { ...props.signature, locked: reason === 'locked' },
+          }));
+        }
+      });
+      expect(overlay.style.width).toBe('400px');
+      expect(props.onCommitResize).not.toHaveBeenCalled();
+      const available = new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'a' });
+      window.dispatchEvent(available);
+      expect(available.defaultPrevented).toBe(false);
+    });
+  }
 });

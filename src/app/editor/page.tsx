@@ -40,6 +40,7 @@ import { PDFDict, PDFString } from '@/engine/types';
 import { annotationSubtype } from '@/engine/content/annotation-subtype';
 import { renderFieldSignaturePreviews } from './field-signature-previews';
 import { signatureBoxOnPage, signatureFieldBoxOnPage, signaturePagePoint, signaturePageRotation } from './signature-page-geometry';
+import { resizeSignatureByStep, rotateSignatureByStep, type SignatureResizeStep } from './signature-touch-steps';
 import { findMatchingFlowLine } from './flowLineMatch';
 import { EditorDocumentOwner } from './document-owner';
 import { runSignatureChange } from './signature-change';
@@ -5108,6 +5109,14 @@ export default function EditorPage() {
     void commitSignatureChange(current => updateSignature(current, id, s => rotateSignature(s, degrees)), 'rotate-signature');
   }, [commitSignatureChange]);
 
+  const handleSignatureStepResize = useCallback((id: string, step: SignatureResizeStep) => {
+    void commitSignatureChange(current => updateSignature(current, id, s => resizeSignatureByStep(s, step)), 'resize-signature');
+  }, [commitSignatureChange]);
+
+  const handleSignatureStepRotate = useCallback((id: string, degrees: number) => {
+    void commitSignatureChange(current => updateSignature(current, id, s => rotateSignatureByStep(s, degrees)), 'rotate-signature');
+  }, [commitSignatureChange]);
+
   const handleSignatureDelete = useCallback((id: string) => {
     void commitSignatureChange(current => deleteSignature(current, id), 'delete-signature');
     if (selectedSignatureId === id) setSelectedSignatureId(null);
@@ -6729,6 +6738,8 @@ export default function EditorPage() {
                   onCommitMove={handleSignatureMove}
                   onCommitResize={handleSignatureResize}
                   onCommitRotate={handleSignatureRotate}
+                  onStepResize={handleSignatureStepResize}
+                  onStepRotate={handleSignatureStepRotate}
                   onDelete={handleSignatureDelete}
                   onDeselect={() => setSelectedSignatureId(null)}
                 />

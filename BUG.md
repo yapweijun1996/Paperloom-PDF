@@ -2756,3 +2756,12 @@ bounded register, not an exhaustive list of defects.
 - **Verification:** Queue and model tests pass; Chrome reproduction fails on
   the previous version and passes after the fix, including save and undo.
   Lock semantics for deletion and opacity remain tracked separately in BUG-251.
+
+### BUG-254: Signature resize and rotate handles are too small for touch
+
+- **Status:** Fixed for the tested signature controls in simulated Chrome coarse-pointer viewports.
+- **Trigger:** Select a visual signature on a touch device and try to resize or rotate it.
+- **Observed:** Eight resize handles and the rotation handle measured 10×10 CSS px on simulated phone, landscape and tablet viewports. Expanding them in place would overlap adjacent targets, particularly on small or rotated signatures.
+- **Fix:** Coarse pointers get a normally collapsed, dismissible control panel with separate 44×44 CSS px drag targets for all eight resize directions and rotation, plus move and existing actions. Fine-pointer devices retain their original controls. Keyboard steps run against the latest queued signature and no-op steps do not create history. Competing pointers and keyboard input are blocked during a captured touch gesture; the panel disables editing and deletion for locked signatures.
+- **Verification:** Synthetic Chrome tests measure and sample each target, exercise touch resize, rotation, cancellation, save, keyboard and delayed-queue input, and check low zoom, page edges, rotated signatures and desktop mouse operation. They also cover simulated multi-touch, no-pointer-ID clicks, canceled gestures on focus or capture loss, and subsequent keyboard/touch input; component tests cover selection, interactivity, lock and pointer-mode changes. Screenshot checks cover 390×844, 568×320 and 768×1024 viewports.
+- **Limits:** The expanded panel can cover page content on compact landscape screens; it can be collapsed. Event timing and accessibility with real iOS/Android browsers, physical touchscreens and assistive technologies remain unverified. Other editor touch targets and complete locked-signature mutation protection remain open under TASK-104 and BUG-251 respectively.

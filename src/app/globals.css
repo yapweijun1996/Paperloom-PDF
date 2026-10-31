@@ -86,6 +86,52 @@
   box-shadow: 0 0 0 2px var(--ring-offset);
 }
 
+.signature-touch-panel { display: none; }
+
+@media (pointer: coarse) {
+  .signature-fine-controls { display: none !important; }
+  .signature-touch-panel {
+    display: block;
+    position: fixed;
+    right: calc(8px + env(safe-area-inset-right, 0px));
+    bottom: calc(104px + env(safe-area-inset-bottom, 0px));
+    width: 178px;
+    color: var(--text);
+    background: var(--panel);
+    border: 1px solid var(--border-strong);
+    border-radius: 12px;
+    box-shadow: 0 4px 18px rgb(0 0 0 / 20%);
+    touch-action: none;
+  }
+  .signature-touch-panel button {
+    width: 44px;
+    height: 44px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 44px;
+    border-radius: 6px;
+    color: var(--text);
+    touch-action: none;
+  }
+  .signature-touch-panel button:disabled { opacity: 0.4; }
+  .signature-touch-panel.is-collapsed { width: auto; }
+  .signature-touch-panel .signature-touch-expand { width: auto; min-width: 44px; padding: 0 10px; gap: 6px; font-size: 12px; }
+  .signature-touch-heading { height: 44px; display: flex; align-items: center; justify-content: space-between; }
+  .signature-touch-heading span { padding-left: 8px; font-size: 10px; }
+  .signature-touch-actions { display: flex; }
+  .signature-touch-grid { display: grid; grid-template-columns: repeat(3, 44px); width: 132px; margin: 0 auto; }
+  .signature-touch-grid button { font-size: 24px; color: var(--accent); }
+}
+
+@media (pointer: coarse) and (max-height: 400px) {
+  .signature-touch-panel { bottom: calc(64px + env(safe-area-inset-bottom, 0px)); }
+  .signature-touch-heading { position: absolute; bottom: 0; right: 0; width: 132px; }
+  .signature-touch-body { display: flex; align-items: flex-start; }
+  .signature-touch-actions { flex-direction: column; }
+  .signature-touch-grid { margin: 0; }
+}
+
 @layer base {
   html, body {
     background-color: var(--surface);

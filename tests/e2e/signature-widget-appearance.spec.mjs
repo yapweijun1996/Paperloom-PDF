@@ -115,20 +115,22 @@ async function poppler(bytes, name) {
   return pixels(readFileSync(join(directory, `${name}.png`)));
 }
 
-async function placeVisualSignature(page, xFraction = 0.5, yFraction = 0.525) {
-  await page.getByRole('button', { name: 'Sign', exact: true }).tap();
-  await page.getByRole('button', { name: 'Create signature' }).tap();
+async function placeVisualSignature(page, xFraction = 0.5, yFraction = 0.525, mouse = false) {
+  const activate = locator => mouse ? locator.click() : locator.tap();
+  await activate(page.getByRole('button', { name: 'Sign', exact: true }));
+  await activate(page.getByRole('button', { name: 'Create signature' }));
   const dialog = page.getByRole('dialog', { name: 'Create signature' });
-  await dialog.getByRole('button', { name: 'Type', exact: true }).tap();
+  await activate(dialog.getByRole('button', { name: 'Type', exact: true }));
   await dialog.getByPlaceholder('Type your name').fill('Alex Example');
-  await dialog.getByRole('button', { name: 'Save to library' }).tap();
+  await activate(dialog.getByRole('button', { name: 'Save to library' }));
   await expect(dialog).toHaveCount(0);
-  await page.getByTitle('Hide panel').tap();
+  await activate(page.getByTitle('Hide panel'));
   const surface = page.locator('[data-page-render-surface]');
   await surface.scrollIntoViewIfNeeded();
   const box = await surface.boundingBox();
   if (!box) throw new Error('Missing PDF page');
-  await page.touchscreen.tap(box.x + box.width * xFraction, box.y + box.height * yFraction);
+  if (mouse) await page.mouse.click(box.x + box.width * xFraction, box.y + box.height * yFraction);
+  else await page.touchscreen.tap(box.x + box.width * xFraction, box.y + box.height * yFraction);
   await expect(surface.getByAltText('Signature')).toHaveCount(1);
   await expect.poll(() => signatureRegionDark(surface.locator('canvas.pdf-canvas'))).toBe(0);
 }
@@ -183,11 +185,11 @@ test('clipped signature does not intercept clicks outside the page', async ({ br
   } finally { await context.close(); }
 });
 for (const rotation of [0, 90, 180, 270]) test(`rotated signature resize keeps its opposite corner on page ${rotation}`, async ({ browser }) => {
-  const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, hasTouch: true });
+  const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, hasTouch: false });
   try {
     const page = await context.newPage();
     await openPdf(page, await fixture('field', { rotation }));
-    await placeVisualSignature(page);
+    await placeVisualSignature(page, 0.5, 0.525, true);
     const surface = page.locator('[data-page-render-surface]'), image = surface.getByAltText('Signature');
     await image.locator('..').click();
     const box = await image.boundingBox(), turn = await page.getByTitle('Drag to rotate').boundingBox();
@@ -428,11 +430,11 @@ for (const mobile of [false, true]) test(`live field preview matches PNG appeara
 
 test('field appearance follows signature editing and undo without changing the PDF field value', async ({ browser }) => {
   test.setTimeout(30000);
-  const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, hasTouch: true });
+  const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, hasTouch: false });
   try {
   const page = await context.newPage();
   await openPdf(page, await fixture('field'));
-  await placeVisualSignature(page);
+  await placeVisualSignature(page, 0.5, 0.525, true);
   const surface = page.locator('[data-page-render-surface]');
   const image = surface.getByAltText('Signature');
   await expect.poll(async () => image.evaluate(el => [el.naturalWidth, el.naturalHeight])).toEqual([200, 80]);
@@ -778,11 +780,11 @@ for (const corruption of ['missing annotation', 'missing canonical form', 'dangl
 
 test('composite signature supports repeated resize rotation opacity and export', async ({ browser }) => {
   test.setTimeout(45000);
-  const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, hasTouch: true });
+  const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, hasTouch: false });
   try {
     const page = await context.newPage();
     await openPdf(page, await fixture('field'));
-    await placeVisualSignature(page);
+    await placeVisualSignature(page, 0.5, 0.525, true);
     const surface = page.locator('[data-page-render-surface]');
     const image = surface.getByAltText('Signature');
     const box = await image.boundingBox();

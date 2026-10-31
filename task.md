@@ -783,6 +783,10 @@ suggested order.
   ([BUG-252](BUG.md#bug-252-a-pdf-page-background-renders-black-in-the-editor)).
   Unchanged signature edits no longer create unsaved state or undo entries
   ([BUG-253](BUG.md#bug-253-an-unchanged-signature-edit-creates-an-undo-entry)).
+  Simulated coarse-pointer Chrome now offers a collapsible signature control
+  panel with separate 44px resize and rotation targets, including tested touch,
+  keyboard, low-zoom and cancellation paths
+  ([BUG-254](BUG.md#bug-254-signature-resize-and-rotate-handles-are-too-small-for-touch)).
   Real iOS/Android tests and other mobile tasks remain open. While a
   drawing tool is active, page-area pinch and scrolling are unavailable.
 - **Priority / effort:** P1 / high. **Related:** [BUG-108](BUG.md#bug-108-drawing-highlighting-and-erasing-ignore-touch-drags).

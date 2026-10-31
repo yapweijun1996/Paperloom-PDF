@@ -446,12 +446,11 @@ for (const phase of ['editing', 'submitting']) {
       await surface.tap({ position: { x: 200, y: 230 } });
       const signature = surface.getByAltText('Signature');
       await expect(signature).toHaveCount(1);
-      const handle = surface.locator('[data-handle="se"]');
+      await page.getByRole('button', { name: 'Show signature resize and rotation controls' }).tap();
+      const handle = page.locator('[data-touch-handle="se"]');
       await expect(handle).toHaveCount(1);
       const initialSignature = await signature.boundingBox();
-      const initialHandle = await handle.boundingBox();
-      const offset = { x: initialHandle.x + initialHandle.width / 2 - initialSignature.x,
-        y: initialHandle.y + initialHandle.height / 2 - initialSignature.y };
+      const offset = { x: initialSignature.width - 5, y: initialSignature.height - 5 };
       await page.getByRole('button', { name: 'Edit Text', exact: true }).tap();
       await page.getByTitle('Hide panel').tap();
       await surface.tap({ position: { x: 80, y: 95 } });
@@ -468,7 +467,8 @@ for (const phase of ['editing', 'submitting']) {
       }
       const before = await signature.boundingBox();
       const start = { x: before.x + offset.x, y: before.y + offset.y };
-      const hit = await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.getAttribute('data-handle'), start);
+      await expect(handle).toHaveCount(0);
+      const hit = await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.closest('[data-touch-handle]')?.getAttribute('data-touch-handle'), start);
       const cdp = await page.context().newCDPSession(page);
       await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [start] });
       await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: start.x + 40, y: start.y + 30 }] });
