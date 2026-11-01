@@ -126,6 +126,7 @@ export function rotateSignature(sig: VisualSignature, degrees: number): VisualSi
 }
 
 export function setSignatureOpacity(sig: VisualSignature, opacity: number): VisualSignature {
+  if (sig.locked) return sig;
   return { ...sig, opacity: Math.max(0, Math.min(1, opacity)) };
 }
 
@@ -137,7 +138,7 @@ export function deleteSignature(
   signatures: VisualSignature[],
   id: string,
 ): VisualSignature[] {
-  return signatures.filter((s) => s.id !== id);
+  return signatures.filter((s) => s.id !== id || s.locked);
 }
 
 export function updateSignature(

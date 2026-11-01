@@ -1701,6 +1701,8 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                   min={10}
                   max={100}
                   value={Math.round(selectedSignature.opacity * 100)}
+                  disabled={selectedSignature.locked}
+                  aria-label="Signature opacity"
                   onChange={(e) =>
                     onSignatureOpacity?.(selectedSignature.id, Number(e.target.value) / 100)
                   }
@@ -1711,6 +1713,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                 <button
                   type="button"
                   className="flex-1 flex items-center justify-center gap-1 py-1.5 text-[11px] rounded bg-panel-elevated border border-app text-app hover:bg-panel-elevated/80"
+                  disabled={selectedSignature.locked}
                   onClick={() =>
                     onSignatureRotate?.(
                       selectedSignature.id,
@@ -1731,6 +1734,8 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                 <button
                   type="button"
                   className="flex items-center justify-center gap-1 px-2 py-1.5 text-[11px] rounded bg-red-500/20 border border-red-500/40 text-red-500 hover:bg-red-500/30"
+                  aria-label="Delete signature"
+                  disabled={selectedSignature.locked}
                   onClick={() => onSignatureDelete?.(selectedSignature.id)}
                 >
                   <Trash2 size={12} />

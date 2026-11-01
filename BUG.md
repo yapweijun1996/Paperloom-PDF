@@ -2715,14 +2715,24 @@ bounded register, not an exhaustive list of defects.
 
 ### BUG-251: Locked visual signature controls can change or delete it
 
-- **Status:** Open; identified by source review, not yet reproduced in a browser.
-- **Evidence:** The signature overlay's delete button calls the delete handler
-  even when the signature is locked. The properties sidebar also exposes
-  deletion and opacity changes without a locked check, and the corresponding
-  signature model operations do not enforce that check.
-- **Next step:** Reproduce the affected flows, enforce the intended locked
-  semantics at the mutation boundary, and test the overlay, sidebar and saved
-  document behavior. No damage to an original signed file has been established.
+- **Status:** Fixed for editor-managed visual signatures.
+- **Cause:** Deletion and opacity changes bypassed the lock, lock toggles were not
+  serialized with native edits, and field replacement, digital signing and page
+  deletion could indirectly remove or replace a locked appearance.
+- **Fix:** Serialize lock changes with edits and reject changes to locked
+  signatures at the mutation boundary. Disable unavailable controls while keeping
+  Unlock and Deselect available. Field placement and signing check the final Widget
+  identity in the staged transaction; page deletion preserves locked signatures.
+- **Verification:** Model, queued race and staged transaction tests cover rejected
+  updates and stale recovery coordinates. Chrome tests cover desktop and simulated
+  touch controls, keyboard, undo/redo, recovery and field replacement. Independent
+  Chrome tests check locked page deletion, other-page deletion and post-unlock
+  deletion for Stamp and Widget annotations, inspecting the downloaded PDFs.
+  Real certificate tests verify explicit and automatically selected fields are not
+  signed while locked and remain unchanged, then verify signing after unlock.
+- **Limit:** Visual lock is editor/recovery state, not a cryptographic signature or
+  a PDF permission; lock persistence after exporting and reopening a PDF is not
+  claimed. Existing signed and read-only field checks remain separate.
 
 ### BUG-252: A PDF page background renders black in the editor
 
@@ -2755,7 +2765,7 @@ bounded register, not an exhaustive list of defects.
   skip the transaction and history when their elements and order are unchanged.
 - **Verification:** Queue and model tests pass; Chrome reproduction fails on
   the previous version and passes after the fix, including save and undo.
-  Lock semantics for deletion and opacity remain tracked separately in BUG-251.
+  Full locked-signature protection is tracked in BUG-251.
 
 ### BUG-254: Signature resize and rotate handles are too small for touch
 
@@ -2764,4 +2774,4 @@ bounded register, not an exhaustive list of defects.
 - **Observed:** Eight resize handles and the rotation handle measured 10×10 CSS px on simulated phone, landscape and tablet viewports. Expanding them in place would overlap adjacent targets, particularly on small or rotated signatures.
 - **Fix:** Coarse pointers get a normally collapsed, dismissible control panel with separate 44×44 CSS px drag targets for all eight resize directions and rotation, plus move and existing actions. Fine-pointer devices retain their original controls. Keyboard steps run against the latest queued signature and no-op steps do not create history. Competing pointers and keyboard input are blocked during a captured touch gesture; the panel disables editing and deletion for locked signatures.
 - **Verification:** Synthetic Chrome tests measure and sample each target, exercise touch resize, rotation, cancellation, save, keyboard and delayed-queue input, and check low zoom, page edges, rotated signatures and desktop mouse operation. They also cover simulated multi-touch, no-pointer-ID clicks, canceled gestures on focus or capture loss, and subsequent keyboard/touch input; component tests cover selection, interactivity, lock and pointer-mode changes. Screenshot checks cover 390×844, 568×320 and 768×1024 viewports.
-- **Limits:** The expanded panel can cover page content on compact landscape screens; it can be collapsed. Event timing and accessibility with real iOS/Android browsers, physical touchscreens and assistive technologies remain unverified. Other editor touch targets and complete locked-signature mutation protection remain open under TASK-104 and BUG-251 respectively.
+- **Limits:** The expanded panel can cover page content on compact landscape screens; it can be collapsed. Event timing and accessibility with real iOS/Android browsers, physical touchscreens and assistive technologies remain unverified. Other editor touch targets remain open under TASK-104; locked-signature protection is tracked in BUG-251.

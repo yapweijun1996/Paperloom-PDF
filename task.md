@@ -775,8 +775,8 @@ suggested order.
   rejected ([BUG-249](BUG.md#bug-249-moving-a-field-signature-loses-appearance-details)).
   The preview renderer test contract passes TypeScript checking
   ([BUG-250](BUG.md#bug-250-signature-preview-test-fails-typescript-checking)).
-  Source review also found unguarded controls for locked signatures; browser
-  reproduction and mutation-boundary protection remain open
+  Locked signatures now reject edits, deletion and field replacement until
+  unlocked, including queued operations and page deletion
   ([BUG-251](BUG.md#bug-251-locked-visual-signature-controls-can-change-or-delete-it)).
   The reported Chromium-generated PDF's image-backed tiling patterns now render
   in the tested canvas, thumbnail and PNG; broader pattern support remains open

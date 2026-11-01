@@ -185,9 +185,10 @@ test('locked rotation creates no unsaved change or undo entry', async ({ page })
   await download(page);
   await page.getByTitle('Toggle Find & Replace').click();
   await expect(page.getByText('Unsaved', { exact: true })).toHaveCount(0);
-  await rotate.click();
-  // Allow the queued native edit to settle before checking that it had no effect.
-  await page.waitForTimeout(500);
+  await expect(rotate).toBeDisabled();
+  // The keyboard delete action must also leave the locked signature selected.
+  await page.keyboard.press('Delete');
+  await expect(page.getByRole('button', { name: 'Unlock', exact: true })).toBeVisible();
   await expect(page.getByText('Unsaved', { exact: true })).toHaveCount(0);
   await page.getByTitle('Close Search').click();
   await page.getByTitle('Undo (Ctrl+Z)').click();
@@ -203,4 +204,176 @@ test('locked rotation creates no unsaved change or undo entry', async ({ page })
     return rect[2] - rect[0];
   };
   expect(width(saved[0])).toBeGreaterThan(width(undone[0]) + 1);
+});
+
+
+test('locked signature rejects delete and opacity, supports undo, redo and unlock', async ({ page }) => {
+  await openPdf(page, await blankPdf());
+  await createSignature(page);
+  const surface = page.locator('[data-page-render-surface]');
+  const card = page.locator('[draggable="true"]').filter({ has: page.getByText('This session only', { exact: true }) });
+  await card.dragTo(surface, { targetPosition: { x: 200, y: 180 } });
+  const image = surface.getByAltText('Signature');
+  await image.click();
+  await page.getByRole('button', { name: 'Lock', exact: true }).click();
+  const unlock = page.getByRole('button', { name: 'Unlock', exact: true });
+  await expect(unlock).toBeVisible();
+  await expect(page.getByRole('slider', { name: 'Signature opacity' })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Rotate', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Delete signature' })).toBeDisabled();
+  await expect(surface.getByTitle('Delete', { exact: true })).toBeDisabled();
+  await expect(page.getByTitle('Rotate 15°')).toBeDisabled();
+  const saved = await stamps(await download(page));
+  expect(saved).toHaveLength(1);
+  await page.keyboard.press('Delete');
+  await page.keyboard.press('Backspace');
+  await expect(unlock).toBeVisible();
+  await expect(image).toHaveCount(1);
+  await page.getByTitle('Toggle Find & Replace').click();
+  await expect(page.getByText('Unsaved', { exact: true })).toHaveCount(0);
+  await page.getByTitle('Close Search').click();
+  const after = await stamps(await download(page));
+  expect(after).toHaveLength(1);
+  expect(after[0].get(PDFName.of('AP'))).toBeTruthy();
+  expect(after[0].get(PDFName.of('Rect')).toString()).toBe(saved[0].get(PDFName.of('Rect')).toString());
+  await page.getByTitle('Undo (Ctrl+Z)').click();
+  await image.click();
+  await expect(page.getByRole('button', { name: 'Lock', exact: true })).toBeVisible();
+  await page.getByTitle('Redo (Ctrl+Shift+Z)').click();
+  await image.click();
+  await expect(unlock).toBeVisible();
+  await unlock.click();
+  await expect(page.getByRole('slider', { name: 'Signature opacity' })).toBeEnabled();
+  await page.getByRole('slider', { name: 'Signature opacity' }).fill('40');
+  await expect.poll(() => image.locator('..').evaluate(el => getComputedStyle(el).opacity)).toBe('0.4');
+  await page.getByRole('button', { name: 'Delete signature' }).click();
+  await expect(image).toHaveCount(0);
+  await page.getByTitle('Undo (Ctrl+Z)').click();
+  await expect(image).toHaveCount(1);
+});
+
+test('replacing the visual appearance of a locked field is rejected without deselecting it', async ({ page }) => {
+  await openPdf(page, await blankPdf({ field: true }));
+  await createSignature(page);
+  await page.getByTitle('Hide panel').click();
+  const surface = page.locator('[data-page-render-surface]');
+  const box = await surface.boundingBox();
+  await page.mouse.click(box.x + box.width * 0.5, box.y + box.height * 0.525);
+  const image = surface.getByAltText('Signature');
+  await expect(image).toHaveCount(1);
+  await image.click();
+  await page.getByRole('button', { name: 'Sign', exact: true }).click();
+  await page.getByRole('button', { name: 'Lock', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Unlock', exact: true })).toBeVisible();
+  const before = await download(page);
+  // Dispatch to the canvas at the actual field coordinates, as when a field is selected
+  // from outside its overlay or through another field placement entry point.
+  const currentBox = await surface.boundingBox();
+  await surface.locator('canvas.pdf-canvas').dispatchEvent('click', { clientX: currentBox.x + currentBox.width * 0.5, clientY: currentBox.y + currentBox.height * 0.525 });
+  await expect(page.getByText(/unlock the signature before replacing its field/i)).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Unlock', exact: true })).toBeVisible();
+  await expect(image).toHaveCount(1);
+  const after = await download(page);
+  const getAnnotation = async bytes => {
+    const pdf = await PDFDocument.load(bytes);
+    return pdf.context.lookup(pdf.getPages()[0].node.Annots().get(0));
+  };
+  const first = await getAnnotation(before), second = await getAnnotation(after);
+  expect(first.get(PDFName.of('Subtype'))).toBe(PDFName.of('Widget'));
+  expect(second.get(PDFName.of('Subtype'))).toBe(PDFName.of('Widget'));
+  expect(second.get(PDFName.of('V'))).toBeUndefined();
+  expect(second.get(PDFName.of('AP'))).toBeTruthy();
+  expect(second.get(PDFName.of('PaperloomSignatureId')).toString()).toBe(first.get(PDFName.of('PaperloomSignatureId')).toString());
+});
+
+test('recovered locked field with stale overlay coordinates cannot be replaced', async ({ page }) => {
+  await openPdf(page, await blankPdf({ field: true }));
+  await createSignature(page);
+  await page.getByTitle('Hide panel').click();
+  const surface = page.locator('[data-page-render-surface]'), initial = await surface.boundingBox();
+  await page.mouse.click(initial.x + initial.width * 0.5, initial.y + initial.height * 0.525);
+  const image = surface.getByAltText('Signature');
+  await expect(image).toHaveCount(1);
+  await image.click();
+  await page.getByRole('button', { name: 'Sign', exact: true }).click();
+  await page.getByRole('button', { name: 'Lock', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Unlock', exact: true })).toBeVisible();
+  const recovery = () => page.evaluate(() => new Promise((resolve, reject) => {
+    const request = indexedDB.open('pdf-editor-db');
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      const db = request.result, tx = db.transaction('pdf-files', 'readonly');
+      const get = tx.objectStore('pdf-files').get('editor-session');
+      get.onsuccess = () => resolve(get.result?.overlays?.signaturesJson ?? '[]');
+      get.onerror = () => reject(get.error); tx.oncomplete = () => db.close();
+    };
+  }));
+  await expect.poll(async () => JSON.parse(await recovery())[0]?.locked, { timeout: 15000 }).toBe(true);
+  await page.evaluate(() => new Promise((resolve, reject) => {
+    const request = indexedDB.open('pdf-editor-db');
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      const db = request.result, tx = db.transaction('pdf-files', 'readwrite'), store = tx.objectStore('pdf-files');
+      const get = store.get('editor-session');
+      get.onsuccess = () => {
+        const session = get.result, signatures = JSON.parse(session.overlays.signaturesJson);
+        signatures[0].x += 80;
+        session.overlays.signaturesJson = JSON.stringify(signatures);
+        store.put(session, 'editor-session');
+      };
+      tx.onerror = () => reject(tx.error); tx.oncomplete = () => { db.close(); resolve(); };
+    };
+  }));
+  page.on('dialog', dialog => dialog.accept());
+  await page.reload();
+  await expect(image).toHaveCount(1);
+  await image.click();
+  await page.getByRole('button', { name: 'Sign', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Unlock', exact: true })).toBeVisible();
+  await expect(page.getByRole('slider', { name: 'Signature opacity' })).toBeDisabled();
+  // A locked field must be rejected even when the session-only library was cleared.
+  let rect = await surface.boundingBox();
+  await surface.locator('canvas.pdf-canvas').dispatchEvent('click', { clientX: rect.x + rect.width * 0.5, clientY: rect.y + rect.height * 0.525 });
+  await expect(page.getByText(/unlock the signature before replacing its field/i)).toBeVisible();
+  await expect(page.getByRole('dialog', { name: 'Create signature' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Unlock', exact: true })).toBeVisible();
+  await page.getByText(/unlock the signature before replacing its field/i).locator('button').click();
+  await expect(page.getByText(/unlock the signature before replacing its field/i)).toHaveCount(0);
+  // Session-only library entries are intentionally cleared by reload.
+  await page.getByRole('button', { name: 'Create signature' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Create signature' });
+  await dialog.getByRole('button', { name: 'Type', exact: true }).click();
+  await dialog.getByPlaceholder('Type your name').fill('Second Example');
+  await dialog.getByRole('button', { name: 'Save to library' }).click();
+  await expect(dialog).toHaveCount(0);
+  rect = await surface.boundingBox();
+  await surface.locator('canvas.pdf-canvas').dispatchEvent('click', { clientX: rect.x + rect.width * 0.5, clientY: rect.y + rect.height * 0.525 });
+  await expect(page.getByText(/unlock the signature before replacing its field/i)).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Unlock', exact: true })).toBeVisible();
+  const pdf = await PDFDocument.load(await download(page));
+  const field = pdf.context.lookup(pdf.getPages()[0].node.Annots().get(0));
+  expect(field.get(PDFName.of('Subtype'))).toBe(PDFName.of('Widget'));
+  expect(field.get(PDFName.of('AP'))).toBeTruthy();
+  expect(field.get(PDFName.of('V'))).toBeUndefined();
+});
+
+test('clicking an unsigned field with an empty library preserves the field selection', async ({ page }) => {
+  await openPdf(page, await blankPdf({ field: true }));
+  await page.getByRole('button', { name: 'Sign', exact: true }).click();
+  const surface = page.locator('[data-page-render-surface]'), box = await surface.boundingBox();
+  await surface.locator('canvas.pdf-canvas').dispatchEvent('click', { clientX: box.x + box.width * 0.5, clientY: box.y + box.height * 0.525 });
+  const dialog = page.getByRole('dialog', { name: 'Create signature' });
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole('button', { name: 'Type', exact: true }).click();
+  await dialog.getByPlaceholder('Type your name').fill('Selected Field');
+  await dialog.getByRole('button', { name: 'Save to library' }).click();
+  await expect(dialog).toHaveCount(0);
+  const place = page.getByRole('button', { name: 'Place library signature into field' });
+  await expect(place).toBeVisible();
+  await place.click();
+  await expect(surface.getByAltText('Signature')).toHaveCount(1);
+  const pdf = await PDFDocument.load(await download(page));
+  const field = pdf.context.lookup(pdf.getPages()[0].node.Annots().get(0));
+  expect(field.get(PDFName.of('Subtype'))).toBe(PDFName.of('Widget'));
+  expect(field.get(PDFName.of('AP'))).toBeTruthy();
 });

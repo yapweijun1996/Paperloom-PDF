@@ -1,6 +1,6 @@
 import type { PDFDocumentData } from '../types';
 import { saveQuick } from '../writer/save-pipeline';
-import { createSignatureFieldAtPoint, detectSignatureFieldsOnPage } from '../signatures/fields/signature-field';
+import { createSignatureFieldAtPoint, detectSignatureFieldsOnPage, type SignatureField } from '../signatures/fields/signature-field';
 import { installSignatureBase, prepareSignatureSource, signDocumentCryptographic, type CryptoSignOptions, type SignPipelineResult } from '../signatures/crypto/signing-pipeline';
 import { SessionDocumentEditor } from './document-edit';
 
@@ -14,6 +14,7 @@ export async function signDocumentTransaction(
     privateKey: CryptoKey;
     signOptions: CryptoSignOptions;
     isCurrent: () => boolean;
+    assertFieldAllowed?: (staged: PDFDocumentData, field: SignatureField) => void;
   },
 ): Promise<{ editor: SessionDocumentEditor; result: SignPipelineResult; pageIndex: number }> {
   if (!input.isCurrent()) throw new Error('The document was replaced before signing.');
@@ -37,6 +38,7 @@ export async function signDocumentTransaction(
     if (!field) throw new Error('No valid signature field available for digital signing.');
     if (field.signed) throw new Error('This field is already signed.');
     if (field.readOnly) throw new Error('This field is read-only.');
+    input.assertFieldAllowed?.(staged, field);
     signed.pageIndex = field.pageIndex;
     signed.result = await signDocumentCryptographic(staged, field.ref, input.privateKey, input.signOptions);
   }, { includeRawBytes: true, isCurrent: input.isCurrent });

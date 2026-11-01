@@ -29,7 +29,7 @@ import {
   hitTestTextLine, findNearestTextLine, caretIndexFromLineX,
   getLineBounds, getOverlayFontFamily, getOverlayFontStyle, getDisplayFontFamily,
 } from './utils';
-import { buildDisplayListIndex, hitTestDisplayList, isSelectableDisplayItem, captureHistoryEntry, restoreAnnotSnapshot, restoreDocumentStructure, parseOverlaySnapshot, deleteObject, visualFontSize, resolveRunStyleFlags, transformObject, applyObjectTransform, distributeTextChangeToSegments, segmentAtIndex, createVisualSignature, hitTestSignature, moveSignature, rotateSignature, setSignatureOpacity, setSignatureLocked, deleteSignature, updateSignature, getSignatureLibrary, DEFAULT_SIGNATURE_SIZE, detectSignatureFieldsOnPage, hitTestSignatureField, applySignatureFieldAppearanceAsync, getCertificateManager, validateDocumentSignatures, enableLongTermValidation, getLtvStatus, listManagedSignatures, buildRevisionViewer, lockSignaturesAfterSigning, pushRecentSignatureId, SIGNATURE_SHORTCUTS } from '@/engine/browser-core';
+import { buildDisplayListIndex, hitTestDisplayList, isSelectableDisplayItem, captureHistoryEntry, restoreAnnotSnapshot, restoreDocumentStructure, parseOverlaySnapshot, deleteObject, visualFontSize, resolveRunStyleFlags, transformObject, applyObjectTransform, distributeTextChangeToSegments, segmentAtIndex, createVisualSignature, hitTestSignature, moveSignature, rotateSignature, setSignatureOpacity, deleteSignature, updateSignature, getSignatureLibrary, DEFAULT_SIGNATURE_SIZE, detectSignatureFieldsOnPage, hitTestSignatureField, applySignatureFieldAppearanceAsync, getCertificateManager, validateDocumentSignatures, enableLongTermValidation, getLtvStatus, listManagedSignatures, buildRevisionViewer, lockSignaturesAfterSigning, pushRecentSignatureId, SIGNATURE_SHORTCUTS } from '@/engine/browser-core';
 import type { Annotation, QuadTree, SelectableItem, EditableObject, EditorHistoryEntry, PDFRef } from '@/engine/browser-core';
 import { UnsupportedGlyphsError, SessionDocumentEditor } from '@/engine/browser-core';
 import { SessionEditorHistory } from '@/engine/session/editor-history';
@@ -43,7 +43,7 @@ import { signatureBoxOnPage, signatureFieldBoxOnPage, signaturePagePoint, signat
 import { resizeSignatureByStep, rotateSignatureByStep, type SignatureResizeStep } from './signature-touch-steps';
 import { findMatchingFlowLine } from './flowLineMatch';
 import { EditorDocumentOwner } from './document-owner';
-import { runSignatureChange } from './signature-change';
+import { runSignatureChange, runSignatureLockChange, assertSignatureFieldIdentityAllowed, assertSignatureFieldPlacementAllowed, assertLockedSignaturePagesPreserved } from './signature-change';
 import { parseRecoveryOverlay } from './recovery-overlay';
 import { FormDraftController, resolveRecoveredFormDraft } from './form-draft-controller';
 import { decodeMultiChoiceDraft, encodeMultiChoiceDraft } from './multi-choice-draft';
@@ -2604,6 +2604,17 @@ export default function EditorPage() {
       entry = list.find((e) => e.favorite) ?? list[0] ?? null;
     }
     if (!entry) {
+      try {
+        const lockedIds = new Set(signaturesRef.current.filter(signature => signature.locked).map(signature => signature.id));
+        assertSignatureFieldPlacementAllowed(signaturesRef.current, field.pageIndex, field.rect.x, field.rect.y, field.ref,
+          findVisualSignatureRefs(doc, lockedIds));
+      } catch (error) {
+        setError(error instanceof Error ? error.message : 'Signature field is unavailable.');
+        return;
+      }
+      setSelectedPdfSigFieldId(field.id);
+      setSelectedSignatureId(null);
+      setSelectedDisplayItem(null);
       setSignatureCreateOpen(true);
       return;
     }
@@ -2635,6 +2646,9 @@ export default function EditorPage() {
           if (!current || current.signed || current.readOnly) {
             throw new Error('This signature field is unavailable, already signed, or read-only.');
           }
+          const lockedIds = new Set(signaturesRef.current.filter(signature => signature.locked).map(signature => signature.id));
+          assertSignatureFieldPlacementAllowed(signaturesRef.current, field.pageIndex, overlay.x, overlay.y, field.ref,
+            findVisualSignatureRefs(staged, lockedIds));
           for (const previous of signaturesRef.current) {
             if (!withoutOverlapping.includes(previous)) {
               assertExistingCompositeSignature(staged, previous);
@@ -2662,6 +2676,8 @@ export default function EditorPage() {
       });
       setPdfSignatureFields(detectSignatureFieldsOnPage(doc, currentPage));
       setSelectedPdfSigFieldId(field.id);
+      setSelectedSignatureId(null);
+      setSelectedDisplayItem(null);
       setActiveLibraryId(entry.id);
       setIsDirty(true);
       setRenderKey((k) => k + 1);
@@ -2730,6 +2746,10 @@ export default function EditorPage() {
           point: { x: placed?.x ?? 100, y: placed?.y ?? 100 },
           privateKey: keyMat.privateKey,
           isCurrent: () => lease.isCurrent() && overlaysAreCommitted(),
+          assertFieldAllowed: (staged, field) => {
+            const lockedIds = new Set(signaturesRef.current.filter(signature => signature.locked).map(signature => signature.id));
+            assertSignatureFieldIdentityAllowed(signaturesRef.current, field.ref, findVisualSignatureRefs(staged, lockedIds));
+          },
           signOptions: {
             reason: 'Document approval',
             name: identity?.leaf?.subject.commonName ?? identity?.label ?? 'Signer',
@@ -3380,9 +3400,6 @@ export default function EditorPage() {
       // Click existing PDF signature field → place library signature into /AP
       const pdfSigHit = hitTestSignatureField(pdfSignatureFields, pdfX, pdfY);
       if (pdfSigHit) {
-        setSelectedPdfSigFieldId(pdfSigHit.id);
-        setSelectedSignatureId(null);
-        setSelectedDisplayItem(null);
         void placeLibrarySignatureIntoField(pdfSigHit);
         return;
       }
@@ -5118,18 +5135,27 @@ export default function EditorPage() {
   }, [commitSignatureChange]);
 
   const handleSignatureDelete = useCallback((id: string) => {
-    void commitSignatureChange(current => deleteSignature(current, id), 'delete-signature');
-    if (selectedSignatureId === id) setSelectedSignatureId(null);
-  }, [commitSignatureChange, selectedSignatureId]);
+    void commitSignatureChange(current => deleteSignature(current, id), 'delete-signature').then(changed => {
+      if (changed) setSelectedSignatureId(selected => selected === id ? null : selected);
+    });
+  }, [commitSignatureChange]);
 
   const handleSignatureOpacity = useCallback((id: string, opacity: number) => {
     void commitSignatureChange(current => updateSignature(current, id, s => setSignatureOpacity(s, opacity)), 'opacity-signature');
   }, [commitSignatureChange]);
 
   const handleSignatureLockToggle = useCallback((id: string) => {
-    const next = updateSignature(signaturesRef.current, id, s => setSignatureLocked(s, !s.locked));
-    pushSignatureSnapshot(next, 'lock-signature');
-  }, [pushSignatureSnapshot]);
+    if (!doc) return;
+    void runSignatureLockChange({
+      enqueue: apply => queueNativeEdit(doc, apply),
+      current: () => signaturesRef.current,
+      id,
+      apply: async (next, isCurrent) => {
+        if (!isCurrent()) throw new Error('The document was replaced before the edit.');
+        pushSignatureSnapshot(next, 'lock-signature');
+      },
+    }).catch(error => setError(error instanceof Error ? error.message : 'Signature lock failed'));
+  }, [doc, queueNativeEdit, pushSignatureSnapshot]);
 
   const reportSignatureStorageWarning = useCallback(() => {
     const warning = getSignatureLibrary().consumeStorageWarning();
@@ -5465,6 +5491,7 @@ export default function EditorPage() {
       let nextPage = pageSelectionRef.current;
       await editor.edit(doc, label, async staged => {
         nextPage = await apply(staged, pageSelectionRef.current);
+        assertLockedSignaturePagesPreserved(signaturesRef.current, previousPages, staged.pages.map(page => page.ref.toKey()));
       }, { isCurrent });
       const signatures = signaturesRef.current.flatMap(signature => {
         const key = previousPages[signature.pageIndex];

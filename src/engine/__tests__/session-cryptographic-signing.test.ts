@@ -4,7 +4,10 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { describe, expect, it } from 'vitest';
 import { PDFDocument, StandardFonts } from 'pdf-lib';
-import { PDFName, type PDFDocumentData } from '../types';
+import { PDFDict, PDFName, PDFRef, PDFString, type PDFDocumentData } from '../types';
+import { createVisualSignature } from '../signatures/visual/signature-model';
+import { findVisualSignatureRefs } from '../session/signature-edit';
+import { assertSignatureFieldIdentityAllowed } from '@/app/editor/signature-change';
 import { getPageContentBytes, parsePDF } from '../parser/parser';
 import { SessionDocumentEditor } from '../session/document-edit';
 import { signDocumentTransaction } from '../session/signature-transaction';
@@ -302,3 +305,60 @@ describe('signature byte transactions', () => {
     expect(editor.canUndo).toBe(false);
   });
 });
+
+
+describe('locked visual signature during digital signing', () => {
+  for (const selection of ['explicit', 'automatic'] as const) it(`refuses the ${selection} field without modifying bytes or appearance`, async () => {
+    const doc = await document();
+    const field = createSignatureFieldAtPoint(doc, 0, 30, 120, { withPlaceholderAppearance: true });
+    const locked = createVisualSignature({ pageIndex: 0, x: 500, y: 500, appearanceId: 'test', appearanceType: 'typed', locked: true });
+    const widget = doc.objects.get(field.ref.toKey());
+    if (!(widget instanceof PDFDict)) throw new Error('Missing test Widget');
+    widget.set('PaperloomSignatureId', new PDFString(locked.id));
+    const rawBefore = doc.rawBytes.slice(), before = await saveQuick(doc), ap = widget.get('AP'), size = doc.objects.size;
+    const credentials = getTestCredentials();
+    const imported = await importFromPem(credentials.pem, 'test');
+    const guard = (staged: PDFDocumentData, chosen: typeof field) => assertSignatureFieldIdentityAllowed(
+      [locked], chosen.ref, findVisualSignatureRefs(staged, new Set([locked.id])));
+    await expect(signDocumentTransaction(doc, { pageIndex: 0, selectedFieldId: selection === 'explicit' ? field.id : null,
+      point: { x: 0, y: 0 }, privateKey: imported.key!.privateKey, signOptions: { certificateDer: credentials.certificateDer },
+      isCurrent: () => true, assertFieldAllowed: guard })).rejects.toThrow(/unlock/i);
+    expect(doc.rawBytes).toEqual(rawBefore);
+    expect(doc.objects.size).toBe(size);
+    expect(widget.get('AP')).toBe(ap);
+    expect(widget.get('V')).toBeUndefined();
+    expect(await saveQuick(doc)).toEqual(before);
+    const signed = await signDocumentTransaction(doc, { pageIndex: 0, selectedFieldId: field.id, point: { x: 0, y: 0 },
+      privateKey: imported.key!.privateKey, signOptions: { certificateDer: credentials.certificateDer }, isCurrent: () => true,
+      assertFieldAllowed: (staged, chosen) => assertSignatureFieldIdentityAllowed([{ ...locked, locked: false }],
+        chosen.ref, findVisualSignatureRefs(staged, new Set([locked.id]))) });
+    expect(detectSignatureFieldsOnPage(await parsePDF(signed.result.bytes), 0)[0].signed).toBe(true);
+  }, 30000);
+});
+
+
+it('signs an independent field at the same coordinates as a locked Stamp', async () => {
+  const doc = await document();
+  const field = createSignatureFieldAtPoint(doc, 0, 30, 120, { withPlaceholderAppearance: true });
+  const locked = { ...createVisualSignature({ pageIndex: 0, x: 30, y: 120, appearanceId: 'test', appearanceType: 'typed', locked: true }),
+    x: field.rect.x, y: field.rect.y };
+  const stampRef = new PDFRef(100, 0), stamp = new PDFDict();
+  stamp.set('Type', new PDFName('Annot')); stamp.set('Subtype', new PDFName('Stamp')); stamp.set('NM', new PDFString(locked.id));
+  const originalField = doc.objects.get(field.ref.toKey()) as PDFDict;
+  stamp.set('Rect', originalField.get('Rect')!); stamp.set('AP', originalField.get('AP')!);
+  doc.objects.set(stampRef.toKey(), stamp);
+  doc.pages[0].dict.getArray('Annots')!.push(stampRef);
+  const credentials = getTestCredentials(), imported = await importFromPem(credentials.pem, 'test');
+  const result = await signDocumentTransaction(doc, { pageIndex: 0, selectedFieldId: field.id, point: { x: 30, y: 120 },
+    privateKey: imported.key!.privateKey, signOptions: { certificateDer: credentials.certificateDer }, isCurrent: () => true,
+    assertFieldAllowed: (staged, chosen) => assertSignatureFieldIdentityAllowed([locked], chosen.ref,
+      findVisualSignatureRefs(staged, new Set([locked.id]))) });
+  const reopened = await parsePDF(result.result.bytes);
+  expect(detectSignatureFieldsOnPage(reopened, 0)[0].signed).toBe(true);
+  const savedStamp = findVisualSignatureRefs(reopened, new Set([locked.id])).get(locked.id);
+  expect(savedStamp?.toKey()).toBe(stampRef.toKey());
+  const saved = reopened.objects.get(stampRef.toKey()) as PDFDict;
+  expect(saved.getName('Subtype')).toBe('Stamp');
+  expect(saved.get('AP')).toBeDefined();
+  expect(saved.getArray('Rect')?.asNumbers()).toEqual(stamp.getArray('Rect')?.asNumbers());
+}, 30000);

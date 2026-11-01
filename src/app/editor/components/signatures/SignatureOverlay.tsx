@@ -389,6 +389,7 @@ export function SignatureOverlay(props: SignatureOverlayProps) {
             <button
               type="button"
               title="Rotate 15°"
+              disabled={sig.locked}
               className="p-0.5 bg-zinc-800 text-zinc-200 rounded border border-zinc-600 hover:bg-zinc-700 shadow"
               onPointerDown={(e) => e.stopPropagation()}
               onClick={(e) => {
@@ -401,11 +402,12 @@ export function SignatureOverlay(props: SignatureOverlayProps) {
             <button
               type="button"
               title="Delete"
+              disabled={sig.locked}
               className="p-0.5 bg-red-600 text-white rounded border border-red-500 hover:bg-red-500 shadow"
               onPointerDown={(e) => e.stopPropagation()}
               onClick={(e) => {
                 e.stopPropagation();
-                onDelete(sig.id);
+                if (!sig.locked) onDelete(sig.id);
               }}
             >
               <Trash2 size={10} />

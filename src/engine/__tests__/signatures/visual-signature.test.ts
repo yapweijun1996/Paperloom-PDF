@@ -106,8 +106,11 @@ describe('Phase 1 — signature model', () => {
     sig = setSignatureLocked(sig, true);
     expect(moveSignature(sig, 100, 100)).toEqual(sig);
 
-    const list = deleteSignature([sig], sig.id);
-    expect(list).toHaveLength(0);
+    expect(setSignatureOpacity(sig, 0.1)).toBe(sig);
+    expect(deleteSignature([sig], sig.id)).toEqual([sig]);
+    sig = setSignatureLocked(sig, false);
+    expect(setSignatureOpacity(sig, 0.1).opacity).toBe(0.1);
+    expect(deleteSignature([sig], sig.id)).toHaveLength(0);
   });
 
   it('updateSignature maps by id', () => {
