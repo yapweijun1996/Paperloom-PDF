@@ -461,11 +461,8 @@ export function applyLineTextEdit(
   // operators, so shifting afterward can miss runs and overlap grown text.
   let bytes = contentBytes;
   if (horizShifts.length > 0) {
-    bytes = applyRunPositionShifts(
-      bytes,
-      horizShifts,
-      edits.map(e => e.targetRun),
-    );
+    const targets = edits.map(e => e.targetRun);
+    bytes = applyRunPositionShifts(bytes, horizShifts, targets, targets);
   }
 
   const editResult = applyTextEdits(bytes, page, objects, edits);

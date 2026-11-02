@@ -355,6 +355,12 @@ export function applyRunPositionShifts(
   shifts: RunPositionShift[],
   /** Extra runs whose sourceInstructionIndices must stay in sync when we inject ops. */
   indexPeers: TextRun[] = [],
+  /**
+   * Runs about to be re-encoded with new text. A later run in the same BT that
+   * sits at their pen advance moves with their width change on its own, so its shift
+   * would be counted twice.
+   */
+  reencodedRuns: TextRun[] = [],
 ): Uint8Array {
   if (shifts.length === 0) return contentBytes;
 
@@ -474,6 +480,76 @@ export function applyRunPositionShifts(
   const localTdByBt = new Map<number, { dx: number; dy: number }>();
   // Last shifted show-op index per BT (kept in sync with inserts below).
   const lastShiftedShow = new Map<number, number>();
+  // Pen-only shifts (number-only TJ) per BT. They survive later show ops but a
+  // Td/TD/Tm/T* restarts the pen at the line matrix and drops them.
+  const penShiftByBt = new Map<number, { dx: number; at: number }>();
+
+  const activePenShift = (bt: number, textIndex: number): number => {
+    const pen = penShiftByBt.get(bt);
+    if (!pen) return 0;
+    for (let i = pen.at; i < textIndex; i++) {
+      if (LINE_MATRIX_OPS.has(instructions[i].operator)) return 0;
+    }
+    return pen.dx;
+  };
+
+  // A run that a show operator precedes since its positioning op sits at the
+  // pen advance, not at the line matrix. Moving that op or inserting a Td
+  // would also move the earlier glyphs or discard their advance.
+  const isAdvancePositioned = (from: number, textIndex: number): boolean => {
+    for (let i = from + 1; i < textIndex; i++) {
+      if (SHOW_OPS.has(instructions[i].operator)) return true;
+    }
+    return false;
+  };
+
+  // Shift the pen horizontally with a number-only TJ, keeping the advance.
+  const injectPenShift = (bt: number, textIndex: number, dx: number, dy: number): boolean => {
+    const d = toOperandSpace(textIndex, dx, dy, true);
+    if (Math.abs(d.dy) >= 0.01) return false;
+    const state = textStateAt(instructions, textIndex);
+    if (!state || Math.abs(state.fontSize * state.hScale) < 1e-6) return false;
+    const adjust = -d.dx * 1000 / (state.fontSize * state.hScale);
+    instructions.splice(textIndex, 0, {
+      operator: 'TJ',
+      operands: [new PDFArray([new PDFNumber(adjust)])],
+      offset: 0,
+    });
+    bumpIndicesFrom(textIndex, 1);
+    const prev = activePenShift(bt, textIndex);
+    penShiftByBt.set(bt, { dx: prev + dx, at: textIndex + 1 });
+    lastShiftedShow.set(bt, textIndex + 1);
+    return true;
+  };
+
+  // Re-encoded runs are tracked so their indices follow injected operators.
+  for (let g = 0; g < reencodedRuns.length; g++) {
+    const run = reencodedRuns[g];
+    if (!seen.has(run)) { seen.add(run); trackedRuns.push(run); }
+  }
+  const followsReencodedRun = (bt: number, textIndex: number): boolean => {
+    for (let g = 0; g < reencodedRuns.length; g++) {
+      const idxs = reencodedRuns[g].sourceInstructionIndices;
+      if (!idxs || idxs.length === 0) continue;
+      const last = Math.max(...idxs);
+      if (last <= bt || last >= textIndex) continue;
+      let chained = true;
+      for (let i = last + 1; i < textIndex; i++) {
+        if (LINE_MATRIX_OPS.has(instructions[i].operator)) { chained = false; break; }
+      }
+      if (chained) return true;
+    }
+    return false;
+  };
+
+  const shiftAdvancePositioned = (bt: number, item: ShiftItem): boolean => {
+    if (followsReencodedRun(bt, item.textIndex)) return true;
+    const prevLocal = localTdByBt.get(bt) ?? { dx: 0, dy: 0 };
+    const needDx = item.dx - prevLocal.dx - activePenShift(bt, item.textIndex);
+    const needDy = item.dy - prevLocal.dy;
+    if (Math.abs(needDx) < 0.01 && Math.abs(needDy) < 0.01) return true;
+    return injectPenShift(bt, item.textIndex, needDx, needDy);
+  };
 
   for (let i = 0; i < items.length; i++) {
     const item = items[i];
@@ -482,6 +558,12 @@ export function applyRunPositionShifts(
     }
 
     const pos = resolvePos(item.textIndex);
+    const itemBt = findBtIndex(item.textIndex);
+    const positionedFrom = pos && (pos.kind === 'Tm' || pos.kind === 'Td') ? pos.index : itemBt;
+    if (itemBt >= 0 && isAdvancePositioned(positionedFrom, item.textIndex)
+      && shiftAdvancePositioned(itemBt, item)) {
+      continue;
+    }
 
     if (!pos) {
       // Prefer local Td inside the BT — absolute Tm at run.x is wrong for
@@ -612,6 +694,31 @@ export function applyRunPositionShifts(
   });
 
   return compileInstructions(instructions);
+}
+
+const SHOW_OPS = new Set(['Tj', 'TJ', "'", '"']);
+const LINE_MATRIX_OPS = new Set(['Td', 'TD', 'Tm', 'T*', "'", '"', 'BT']);
+
+/**
+ * Font size (Tf) and horizontal scale (Tz / 100) in effect before `index`.
+ * Skips state restored by Q. Returns null when no Tf applies.
+ */
+function textStateAt(
+  instructions: CSInstruction[],
+  index: number,
+): { fontSize: number; hScale: number } | null {
+  let fontSize: number | null = null;
+  let hScale: number | null = null;
+  let nest = 0;
+  for (let i = index - 1; i >= 0 && (fontSize === null || hScale === null); i--) {
+    const { operator: op, operands } = instructions[i];
+    if (op === 'Q') { nest++; continue; }
+    if (op === 'q') { if (nest > 0) nest--; continue; }
+    if (nest > 0) continue;
+    if (op === 'Tf' && fontSize === null && operands.length >= 2) fontSize = numVal(operands[1]);
+    else if (op === 'Tz' && hScale === null && operands.length >= 1) hScale = numVal(operands[0]) / 100;
+  }
+  return fontSize === null ? null : { fontSize, hScale: hScale ?? 1 };
 }
 
 function findTextPositionInstruction(

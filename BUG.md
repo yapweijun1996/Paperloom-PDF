@@ -2775,3 +2775,26 @@ bounded register, not an exhaustive list of defects.
 - **Fix:** Coarse pointers get a normally collapsed, dismissible control panel with separate 44×44 CSS px drag targets for all eight resize directions and rotation, plus move and existing actions. Fine-pointer devices retain their original controls. Keyboard steps run against the latest queued signature and no-op steps do not create history. Competing pointers and keyboard input are blocked during a captured touch gesture; the panel disables editing and deletion for locked signatures.
 - **Verification:** Synthetic Chrome tests measure and sample each target, exercise touch resize, rotation, cancellation, save, keyboard and delayed-queue input, and check low zoom, page edges, rotated signatures and desktop mouse operation. They also cover simulated multi-touch, no-pointer-ID clicks, canceled gestures on focus or capture loss, and subsequent keyboard/touch input; component tests cover selection, interactivity, lock and pointer-mode changes. Screenshot checks cover 390×844, 568×320 and 768×1024 viewports.
 - **Limits:** The expanded panel can cover page content on compact landscape screens; it can be collapsed. Event timing and accessibility with real iOS/Android browsers, physical touchscreens and assistive technologies remain unverified. Other editor touch targets remain open under TASK-104; locked-signature protection is tracked in BUG-251.
+
+### BUG-255: Editing a mixed Latin and CJK line shifts and overlaps the CJK text
+
+- **Status:** Fixed.
+- **Trigger:** In a line whose CJK glyphs come from per-glyph Type3 fonts placed
+  only by the advance of earlier `Tj` operators (no `Td` per glyph), click the
+  bold Latin part, move the caret into the CJK part and insert characters.
+- **Observed:** The saved line had a gap after the Latin text, a later CJK glyph
+  drawn on top of an earlier one, and on a second attempt the commit failed with
+  "These characters need an embedded font".
+- **Cause:** (1) `applyRunPositionShifts` edited the shared `Td` that also placed
+  unshifted earlier glyphs, and inserted a `Td` for later glyphs; a `Td` restarts
+  at the line matrix and drops the accumulated advance. It also shifted runs that
+  already move with the edited run's new width. (2) Opening the editor stored the
+  clicked run's style as an explicit typing style, so text typed after moving the
+  caret into a regular CJK run was queued as bold and re-encoded in Helvetica-Bold.
+- **Fix:** Advance-positioned runs are shifted with a number-only `TJ` that keeps
+  the pen advance, and runs that follow a re-encoded run at its pen advance are not
+  shifted again. Typing style now starts empty and holds only user-toggled styles.
+- **Verification:** New `advance-positioned-shift.test.ts` cases fail before and
+  pass after the change. In Chrome, a page from the reported (private) PDF,
+  restored to its unedited structure, was edited by inserting two characters in the
+  CJK part; the saved page renders the line contiguous, aligned and unbolded.

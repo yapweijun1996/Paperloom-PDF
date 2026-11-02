@@ -2145,7 +2145,10 @@ export default function EditorPage() {
     editSelRef.current = { start: caret, end: caret };
     setEditSel({ start: caret, end: caret });
 
-    // Sync sidebar + typing style from the character left of the caret
+    // Sync the sidebar from the character left of the caret. Typing style stays
+    // empty: it holds only what the user toggles, so text typed after moving
+    // the caret inherits the run it lands in (a bold Latin run's seed must not
+    // restyle CJK typed into a regular run).
     {
       const seeded = resolveTypingStyleFromCaret(
         line,
@@ -2154,7 +2157,7 @@ export default function EditorPage() {
         strokePaths,
         [],
       );
-      setTypingStyle(seeded);
+      setTypingStyle({});
       if (seeded.fontSize != null) setTextFontSize(seeded.fontSize);
       if (seeded.bold != null) setTextBold(seeded.bold);
       if (seeded.italic != null) setTextItalic(seeded.italic);
