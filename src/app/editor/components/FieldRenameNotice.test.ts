@@ -13,6 +13,9 @@ it('shows the field mapping and lets the user dismiss it', () => {
   try {
     act(() => root.render(createElement(FieldRenameNotice, { changes: [{ from: 'Group.Name', to: 'Group_2.Name' }], onDismiss: dismiss })));
     expect(element.querySelector('[role="status"]')?.textContent).toContain('Group.Name → Group_2.Name');
+    // Theme-aware warning tone rather than fixed dark zinc/amber chrome.
+    expect(element.querySelector('[role="status"]')?.getAttribute('data-tone')).toBe('warning');
+    expect(element.innerHTML).not.toMatch(/zinc-|amber-/);
     act(() => element.querySelector<HTMLButtonElement>('button[aria-label="Dismiss field name changes"]')!.click());
     expect(dismiss).toHaveBeenCalledOnce();
   } finally {
