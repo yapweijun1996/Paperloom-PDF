@@ -24,12 +24,24 @@
   --text-muted: #64748B;
   --text-faint: #94A3B8;
   --accent: #176B65;
-  --canvas-bg: #E6E8EC;
-  --checker-a: #EEF0F4;
-  --checker-b: #E1E4E9;
+  --canvas-bg: #EAEFF5;   /* editor canvas backdrop (.checkerboard) */
+  --canvas-dot: #CBD5E1;  /* editor canvas dot grid */
   --ring-offset: #FFFFFF;
-  --scrim: rgba(15, 23, 42, 0.45);
+  --focus-ring: #176B65;
+  --scrim: rgba(15, 23, 42, 0.45);  /* modal backdrop */
+  --backdrop: rgba(0, 0, 0, 0.5);   /* drawer / mobile sheet backdrop */
   --contrast: #000000;
+  --on-accent: #FFFFFF;   /* text on --bloom-500/600/700 fills; theme-invariant */
+
+  /* Semantic status colours: foreground passes 4.5:1 on --panel and on its soft fill. */
+  --danger: #B91C1C;
+  --danger-soft: #FEF2F2;
+  --warning: #B45309;
+  --warning-soft: #FFFBEB;
+  --success: #15803D;     /* green, kept >= 25deg of hue away from the jade brand */
+  --success-soft: #F0FDF4;
+  --info: #1D4ED8;
+  --info-soft: #EFF6FF;
   color-scheme: light;
 }
 
@@ -45,12 +57,22 @@
   --text-muted: #8E95A5;
   --text-faint: #525866;
   --accent: #68D5C5;
-  --canvas-bg: #0D0E12;
-  --checker-a: #161820;
-  --checker-b: #0A0B0E;
+  --canvas-bg: #0B0C10;
+  --canvas-dot: #1E2330;
   --ring-offset: #0A0B0E;
+  --focus-ring: #68D5C5;
   --scrim: rgba(0, 0, 0, 0.85);
-  --contrast: #ffffff;
+  --backdrop: rgba(0, 0, 0, 0.7);
+  --contrast: #FFFFFF;
+
+  --danger: #F87171;
+  --danger-soft: #450A0A;
+  --warning: #FBBF24;
+  --warning-soft: #451A03;
+  --success: #4ADE80;
+  --success-soft: #052E16;
+  --info: #60A5FA;
+  --info-soft: #172554;
   color-scheme: dark;
 }
 
@@ -65,23 +87,31 @@
   --color-bloom-700: var(--bloom-700);
   --color-bloom-800: var(--bloom-800);
   --color-bloom-900: var(--bloom-900);
-  --color-bloom-brand: var(--bloom-500);
   --color-canvas-bg: var(--canvas-bg);
   --color-surface: var(--surface);
   --color-panel: var(--panel);
   --color-panel-elevated: var(--panel-elevated);
   --color-border: var(--border);
   --color-border-strong: var(--border-strong);
-  --color-app-text: var(--text);
   --color-app-muted: var(--text-muted);
   --color-app-faint: var(--text-faint);
   --color-accent: var(--accent);
   --color-contrast: var(--contrast);
+  --color-on-accent: var(--on-accent);
+  --color-focus-ring: var(--focus-ring);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+  --color-success: var(--success);
+  --color-success-soft: var(--success-soft);
+  --color-info: var(--info);
+  --color-info-soft: var(--info-soft);
 }
 
 /* Unlayered so outline-none utilities cannot suppress keyboard focus. */
 :focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
   box-shadow: 0 0 0 2px var(--ring-offset);
 }
@@ -164,15 +194,8 @@
 @layer utilities {
   /* Executive Studio Canvas Backdrop */
   .checkerboard {
-    background-color: #EAEFF5;
-    background-image: radial-gradient(#CBD5E1 1.25px, transparent 1.25px);
-    background-size: 24px 24px;
-    background-position: 0 0;
-  }
-
-  [data-theme="dark"] .checkerboard {
-    background-color: #0B0C10;
-    background-image: radial-gradient(#1E2330 1.25px, transparent 1.25px);
+    background-color: var(--canvas-bg);
+    background-image: radial-gradient(var(--canvas-dot) 1.25px, transparent 1.25px);
     background-size: 24px 24px;
     background-position: 0 0;
   }
@@ -188,7 +211,7 @@
 
   .bloom-btn-primary {
     background-image: linear-gradient(to bottom, var(--bloom-500), var(--bloom-600));
-    color: #ffffff;
+    color: var(--on-accent);
     box-shadow: 0 4px 14px 0 color-mix(in srgb, var(--accent) 35%, transparent);
     transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
   }
@@ -219,11 +242,8 @@
 
   /* Semi-transparent backdrop for drawers/sheets */
   .mobile-backdrop {
-    background-color: rgba(0, 0, 0, 0.5);
+    background-color: var(--backdrop);
     animation: backdropFadeIn 0.2s ease forwards;
-  }
-  [data-theme="dark"] .mobile-backdrop {
-    background-color: rgba(0, 0, 0, 0.7);
   }
   @keyframes backdropFadeIn {
     from { opacity: 0; }
