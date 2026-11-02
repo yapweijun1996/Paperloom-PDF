@@ -14,23 +14,10 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
-import { classBranches, openings, parseSource, sourceFiles } from '../editor/__tests__/classNames';
+import { classBranches, isRawPaletteClass, openings, parseSource, sourceFiles } from '../editor/__tests__/classNames';
 
 const APP = join(__dirname, '..');
 const BASELINE = join(__dirname, 'palette-classes.baseline.json');
-
-const PALETTE = 'zinc|slate|gray|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose';
-const OPACITY = '(?:/(?:\\d+|\\[[^\\]]+\\]))?';
-const RAW_PALETTE = new RegExp(
-  `^(?:(?:bg|text|border(?:-[trblxyse])?|ring|from|via|to|fill|stroke|divide|outline|placeholder|shadow)-(?:${PALETTE})-\\d{2,3}` +
-  `|(?:bg|text)-(?:white|black))${OPACITY}$`,
-);
-
-/** Strip variants (`hover:`, `md:`, `dark:`…) and the important flag before matching. */
-function isRawPaletteClass(token: string): boolean {
-  const utility = token.slice(token.lastIndexOf(':') + 1).replace(/^!|!$/g, '');
-  return RAW_PALETTE.test(utility);
-}
 
 function countFile(file: string): number {
   let count = 0;

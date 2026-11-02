@@ -99,6 +99,8 @@
   --color-contrast: var(--contrast);
   --color-on-accent: var(--on-accent);
   --color-focus-ring: var(--focus-ring);
+  --color-scrim: var(--scrim);
+  --color-backdrop: var(--backdrop);
   --color-danger: var(--danger);
   --color-danger-soft: var(--danger-soft);
   --color-warning: var(--warning);

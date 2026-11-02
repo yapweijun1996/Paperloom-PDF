@@ -93,6 +93,7 @@ These existing `@theme inline` aliases resolve the tokens above at the element's
 | `--color-contrast` | `--contrast` |
 | `--color-on-accent` | `--on-accent` |
 | `--color-focus-ring` | `--focus-ring` |
+| `--color-scrim`, `--color-backdrop` | `--scrim`, `--backdrop` |
 | `--color-danger`, `--color-danger-soft` | `--danger`, `--danger-soft` |
 | `--color-warning`, `--color-warning-soft` | `--warning`, `--warning-soft` |
 | `--color-success`, `--color-success-soft` | `--success`, `--success-soft` |

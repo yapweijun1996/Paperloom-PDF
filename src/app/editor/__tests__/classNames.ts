@@ -42,6 +42,11 @@ export function classBranches(node: ts.Node | undefined): string[] {
       prefixes.flatMap(prefix => classBranches(span.expression).map(value => prefix + value + span.literal.text)),
     [node.head.text]);
   }
+  // `cx(...)` from editor/ui joins its arguments; expand each literal argument.
+  if (ts.isCallExpression(node) && node.expression.getText() === 'cx') {
+    return node.arguments.reduce<string[]>((prefixes, argument) =>
+      prefixes.flatMap(prefix => classBranches(argument).map(value => `${prefix} ${value}`)), ['']);
+  }
   if (ts.isBinaryExpression(node)) {
     if (node.operatorToken.kind === ts.SyntaxKind.PlusToken) {
       return classBranches(node.left).flatMap(left => classBranches(node.right).map(right => left + right));
@@ -62,4 +67,18 @@ export function openings(source: ts.SourceFile): Opening[] {
   };
   visit(source);
   return result;
+}
+
+// Raw Tailwind palette utilities (shared by the palette ratchet and the ui/ token guard).
+const PALETTE = 'zinc|slate|gray|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose';
+const OPACITY = '(?:/(?:\\d+|\\[[^\\]]+\\]))?';
+const RAW_PALETTE = new RegExp(
+  `^(?:(?:bg|text|border(?:-[trblxyse])?|ring|from|via|to|fill|stroke|divide|outline|placeholder|shadow)-(?:${PALETTE})-\\d{2,3}` +
+  `|(?:bg|text)-(?:white|black))${OPACITY}$`,
+);
+
+/** Strip variants (`hover:`, `md:`, `dark:`…) and the important flag before matching. */
+export function isRawPaletteClass(token: string): boolean {
+  const utility = token.slice(token.lastIndexOf(':') + 1).replace(/^!|!$/g, '');
+  return RAW_PALETTE.test(utility);
 }
