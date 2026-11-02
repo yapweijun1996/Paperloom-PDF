@@ -157,7 +157,7 @@ export function SecurityPanel({ doc, engine, onDocChange, markDirty, onBusyChang
 
   if (!doc || !engine) {
     return (
-      <div className="w-72 bg-panel/95 border-r border-app p-4 text-xs text-app-faint">
+      <div className="w-64 bg-panel/95 border-r border-app p-4 text-xs text-app-faint">
         Load a PDF to manage security.
       </div>
     );
@@ -187,7 +187,7 @@ export function SecurityPanel({ doc, engine, onDocChange, markDirty, onBusyChang
       )}
       <div data-security-panel className={isMobile
         ? 'fixed bottom-0 left-0 right-0 z-[400] bg-panel/98 backdrop-blur-xl border-t border-app flex flex-col overflow-hidden mobile-sheet-up shadow-[0_-8px_40px_rgba(0,0,0,0.15)]'
-        : 'w-72 bg-panel/95 backdrop-blur-md border-r border-app flex flex-col shrink-0 z-[100] overflow-hidden shadow-[4px_0_24px_rgba(0,0,0,0.08)] min-h-0 h-full'
+        : 'w-64 bg-panel/95 backdrop-blur-md border-r border-app flex flex-col shrink-0 z-[100] overflow-hidden shadow-[4px_0_24px_rgba(0,0,0,0.08)] min-h-0 h-full'
       } style={isMobile ? { maxHeight: '65vh' } : undefined}>
       <div className="p-4 pb-2 border-b border-app">
         <div className="flex items-center justify-between">
