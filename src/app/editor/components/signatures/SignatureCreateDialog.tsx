@@ -273,14 +273,14 @@ export function SignatureCreateDialog({ open, onOpenChange, onSave }: SignatureC
 
         {tab === 'draw' && (
           <div className="space-y-3">
-            <div className="flex items-center gap-3 text-xs text-app-muted">
+            <div className="flex flex-wrap items-center gap-3 text-xs text-app-muted">
               <label htmlFor={`${idPrefix}-ink`}>Ink</label>
               <input
                 id={`${idPrefix}-ink`}
                 type="color"
                 value={drawColor}
                 onChange={(e) => setDrawColor(e.target.value)}
-                className="h-7 w-7 cursor-pointer rounded"
+                className="h-7 w-7 shrink-0 cursor-pointer rounded"
               />
               <label htmlFor={`${idPrefix}-width`} className="ml-2">Width</label>
               <input
@@ -291,7 +291,7 @@ export function SignatureCreateDialog({ open, onOpenChange, onSave }: SignatureC
                 step={0.5}
                 value={drawWidth}
                 onChange={(e) => setDrawWidth(Number(e.target.value))}
-                className="flex-1 accent-accent"
+                className="min-w-24 flex-1 accent-accent"
               />
               <Button
                 size="sm"
@@ -388,7 +388,7 @@ export function SignatureCreateDialog({ open, onOpenChange, onSave }: SignatureC
                 type="color"
                 value={typedColor}
                 onChange={(e) => setTypedColor(e.target.value)}
-                className="h-7 w-7 cursor-pointer rounded"
+                className="h-7 w-7 shrink-0 cursor-pointer rounded"
               />
             </div>
             <div
