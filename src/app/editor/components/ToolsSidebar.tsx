@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ChevronLeft, ChevronRight, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import * as Tooltip from '@radix-ui/react-tooltip';
 import { TOOLS, type EditorTool } from '../types';
@@ -59,6 +59,21 @@ export function ToolsSidebar({
 }: ToolsSidebarProps) {
   const [internalCollapsed, setInternalCollapsed] = useState(false);
   const isCollapsed = propIsCollapsed ?? internalCollapsed;
+  const stripRef = useRef<HTMLDivElement>(null);
+  const [stripOverflow, setStripOverflow] = useState({ start: false, end: false });
+  const updateStripOverflow = useCallback(() => {
+    const strip = stripRef.current;
+    if (!strip) return;
+    const start = strip.scrollLeft > 1;
+    const end = strip.scrollLeft + strip.clientWidth < strip.scrollWidth - 1;
+    setStripOverflow(prev => (prev.start === start && prev.end === end ? prev : { start, end }));
+  }, []);
+  useEffect(() => {
+    if (!isMobile) return;
+    updateStripOverflow();
+    window.addEventListener('resize', updateStripOverflow);
+    return () => window.removeEventListener('resize', updateStripOverflow);
+  }, [isMobile, updateStripOverflow]);
 
   const toggleCollapse = () => {
     if (onToggleCollapse) {
@@ -72,8 +87,9 @@ export function ToolsSidebar({
   /* ── Mobile: horizontal bottom strip ── */
   if (isMobile) {
     return (
-      <aside className="fixed bottom-0 left-0 right-0 z-[100] bg-panel/95 backdrop-blur-md border-t border-app shadow-[0_-4px_24px_rgba(0,0,0,0.12)]">
-        <div className="flex items-center gap-1 px-2 py-1.5 overflow-x-auto scrollbar-hide">
+      <aside aria-label="Tools" className="fixed bottom-0 left-0 right-0 z-[100] bg-panel/95 backdrop-blur-md border-t border-app shadow-[0_-4px_24px_rgba(0,0,0,0.12)] pb-[env(safe-area-inset-bottom)]">
+        <div className="relative">
+        <div ref={stripRef} onScroll={updateStripOverflow} data-tool-strip className="flex items-center gap-1 px-2 py-1.5 overflow-x-auto scrollbar-hide">
           {TOOLS.map((tool) => {
             const isActive = activeTool === tool.id;
             const isHighlight = tool.id === 'highlight';
@@ -92,7 +108,7 @@ export function ToolsSidebar({
                   }
                 }}
                 className={`
-                  flex flex-col items-center justify-center gap-0.5 rounded-xl px-2.5 py-1.5 min-w-[44px]
+                  flex flex-col items-center justify-center gap-0.5 rounded-xl px-2.5 py-1.5 min-w-[44px] min-h-11
                   transition-all duration-200 relative border shrink-0
                   ${isActive 
                     ? 'border-app-strong shadow-sm' 
@@ -123,7 +139,7 @@ export function ToolsSidebar({
               onClick={onTogglePanel}
               title={isPanelOpen ? 'Hide options' : 'Show options'}
               className={`
-                flex items-center justify-center rounded-xl p-2 min-w-[44px] border transition-all duration-200 shrink-0
+                flex items-center justify-center rounded-xl p-2 min-w-[44px] min-h-11 border transition-all duration-200 shrink-0
                 ${isPanelOpen 
                   ? 'bg-panel-elevated/80 border-app text-app-muted'
                   : 'bg-bloom-100 border-accent/40 text-accent'
@@ -133,6 +149,14 @@ export function ToolsSidebar({
               {isPanelOpen ? <PanelLeftClose size={16} /> : <PanelLeftOpen size={16} />}
             </button>
           )}
+        </div>
+        {/* Fade edges signal that more tools scroll into view. */}
+        {stripOverflow.start && (
+          <div aria-hidden="true" data-strip-fade="start" className="pointer-events-none absolute inset-y-0 left-0 w-8 bg-gradient-to-r from-panel to-transparent" />
+        )}
+        {stripOverflow.end && (
+          <div aria-hidden="true" data-strip-fade="end" className="pointer-events-none absolute inset-y-0 right-0 w-10 bg-gradient-to-l from-panel to-transparent" />
+        )}
         </div>
       </aside>
     );

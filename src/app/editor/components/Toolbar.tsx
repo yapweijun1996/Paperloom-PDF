@@ -9,6 +9,9 @@ import type { CompressedDownloadOptions } from './downloadQualityOptions';
 import { useTheme } from '@/app/theme/ThemeProvider';
 import { BRAND_BASE_PATH, BRAND_NAME } from '@/lib/brand';
 
+// Touch screens get a 44px hit area; desktop sizing is unchanged.
+const TOUCH_TARGET = 'inline-flex items-center justify-center pointer-coarse:min-h-11 pointer-coarse:min-w-11';
+
 interface ToolbarProps {
   fileName: string;
   currentPage: number;
@@ -84,7 +87,7 @@ export function Toolbar({
       <div className="flex items-center gap-1.5 md:gap-3 shrink-0">
         <button 
           onClick={onClose} 
-          className="p-1.5 text-app-muted hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-all duration-200" 
+          className={`p-1.5 text-app-muted hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-all duration-200 ${TOUCH_TARGET}`}
           title="Close file & return home"
         >
           <X size={18} />
@@ -107,11 +110,11 @@ export function Toolbar({
       </div>
 
       {/* ── Center: undo/redo, page nav, zoom ── */}
-      <div className="order-3 basis-full md:order-none md:basis-auto flex items-center justify-center gap-1 md:gap-2 bg-panel-elevated px-1.5 md:px-2 py-1 md:py-1.5 rounded-lg border border-app shadow-sm overflow-x-auto scrollbar-hide">
+      <div className="order-3 basis-full md:order-none md:basis-auto flex items-center justify-center gap-1 pointer-coarse:gap-0 md:gap-2 bg-panel-elevated px-1.5 md:px-2 py-1 md:py-1.5 rounded-lg border border-app shadow-sm overflow-x-auto scrollbar-hide">
         <button
           onClick={onUndo}
           disabled={!canUndo}
-          className="p-1 text-app-muted hover:text-app disabled:opacity-30 disabled:hover:text-app-muted transition-colors shrink-0"
+          className={`p-1 text-app-muted hover:text-app disabled:opacity-30 disabled:hover:text-app-muted transition-colors shrink-0 ${TOUCH_TARGET}`}
           title="Undo (Ctrl+Z)"
         >
           <Undo2 size={16} />
@@ -119,7 +122,7 @@ export function Toolbar({
         <button
           onClick={onRedo}
           disabled={!canRedo}
-          className="p-1 text-app-muted hover:text-app disabled:opacity-30 disabled:hover:text-app-muted transition-colors shrink-0"
+          className={`p-1 text-app-muted hover:text-app disabled:opacity-30 disabled:hover:text-app-muted transition-colors shrink-0 ${TOUCH_TARGET}`}
           title="Redo (Ctrl+Shift+Z)"
         >
           <Redo2 size={16} />
@@ -127,25 +130,25 @@ export function Toolbar({
 
         <div className="w-[1px] h-4 bg-[var(--border)] mx-0.5 md:mx-1 hidden sm:block shrink-0" />
 
-        <button aria-label="Previous page" onClick={onPrevPage} disabled={currentPage === 0} className="p-1 text-app-muted hover:text-app disabled:opacity-30 disabled:hover:text-app-muted transition-colors shrink-0">
+        <button aria-label="Previous page" onClick={onPrevPage} disabled={currentPage === 0} className={`p-1 text-app-muted hover:text-app disabled:opacity-30 disabled:hover:text-app-muted transition-colors shrink-0 ${TOUCH_TARGET}`}>
           <ChevronLeft size={18} />
         </button>
         <span className="text-app-muted text-xs font-medium w-12 md:w-16 text-center tracking-wider shrink-0">
           {currentPage + 1} / {totalPages}
         </span>
-        <button aria-label="Next page" onClick={onNextPage} disabled={currentPage >= totalPages - 1} className="p-1 text-app-muted hover:text-app disabled:opacity-30 disabled:hover:text-app-muted transition-colors shrink-0">
+        <button aria-label="Next page" onClick={onNextPage} disabled={currentPage >= totalPages - 1} className={`p-1 text-app-muted hover:text-app disabled:opacity-30 disabled:hover:text-app-muted transition-colors shrink-0 ${TOUCH_TARGET}`}>
           <ChevronRight size={18} />
         </button>
 
         <div className="w-[1px] h-4 bg-[var(--border)] mx-0.5 md:mx-2 hidden sm:block shrink-0" />
 
-        <button aria-label="Zoom out" onClick={onZoomOut} disabled={scale <= 0.5} className="p-1 text-app-muted hover:text-app disabled:opacity-30 disabled:hover:text-app-muted transition-colors shrink-0">
+        <button aria-label="Zoom out" onClick={onZoomOut} disabled={scale <= 0.5} className={`p-1 text-app-muted hover:text-app disabled:opacity-30 disabled:hover:text-app-muted transition-colors shrink-0 ${TOUCH_TARGET}`}>
           <ZoomOut size={16} />
         </button>
         <span className="text-app-muted text-xs font-medium w-10 md:w-12 text-center shrink-0">
           {Math.round(scale * 100)}%
         </span>
-        <button aria-label="Zoom in" onClick={onZoomIn} disabled={scale >= 4} className="p-1 text-app-muted hover:text-app disabled:opacity-30 disabled:hover:text-app-muted transition-colors shrink-0">
+        <button aria-label="Zoom in" onClick={onZoomIn} disabled={scale >= 4} className={`p-1 text-app-muted hover:text-app disabled:opacity-30 disabled:hover:text-app-muted transition-colors shrink-0 ${TOUCH_TARGET}`}>
           <ZoomIn size={16} />
         </button>
       </div>
@@ -154,7 +157,7 @@ export function Toolbar({
       <div className="flex items-center gap-1 md:gap-2 shrink-0">
         <button
           onClick={toggleTheme}
-          className="p-1.5 md:p-2 rounded-lg transition-colors border bg-panel-elevated text-app-muted hover:text-app border-app"
+          className={`p-1.5 md:p-2 rounded-lg transition-colors border bg-panel-elevated text-app-muted hover:text-app border-app ${TOUCH_TARGET}`}
           title={theme === 'dark' ? 'Switch to white mode' : 'Switch to dark mode'}
         >
           {theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
@@ -165,7 +168,7 @@ export function Toolbar({
             onClick={onToggleFocusMode}
             aria-pressed={isFocusMode}
             aria-label="Focus mode"
-            className={`hidden md:block p-1.5 md:p-2 rounded-lg transition-colors border ${isFocusMode ? 'bg-bloom-100 text-accent border-accent/50' : 'bg-panel-elevated text-app-muted hover:text-app border-app'}`}
+            className={`hidden md:inline-flex items-center justify-center pointer-coarse:min-h-11 pointer-coarse:min-w-11 p-1.5 md:p-2 rounded-lg transition-colors border ${isFocusMode ? 'bg-bloom-100 text-accent border-accent/50' : 'bg-panel-elevated text-app-muted hover:text-app border-app'}`}
             title={isFocusMode ? 'Exit focus mode' : 'Focus mode: hide options and pages panels'}
           >
             <Focus size={16} />
@@ -177,7 +180,7 @@ export function Toolbar({
             onClick={onToggleThumbnails}
             aria-pressed={isThumbnailsOpen}
             aria-label="Pages panel"
-            className={`hidden md:block p-1.5 md:p-2 rounded-lg transition-colors border ${isThumbnailsOpen ? 'bg-bloom-100 text-accent border-accent/50' : 'bg-panel-elevated text-app-muted hover:text-app border-app'}`}
+            className={`hidden md:inline-flex items-center justify-center pointer-coarse:min-h-11 pointer-coarse:min-w-11 p-1.5 md:p-2 rounded-lg transition-colors border ${isThumbnailsOpen ? 'bg-bloom-100 text-accent border-accent/50' : 'bg-panel-elevated text-app-muted hover:text-app border-app'}`}
             title={isThumbnailsOpen ? 'Hide pages panel' : 'Show pages panel'}
           >
             <PanelRight size={16} />
@@ -187,7 +190,7 @@ export function Toolbar({
         {onToggleSearch && (
           <button
             onClick={onToggleSearch}
-            className={`p-1.5 md:p-2 rounded-lg transition-colors border ${isSearchOpen ? 'bg-bloom-100 text-accent border-accent/50' : 'bg-panel-elevated text-app-muted hover:text-app border-app'}`}
+            className={`p-1.5 md:p-2 rounded-lg transition-colors border ${TOUCH_TARGET} ${isSearchOpen ? 'bg-bloom-100 text-accent border-accent/50' : 'bg-panel-elevated text-app-muted hover:text-app border-app'}`}
             title="Toggle Find & Replace"
           >
             <Search size={16} />
@@ -209,7 +212,8 @@ export function Toolbar({
             <button
               onClick={onExport}
               className="
-                flex items-center gap-1.5 text-xs font-medium px-2 md:px-3 py-1.5 md:py-2
+                flex items-center justify-center gap-1.5 text-xs font-medium px-2 md:px-3 py-1.5 md:py-2
+                pointer-coarse:min-h-11 pointer-coarse:min-w-11
                 bg-panel-elevated hover:opacity-90
                 text-app-muted hover:text-app
                 border border-app

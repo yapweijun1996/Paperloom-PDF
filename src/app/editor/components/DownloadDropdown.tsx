@@ -269,7 +269,7 @@ export function DownloadDropdown({
           onClick={onDownload}
           disabled={isSaving}
           title="Download original / edited PDF (no recompression)"
-          className="flex items-center gap-2 text-xs font-semibold pl-3 md:pl-4 pr-2 md:pr-3 py-2 bg-gradient-to-b from-bloom-500 to-bloom-600 hover:from-bloom-600 hover:to-bloom-700 disabled:from-zinc-700 disabled:to-zinc-800 disabled:text-zinc-500 text-white rounded-l-xl transition-all duration-200 ease-out active:scale-[0.98]"
+          className="flex items-center justify-center gap-2 text-xs font-semibold pl-3 md:pl-4 pr-2 md:pr-3 py-2 pointer-coarse:min-h-11 pointer-coarse:min-w-11 bg-gradient-to-b from-bloom-500 to-bloom-600 hover:from-bloom-600 hover:to-bloom-700 disabled:from-zinc-700 disabled:to-zinc-800 disabled:text-zinc-500 text-white rounded-l-xl transition-all duration-200 ease-out active:scale-[0.98]"
         >
           {isSaving ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
           <span className="hidden sm:inline">Download</span>
@@ -282,7 +282,7 @@ export function DownloadDropdown({
           aria-label="Download options"
           aria-expanded={isOpen}
           aria-haspopup="dialog"
-          className="flex items-center px-2 py-2 bg-gradient-to-b from-bloom-500 to-bloom-600 hover:from-bloom-600 hover:to-bloom-700 disabled:from-zinc-700 disabled:to-zinc-800 disabled:text-zinc-500 text-white rounded-r-xl border-l border-bloom-200/30 transition-all duration-200 ease-out active:scale-[0.98]"
+          className="flex items-center justify-center px-2 py-2 pointer-coarse:min-h-11 pointer-coarse:min-w-11 bg-gradient-to-b from-bloom-500 to-bloom-600 hover:from-bloom-600 hover:to-bloom-700 disabled:from-zinc-700 disabled:to-zinc-800 disabled:text-zinc-500 text-white rounded-r-xl border-l border-bloom-200/30 transition-all duration-200 ease-out active:scale-[0.98]"
         >
           <ChevronDown
             size={14}

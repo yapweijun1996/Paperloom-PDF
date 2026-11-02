@@ -28,6 +28,26 @@ it('names navigation and zoom controls and exposes disabled states', () => {
   act(() => root.unmount()); container.remove();
 });
 
+it('gives toolbar buttons a 44px hit area on coarse pointers only', () => {
+  const container = document.createElement('div'); document.body.appendChild(container);
+  const root = createRoot(container);
+  const noop = vi.fn();
+  act(() => root.render(createElement(Toolbar, {
+    fileName: 'test.pdf', currentPage: 0, totalPages: 2, scale: 1,
+    drawnPaths: [], isSaving: false, canUndo: true, canRedo: true,
+    onClose: noop, onPrevPage: noop, onNextPage: noop, onZoomIn: noop, onZoomOut: noop,
+    onUndo: noop, onRedo: noop, onClearPaths: noop, onDownload: noop, onToggleSearch: noop, onExport: noop,
+  })));
+  const buttons = [...container.querySelectorAll<HTMLButtonElement>('header button')];
+  expect(buttons.length).toBeGreaterThanOrEqual(10);
+  for (const button of buttons) {
+    const classes = button.className.split(/\s+/);
+    expect(classes, button.title).toEqual(expect.arrayContaining(['pointer-coarse:min-h-11', 'pointer-coarse:min-w-11']));
+    expect(classes).not.toContain('min-h-11');
+  }
+  act(() => root.unmount()); container.remove();
+});
+
 it.each([false, true])('names tools and exposes selection on mobile=%s', (isMobile) => {
   const container = document.createElement('div'); document.body.appendChild(container);
   const root = createRoot(container); const select = vi.fn();
