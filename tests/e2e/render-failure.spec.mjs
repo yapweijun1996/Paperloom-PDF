@@ -88,9 +88,9 @@ for (const [width, height] of [[320, 640], [390, 844], [768, 720], [1024, 768], 
     await page.getByRole('button', { name: 'Next page' }).click();
     const retry = page.getByRole('button', { name: 'Retry rendering' });
     await expect(retry).toBeVisible();
-    const panelBox = await page.locator('[data-theme="dark"]').filter({ has: search }).boundingBox();
+    const panelBox = await page.locator('[data-find-panel]').boundingBox();
     const ocrBox = await page.getByTitle('OCR recognize text').boundingBox();
-    const statusBox = await retry.locator('..').boundingBox();
+    const statusBox = await page.getByRole('status').filter({ has: retry }).boundingBox();
     expect(panelBox).not.toBeNull();
     expect(ocrBox).not.toBeNull();
     expect(statusBox).not.toBeNull();

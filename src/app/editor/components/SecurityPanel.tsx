@@ -168,7 +168,7 @@ export function SecurityPanel({ doc, engine, onDocChange, markDirty, onBusyChang
       {isMobile && (
         <div className="fixed inset-0 z-[300] mobile-backdrop" onClick={onClose} />
       )}
-      <div className={isMobile
+      <div data-security-panel className={isMobile
         ? 'fixed bottom-0 left-0 right-0 z-[400] bg-panel/98 backdrop-blur-xl border-t border-app flex flex-col overflow-hidden mobile-sheet-up shadow-[0_-8px_40px_rgba(0,0,0,0.15)]'
         : 'w-72 bg-panel/95 backdrop-blur-md border-r border-app flex flex-col shrink-0 z-[100] overflow-hidden shadow-[4px_0_24px_rgba(0,0,0,0.08)] min-h-0 h-full'
       } style={isMobile ? { maxHeight: '65vh' } : undefined}>
@@ -218,7 +218,7 @@ export function SecurityPanel({ doc, engine, onDocChange, markDirty, onBusyChang
         ))}
       </div>
 
-      <div className="flex-1 overflow-y-auto p-4 space-y-3 text-xs">
+      <div data-security-panel-scroll className="flex-1 overflow-y-auto p-4 space-y-3 text-xs">
         {tab === 'inspect' && report && (
           <>
             <Row label="Encryption" value={report.encrypted ? `${report.handler} / ${report.algorithm ?? '?'}` : 'None'} />

@@ -48,7 +48,7 @@ export function FindReplacePanel({
   };
 
   return (
-    <div data-theme="dark" className="p-3 space-y-2.5 bg-zinc-900/95 backdrop-blur-md rounded-xl border border-zinc-700/80 shadow-2xl w-full md:w-72 font-sans">
+    <div data-find-panel data-theme="dark" className="p-3 space-y-2.5 bg-zinc-900/95 backdrop-blur-md rounded-xl border border-zinc-700/80 shadow-2xl w-full md:w-72 font-sans">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-1.5 text-[11px] font-bold tracking-wider text-zinc-300 uppercase">

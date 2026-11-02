@@ -71,7 +71,7 @@ export function ToolsSidebar({
   /* ── Mobile: horizontal bottom strip ── */
   if (isMobile) {
     return (
-      <aside className="fixed bottom-0 left-0 right-0 z-[100] bg-panel/95 backdrop-blur-md border-t border-app shadow-[0_-4px_24px_rgba(0,0,0,0.12)]">
+      <aside data-mobile-tools className="fixed bottom-0 left-0 right-0 z-[100] bg-panel/95 backdrop-blur-md border-t border-app shadow-[0_-4px_24px_rgba(0,0,0,0.12)]">
         <div className="flex items-center gap-1 px-2 py-1.5 overflow-x-auto scrollbar-hide">
           {TOOLS.map((tool) => {
             const isActive = activeTool === tool.id;

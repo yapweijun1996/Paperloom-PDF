@@ -273,7 +273,7 @@ for (const [start, finish] of [['desktop', 'mobile'], ['mobile', 'desktop']]) {
       else await surface.click({ position: { x: 120, y: 132 } });
       await Promise.race([started, new Promise((_, reject) => setTimeout(() => reject(new Error('Font request did not start')), 10_000))]);
       await page.setViewportSize(sizes[finish]);
-      const mobileTools = page.locator('aside.fixed.bottom-0');
+      const mobileTools = page.locator('[data-mobile-tools]');
       if (finish === 'mobile') await expect(mobileTools).toBeVisible();
       else await expect(mobileTools).toHaveCount(0);
       release();

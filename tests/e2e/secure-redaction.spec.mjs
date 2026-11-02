@@ -177,10 +177,10 @@ test.describe('mobile redaction', () => {
     page.on('pageerror', error => errors.push(error.message));
     page.on('console', message => { if (message.type() === 'error') errors.push(message.text()); });
     await openPdf(page, await fixture());
-    const panel = page.locator('div.fixed.bottom-0.left-0.right-0').filter({ hasText: 'Document Security' });
+    const panel = page.locator('[data-security-panel]');
     await expect(panel).toBeVisible();
     if (process.env.PAPERLOOM_LAYOUT_CAPTURE_DIR) await page.screenshot({ path: join(process.env.PAPERLOOM_LAYOUT_CAPTURE_DIR, 'mobile-panel.png') });
-    const scroll = panel.locator('.overflow-y-auto');
+    const scroll = panel.locator('[data-security-panel-scroll]');
     for (const fraction of [0, 0.5, 1]) {
       await scroll.evaluate((el, value) => { el.scrollTop = (el.scrollHeight - el.clientHeight) * value; }, fraction);
       await expect(panel.getByText('Document Security')).toBeVisible();
