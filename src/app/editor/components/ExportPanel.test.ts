@@ -70,6 +70,8 @@ it('focuses the named close button and returns focus to the opener', async () =>
   await act(async () => close.click());
   expect(props.onClose).toHaveBeenCalledOnce();
   await act(async () => root.render(createElement(ExportPanel, { ...props, isOpen: false })));
+  // Radix restores focus in a timer after the focus scope unmounts.
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 10)); });
   expect(document.activeElement).toBe(opener);
   opener.remove();
 });
