@@ -10,11 +10,10 @@ import {
   Sparkles,
   ScrollText,
   AlertTriangle,
-  CheckCircle2,
-  Loader2,
   PanelLeftClose,
 } from 'lucide-react';
 import type { PDFDocumentData, FullSecurityReport } from '@/engine/browser-core';
+import { Button, Notice, SecretInput, Select, useConfirm } from '../ui';
 
 interface SecurityPanelProps {
   doc: PDFDocumentData | null;
@@ -54,6 +53,7 @@ export function SecurityPanel({ doc, engine, onDocChange, markDirty, onBusyChang
   }, [redactionStatus, redactionStatusVisible]);
   const [error, setError] = useState<string | null>(null);
   const [redactionActionActive, setRedactionActionActive] = useState(false);
+  const { confirm: requestConfirm, dialog: confirmDialog } = useConfirm();
 
   const [userPassword, setUserPassword] = useState('');
   const [ownerPassword, setOwnerPassword] = useState('');
@@ -139,6 +139,22 @@ export function SecurityPanel({ doc, engine, onDocChange, markDirty, onBusyChang
     }
   }, [doc, onRedact, onBusyChange, refresh]);
 
+  // Page and marks redaction remove content outright, so they ask first.
+  const confirmRedaction = useCallback(async (mode: 'page' | 'marks') => {
+    const confirmed = await requestConfirm(mode === 'page' ? {
+      title: 'Redact entire page',
+      message: 'Remove all content from the current page? You can undo this before downloading; a downloaded copy keeps the redaction.',
+      confirmLabel: 'Redact page',
+      tone: 'danger',
+    } : {
+      title: 'Apply redaction marks',
+      message: 'Remove the content under every existing redaction mark? You can undo this before downloading; a downloaded copy keeps the redaction.',
+      confirmLabel: 'Apply marks',
+      tone: 'danger',
+    });
+    if (confirmed) await runRedaction(mode);
+  }, [requestConfirm, runRedaction]);
+
   if (!doc || !engine) {
     return (
       <div className="w-72 bg-panel/95 border-r border-app p-4 text-xs text-app-faint">
@@ -149,18 +165,19 @@ export function SecurityPanel({ doc, engine, onDocChange, markDirty, onBusyChang
 
   if (isMobile && (selectingRedactionRegion || hasRedactionRegion)) {
     return (
-      <div className="fixed bottom-14 left-2 right-2 z-[400] rounded-lg bg-zinc-900 p-3 text-xs text-white shadow-lg">
+      <div className="fixed bottom-14 left-2 right-2 z-[400] rounded-lg border border-app bg-panel p-3 text-xs text-app shadow-lg">
         <div className="flex items-center justify-between gap-2">
           <span>{selectingRedactionRegion ? 'Drag on the page to select a region.' : 'Check the selected area.'}</span>
-          {hasRedactionRegion && <button type="button" disabled={busy} className="min-h-11 font-semibold underline" onClick={() => void runRedaction('region')}>Apply selected region</button>}
+          {hasRedactionRegion && <button type="button" disabled={busy} className="min-h-11 font-semibold text-danger underline" onClick={() => void runRedaction('region')}>Apply selected region</button>}
           <button type="button" disabled={busy} className="min-h-11 min-w-11 underline" onClick={onCancelRedactionRegion}>Cancel</button>
         </div>
-        {error && <p role="alert" className="mt-2 text-red-300">{error}</p>}
+        {error && <p role="alert" className="mt-2 text-danger">{error}</p>}
       </div>
     );
   }
 
   const selectedPolicy = tab === 'policies' ? engine.securityEngine.policy.getPolicy(policyName) : null;
+  const sectionLabel = 'block text-[10px] font-bold tracking-widest text-app-faint uppercase';
 
   return (
     <>
@@ -174,24 +191,25 @@ export function SecurityPanel({ doc, engine, onDocChange, markDirty, onBusyChang
       } style={isMobile ? { maxHeight: '65vh' } : undefined}>
       <div className="p-4 pb-2 border-b border-app">
         <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2 text-[10px] font-bold tracking-widest text-emerald-500 uppercase">
-            <Shield size={14} className="text-emerald-500" />
+          <div className="flex items-center gap-2 text-[10px] font-bold tracking-widest text-accent uppercase">
+            <Shield size={14} aria-hidden="true" />
             Document Security
           </div>
           {onClose && (
             <button
               onClick={onClose}
               title="Hide sidebar panel"
-              className="text-app-muted hover:text-app p-1 rounded-lg hover:bg-panel-elevated transition-colors"
+              aria-label="Hide sidebar panel"
+              className="text-app-muted hover:text-app p-1 rounded-lg hover:bg-panel-elevated transition-colors pointer-coarse:min-h-11 pointer-coarse:min-w-11"
             >
-              <PanelLeftClose size={14} />
+              <PanelLeftClose size={14} aria-hidden="true" />
             </button>
           )}
         </div>
         {report && (
           <div className="mt-2 flex items-center justify-between text-xs">
             <span className="text-app-muted">Score</span>
-            <span className={`font-semibold ${report.score >= 70 ? 'text-emerald-500' : report.score >= 40 ? 'text-amber-500' : 'text-red-500'}`}>
+            <span className={`font-semibold ${report.score >= 70 ? 'text-success' : report.score >= 40 ? 'text-warning' : 'text-danger'}`}>
               {report.score}/100
             </span>
           </div>
@@ -208,9 +226,10 @@ export function SecurityPanel({ doc, engine, onDocChange, markDirty, onBusyChang
           <button
             key={id}
             type="button"
+            aria-pressed={tab === id}
             onClick={() => setTab(id)}
-            className={`flex-1 py-2.5 font-semibold uppercase tracking-wide transition-colors ${
-              tab === id ? 'text-amber-500 border-b-2 border-amber-500 bg-panel-elevated' : 'text-app-muted hover:text-app'
+            className={`flex-1 py-2.5 font-semibold uppercase tracking-wide transition-colors pointer-coarse:min-h-11 ${
+              tab === id ? 'text-accent border-b-2 border-accent bg-panel-elevated' : 'text-app-muted hover:text-app'
             }`}
           >
             {label}
@@ -230,61 +249,58 @@ export function SecurityPanel({ doc, engine, onDocChange, markDirty, onBusyChang
             <Row label="Redact marks" value={report.redactionMarksComplete === false ? `${report.redactionMarks} detected; inspection incomplete` : String(report.redactionMarks)} warn={report.redactionMarksComplete === false} />
 
             <div className="pt-2 space-y-1.5">
-              <div className="text-[10px] font-bold tracking-widest text-app-faint uppercase">Recommendations</div>
+              <div className={sectionLabel}>Recommendations</div>
               {report.recommendations.map((r) => (
                 <div key={r} className="flex gap-2 text-app-muted leading-relaxed">
-                  <AlertTriangle size={12} className="shrink-0 mt-0.5 text-amber-500" />
+                  <AlertTriangle size={12} aria-hidden="true" className="shrink-0 mt-0.5 text-warning" />
                   <span>{r}</span>
                 </div>
               ))}
             </div>
 
-            <button
-              type="button"
+            <Button
+              className="mt-2 w-full"
               disabled={busy}
               onClick={() => run(async () => {
                 await engine.securityEngine.integrity.scan(doc);
                 return 'Integrity scan complete';
               })}
-              className="w-full mt-2 flex items-center justify-center gap-2 rounded-lg bg-panel-elevated hover:bg-panel-elevated/80 py-2 text-app border border-app font-medium"
             >
-              <FileSearch size={14} /> Rescan
-            </button>
+              <FileSearch size={14} aria-hidden="true" /> Rescan
+            </Button>
           </>
         )}
 
         {tab === 'protect' && (
           <>
-            <label htmlFor="security-protect-user-password" className="block text-[10px] font-bold tracking-widest text-app-faint uppercase">User password</label>
-            <input
+            <label htmlFor="security-protect-user-password" className={sectionLabel}>User password</label>
+            <SecretInput
               id="security-protect-user-password"
-              type="password"
+              autoComplete="new-password"
               value={userPassword}
               onChange={(e) => setUserPassword(e.target.value)}
-              className="w-full rounded-lg border border-app bg-panel-elevated px-3 py-2 text-app outline-none focus:border-amber-500"
               placeholder="Optional open password"
             />
-            <label htmlFor="security-protect-owner-password" className="block text-[10px] font-bold tracking-widest text-app-faint uppercase">Owner password</label>
-            <input
+            <label htmlFor="security-protect-owner-password" className={sectionLabel}>Owner password</label>
+            <SecretInput
               id="security-protect-owner-password"
-              type="password"
+              autoComplete="new-password"
               value={ownerPassword}
               onChange={(e) => setOwnerPassword(e.target.value)}
-              className="w-full rounded-lg border border-app bg-panel-elevated px-3 py-2 text-app outline-none focus:border-amber-500"
               placeholder="Required for permissions"
               required
             />
             <p className="text-app-faint leading-relaxed">An owner password is required. Without a user password, anyone can open the PDF.</p>
-            <label className="block text-[10px] font-bold tracking-widest text-app-faint uppercase">Algorithm</label>
-            <select
+            <label htmlFor="security-protect-algorithm" className={sectionLabel}>Algorithm</label>
+            <Select
+              id="security-protect-algorithm"
               value={algorithm}
               onChange={(e) => setAlgorithm(e.target.value as typeof algorithm)}
-              className="w-full rounded-lg border border-app bg-panel-elevated px-3 py-2 text-app"
             >
               <option value="AES-256">AES-256 (recommended)</option>
               <option value="AES-128">AES-128</option>
               <option value="RC4-128">RC4-128 (legacy)</option>
-            </select>
+            </Select>
 
             <div className="space-y-2 pt-1">
               <Toggle label="Allow print" checked={allowPrint} onChange={setAllowPrint} />
@@ -292,9 +308,11 @@ export function SecurityPanel({ doc, engine, onDocChange, markDirty, onBusyChang
               <Toggle label="Allow modify" checked={allowModify} onChange={setAllowModify} />
             </div>
 
-            <button
-              type="button"
-              disabled={busy || engine.securityEngine.isEncrypted(doc) || ownerPassword.length === 0}
+            <Button
+              variant="danger"
+              className="w-full"
+              loading={busy}
+              disabled={engine.securityEngine.isEncrypted(doc) || ownerPassword.length === 0}
               onClick={() => run(async () => {
                 await engine.securityEngine.encrypt(doc, {
                   userPassword,
@@ -313,24 +331,22 @@ export function SecurityPanel({ doc, engine, onDocChange, markDirty, onBusyChang
                 });
                 return 'Document encrypted';
               })}
-              className="w-full flex items-center justify-center gap-2 rounded-lg bg-amber-600 hover:bg-amber-500 disabled:opacity-50 py-2 text-white font-medium shadow-sm"
             >
-              {busy ? <Loader2 size={14} className="animate-spin" /> : <Lock size={14} />}
+              {!busy && <Lock size={14} aria-hidden="true" />}
               Encrypt PDF
-            </button>
+            </Button>
 
             {engine.securityEngine.isEncrypted(doc) && (
-              <button
-                type="button"
+              <Button
+                className="w-full"
                 disabled={busy}
                 onClick={() => run(async () => {
                   await engine.securityEngine.decrypt(doc, userPassword);
                   return 'Document decrypted (Encrypt dict removed)';
                 })}
-                className="w-full flex items-center justify-center gap-2 rounded-lg bg-panel-elevated hover:bg-panel-elevated/80 py-2 text-app border border-app"
               >
-                <Unlock size={14} /> Remove encryption
-              </button>
+                <Unlock size={14} aria-hidden="true" /> Remove encryption
+              </Button>
             )}
           </>
         )}
@@ -343,128 +359,115 @@ export function SecurityPanel({ doc, engine, onDocChange, markDirty, onBusyChang
                 <p className="text-app-faint leading-relaxed">
                   Select an area or the entire page. Unsupported content is refused; independent copies elsewhere may remain.
                 </p>
-                <button type="button" disabled={busy} onClick={() => { setRedactionStatus(null); setError(null); (selectingRedactionRegion ? onCancelRedactionRegion : onSelectRedactionRegion)?.(); }}
-                  className="w-full rounded-lg bg-panel-elevated hover:bg-panel-elevated/80 py-2 text-app border border-app">
+                <Button className="w-full" disabled={busy} onClick={() => { setRedactionStatus(null); setError(null); (selectingRedactionRegion ? onCancelRedactionRegion : onSelectRedactionRegion)?.(); }}>
                   {selectingRedactionRegion ? 'Cancel region selection' : 'Select redaction region'}
-                </button>
+                </Button>
                 {selectingRedactionRegion && <p role="status" className="text-app-faint">Drag across the page to select a region.</p>}
-                {hasRedactionRegion && <button type="button" disabled={busy} onClick={() => void runRedaction('region')}
-                  className="w-full rounded-lg bg-red-700 hover:bg-red-600 py-2 text-white font-medium">
-                  Apply selected region
-                </button>}
-                <button type="button" disabled={busy} onClick={() => void runRedaction('page')}
-                  className="w-full rounded-lg bg-panel-elevated hover:bg-panel-elevated/80 py-2 text-app border border-app">
+                {hasRedactionRegion && (
+                  <Button variant="danger" className="w-full" disabled={busy} onClick={() => void runRedaction('region')}>
+                    Apply selected region
+                  </Button>
+                )}
+                <Button variant="danger" className="w-full" disabled={busy} onClick={() => void confirmRedaction('page')}>
                   Redact entire current page
-                </button>
-                <button type="button" disabled={busy} onClick={() => void runRedaction('marks')}
-                  className="w-full rounded-lg bg-panel-elevated hover:bg-panel-elevated/80 py-2 text-app border border-app">
+                </Button>
+                <Button variant="danger" className="w-full" disabled={busy} onClick={() => void confirmRedaction('marks')}>
                   Apply existing redaction marks
-                </button>
+                </Button>
                 {redactionStatus && redactionStatusVisible && (
-                  <div role="status" className="flex gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-2 text-emerald-500 font-medium">
-                    <CheckCircle2 size={14} className="shrink-0 mt-0.5" />
-                    <span>{redactionStatus.message}</span>
-                  </div>
+                  <Notice tone="success" className="text-xs font-medium">{redactionStatus.message}</Notice>
                 )}
                 {redactionActionActive && error && (
-                  <div role="alert" className="flex gap-2 rounded-lg border border-red-500/30 bg-red-500/10 p-2 text-red-500 font-medium">
-                    <AlertTriangle size={14} className="shrink-0 mt-0.5" />
-                    <span>{error}</span>
-                  </div>
+                  <Notice tone="danger" className="text-xs font-medium">{error}</Notice>
                 )}
               </div>
             )}
             <p className="text-app-faint leading-relaxed">
               Remove metadata, JavaScript, attachments, and unused objects.
             </p>
-            <button
-              type="button"
+            <Button
+              variant="primary"
+              className="w-full"
               disabled={busy}
               onClick={() => run(async () => {
                 const r = await engine.securityEngine.sanitization.sanitize(doc);
                 return `${r.report.join(' · ') || 'Cleanup prepared'}. Download a new copy to apply changes; the original file is unchanged.`;
               })}
-              className="w-full flex items-center justify-center gap-2 rounded-lg bg-amber-600 hover:bg-amber-500 py-2 text-white font-medium shadow-sm"
             >
-              <Eraser size={14} /> Sanitize document
-            </button>
-            <button
-              type="button"
+              <Eraser size={14} aria-hidden="true" /> Sanitize document
+            </Button>
+            <Button
+              className="w-full"
               disabled={busy}
               onClick={() => run(async () => {
                 const result = engine.securityEngine.javascript.removeJavaScript(doc);
                 return `Removed ${result.removed} known JavaScript action link(s); other action types are unchanged. Download a new copy to apply changes; the original file is unchanged.`;
               })}
-              className="w-full flex items-center justify-center gap-2 rounded-lg bg-panel-elevated hover:bg-panel-elevated/80 py-2 text-app border border-app"
             >
               Remove JavaScript
-            </button>
-            <button
-              type="button"
+            </Button>
+            <Button
+              className="w-full"
               disabled={busy}
               onClick={() => run(async () => {
                 const n = engine.securityEngine.embeddedFiles.removeAllAttachments(doc);
                 return `Removed ${n} attachment(s). Download a new copy to apply changes; the original file is unchanged.`;
               })}
-              className="w-full flex items-center justify-center gap-2 rounded-lg bg-panel-elevated hover:bg-panel-elevated/80 py-2 text-app border border-app"
             >
               Remove attachments
-            </button>
-            <button
-              type="button"
+            </Button>
+            <Button
+              className="w-full"
               disabled={busy}
               onClick={() => run(async () => {
                 engine.securityEngine.metadata.stripMetadata(doc);
                 return 'Metadata cleanup prepared. Download a new copy to apply changes; the original file is unchanged.';
               })}
-              className="w-full flex items-center justify-center gap-2 rounded-lg bg-panel-elevated hover:bg-panel-elevated/80 py-2 text-app border border-app"
             >
               Strip metadata
-            </button>
-            <button
-              type="button"
+            </Button>
+            <Button
+              className="w-full"
               disabled={busy}
               onClick={() => run(async () => {
                 const r = await engine.securityEngine.optimizer.optimizeWithReport(doc);
                 return r.notes.join(' · ');
               })}
-              className="w-full flex items-center justify-center gap-2 rounded-lg bg-panel-elevated hover:bg-panel-elevated/80 py-2 text-app border border-app"
             >
-              <Sparkles size={14} /> Optimize (keep security)
-            </button>
+              <Sparkles size={14} aria-hidden="true" /> Optimize (keep security)
+            </Button>
           </>
         )}
 
         {tab === 'policies' && (
           <>
-            <label className="block text-[10px] font-bold tracking-widest text-app-faint uppercase">Policy</label>
-            <select
+            <label htmlFor="security-policy-name" className={sectionLabel}>Policy</label>
+            <Select
+              id="security-policy-name"
               value={policyName}
               onChange={(e) => setPolicyName(e.target.value)}
-              className="w-full rounded-lg border border-app bg-panel-elevated px-3 py-2 text-app"
             >
               {policies.map((p) => (
                 <option key={p} value={p}>{p}</option>
               ))}
-            </select>
+            </Select>
             <p className="text-app-faint leading-relaxed">
               {selectedPolicy?.description}
             </p>
             {selectedPolicy?.requireEncryption && (
               <>
-                <label htmlFor="security-policy-user-password" className="block text-[10px] font-bold tracking-widest text-app-faint uppercase">User password{selectedPolicy.requireUserPassword ? ' (required)' : ' (optional)'}</label>
-                <input id="security-policy-user-password" type="password" value={userPassword}
-                  onChange={(e) => setUserPassword(e.target.value)} required={!!selectedPolicy.requireUserPassword}
-                  className="w-full rounded-lg border border-app bg-panel-elevated px-3 py-2 text-app outline-none focus:border-amber-500" />
-                <label htmlFor="security-policy-owner-password" className="block text-[10px] font-bold tracking-widest text-app-faint uppercase">Owner password (required)</label>
-                <input id="security-policy-owner-password" type="password" value={ownerPassword}
-                  onChange={(e) => setOwnerPassword(e.target.value)} required
-                  className="w-full rounded-lg border border-app bg-panel-elevated px-3 py-2 text-app outline-none focus:border-amber-500" />
+                <label htmlFor="security-policy-user-password" className={sectionLabel}>User password{selectedPolicy.requireUserPassword ? ' (required)' : ' (optional)'}</label>
+                <SecretInput id="security-policy-user-password" autoComplete="new-password" value={userPassword}
+                  onChange={(e) => setUserPassword(e.target.value)} required={!!selectedPolicy.requireUserPassword} />
+                <label htmlFor="security-policy-owner-password" className={sectionLabel}>Owner password (required)</label>
+                <SecretInput id="security-policy-owner-password" autoComplete="new-password" value={ownerPassword}
+                  onChange={(e) => setOwnerPassword(e.target.value)} required />
                 {!selectedPolicy.requireUserPassword && <p className="text-app-faint leading-relaxed">Without a user password, anyone can open the PDF.</p>}
               </>
             )}
-            <button
-              type="button"
+            <Button
+              variant={selectedPolicy?.requireEncryption ? 'danger' : 'primary'}
+              className="w-full"
               disabled={busy || !selectedPolicy || (!!selectedPolicy.requireEncryption &&
                 (ownerPassword.length === 0 || (!!selectedPolicy.requireUserPassword && userPassword.length === 0)))}
               onClick={() => run(async () => {
@@ -474,27 +477,17 @@ export function SecurityPanel({ doc, engine, onDocChange, markDirty, onBusyChang
                 });
                 return `Applied policy: ${policyName}`;
               })}
-              className="w-full flex items-center justify-center gap-2 rounded-lg bg-amber-600 hover:bg-amber-500 py-2 text-white font-medium shadow-sm"
             >
-              <ScrollText size={14} /> Apply policy
-            </button>
+              <ScrollText size={14} aria-hidden="true" /> Apply policy
+            </Button>
           </>
         )}
 
-        {message && (
-          <div className="flex gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-2 text-emerald-500 font-medium">
-            <CheckCircle2 size={14} className="shrink-0 mt-0.5" />
-            <span>{message}</span>
-          </div>
-        )}
-        {error && !redactionActionActive && (
-          <div className="flex gap-2 rounded-lg border border-red-500/30 bg-red-500/10 p-2 text-red-500 font-medium">
-            <AlertTriangle size={14} className="shrink-0 mt-0.5" />
-            <span>{error}</span>
-          </div>
-        )}
+        {message && <Notice tone="success" className="text-xs font-medium">{message}</Notice>}
+        {error && !redactionActionActive && <Notice tone="danger" className="text-xs font-medium">{error}</Notice>}
       </div>
     </div>
+    {confirmDialog}
     </>
   );
 }
@@ -503,7 +496,7 @@ function Row({ label, value, warn }: { label: string; value: string; warn?: bool
   return (
     <div className="flex items-center justify-between gap-2">
       <span className="text-app-faint">{label}</span>
-      <span className={`font-medium text-right ${warn ? 'text-amber-500' : 'text-app'}`}>{value}</span>
+      <span className={`font-medium text-right ${warn ? 'text-warning' : 'text-app'}`}>{value}</span>
     </div>
   );
 }
@@ -525,9 +518,10 @@ function Toggle({
         role="switch"
         aria-checked={checked}
         onClick={() => onChange(!checked)}
-        className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${checked ? 'bg-amber-500' : 'bg-panel-elevated border border-app'}`}
+        className={`relative inline-flex h-5 w-9 items-center rounded-full border transition-colors ${checked ? 'border-transparent bg-bloom-500' : 'border-app bg-panel-elevated'}`}
       >
-        <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow-sm transition-transform ${checked ? 'translate-x-[18px]' : 'translate-x-0.5'}`} />
+        {/* The knob is --on-accent (white in both themes), like the jade fill it sits on. */}
+        <span className={`inline-block h-4 w-4 transform rounded-full bg-on-accent shadow-sm transition-transform ${checked ? 'translate-x-[17px]' : 'translate-x-0.5'}`} />
       </button>
     </label>
   );

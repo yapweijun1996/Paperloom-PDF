@@ -21,6 +21,14 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+/** Answers the redaction ConfirmDialog, which portals outside the container. */
+async function confirmDialog(label: string) {
+  const dialog = document.querySelector('[role="dialog"]');
+  const button = [...(dialog?.querySelectorAll('button') ?? [])].find(item => item.textContent?.trim() === label);
+  if (!button) throw new Error(`Missing confirmation button: ${label}`);
+  await act(async () => button.click());
+}
+
 function report(score: number): FullSecurityReport {
   return {
     score, encrypted: false, metadata: { hasInfo: false, hasXmp: false },
@@ -211,6 +219,8 @@ it.each(['success', 'failure'] as const)('runs secure redaction without marking 
   };
   await click('Clean');
   await click('Redact entire current page');
+  expect(onRedact).not.toHaveBeenCalled();
+  await confirmDialog('Redact page');
   expect(onRedact).toHaveBeenCalledWith('page');
   expect(markDirty).not.toHaveBeenCalled();
   expect(onDocChange).not.toHaveBeenCalled();
@@ -235,7 +245,7 @@ it.each(['revision', 'edit revision', 'page', 'document'] as const)(
       if (!button) throw new Error(`Missing button: ${label}`);
       await act(async () => button.click());
     };
-    await click('Clean'); await click('Redact entire current page');
+    await click('Clean'); await click('Redact entire current page'); await confirmDialog('Redact page');
     expect(container.textContent).toContain('Redacted one page.');
     const changed = kind === 'revision' ? { documentRevision: 2 } : kind === 'edit revision' ? { documentEditRevision: 3 }
       : kind === 'page' ? { documentPageKey: '2_0' } : { doc: {} as PDFDocumentData };
@@ -245,3 +255,39 @@ it.each(['revision', 'edit revision', 'page', 'document'] as const)(
     expect(container.textContent).not.toContain('Redacted one page.');
   },
 );
+
+it.each([
+  ['Redact entire current page', 'Redact page', 'page'],
+  ['Apply existing redaction marks', 'Apply marks', 'marks'],
+] as const)('asks before %s, styles it as danger and does nothing when cancelled', async (label, confirmLabel, mode) => {
+  const onRedact = vi.fn().mockResolvedValue({ message: 'Redacted.', revision: 0, editRevision: 0, pageKey: '' });
+  const engine = { securityEngine: {
+    inspector: { inspectFull: vi.fn().mockResolvedValue(report(88)) }, policy: { listPolicies: () => [] },
+  } } as unknown as typeof import('@/engine/browser-core');
+  await act(async () => root.render(createElement(SecurityPanel, { doc: {} as PDFDocumentData, engine, onDocChange: vi.fn(), onRedact })));
+  const button = (text: string) => [...container.querySelectorAll('button')].find(item => item.textContent?.trim() === text)!;
+  await act(async () => button('Clean').click());
+  expect(button(label).dataset.variant).toBe('danger');
+  await act(async () => button(label).click());
+  expect(document.querySelector('[role="dialog"]')?.getAttribute('data-tone')).toBe('danger');
+  await confirmDialog('Cancel');
+  expect(onRedact).not.toHaveBeenCalled();
+  await act(async () => button(label).click());
+  await confirmDialog(confirmLabel);
+  expect(onRedact).toHaveBeenCalledExactlyOnceWith(mode);
+});
+
+it('uses accent and semantic tokens instead of orange and fixed palette colours', async () => {
+  const engine = { securityEngine: {
+    inspector: { inspectFull: vi.fn().mockResolvedValue(report(88)) }, policy: { listPolicies: () => [], getPolicy: () => null }, isEncrypted: () => false,
+  } } as unknown as typeof import('@/engine/browser-core');
+  await act(async () => root.render(createElement(SecurityPanel, { doc: {} as PDFDocumentData, engine, onDocChange: vi.fn() })));
+  for (const tab of ['Inspect', 'Protect', 'Clean', 'Policy']) {
+    const button = [...container.querySelectorAll('button')].find(item => item.textContent?.trim() === tab)!;
+    await act(async () => button.click());
+    const classes = [...container.querySelectorAll('[class]')].map(node => node.getAttribute('class')).join(' ');
+    expect(classes).not.toMatch(/\b(?:bg|text|border|ring)-(?:amber|orange|emerald|red|zinc)-/);
+  }
+  expect(container.querySelector('[data-security-panel]')).not.toBeNull();
+  expect(container.querySelector('#security-protect-owner-password')).toBeNull();
+});

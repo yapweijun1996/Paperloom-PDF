@@ -102,6 +102,7 @@ test('applies pre-existing marks and refuses mixing them with new selections', a
   await page.getByRole('button', { name: 'Apply selected region' }).click();
   await expect(page.getByText(/Existing redaction marks must be applied or removed/)).toBeVisible();
   await page.getByRole('button', { name: 'Apply existing redaction marks' }).click();
+  await page.getByRole('dialog', { name: 'Apply redaction marks' }).getByRole('button', { name: 'Apply marks' }).click();
   await expect(page.getByText(/Redacted 1 page\(s\)/)).toBeVisible();
   const text = extracted(await download(page));
   expect(text).not.toContain('SECRET'); expect(text).toContain('VISIBLE');
@@ -110,6 +111,7 @@ test('applies pre-existing marks and refuses mixing them with new selections', a
 test('entire-page redaction clears the page and supports undo', async ({ page }) => {
   await openPdf(page, await fixture());
   await page.getByRole('button', { name: 'Redact entire current page' }).click();
+  await page.getByRole('dialog', { name: 'Redact entire page' }).getByRole('button', { name: 'Redact page' }).click();
   await expect(page.getByText(/Redacted 1 page\(s\)/)).toBeVisible();
   expect(extracted(await download(page))).not.toMatch(/SECRET|VISIBLE/);
   await page.getByTitle('Undo (Ctrl+Z)').click();
@@ -148,6 +150,7 @@ test('refuses signed documents without changing the original bytes', async ({ pa
   const original = await fixture({ signed: true });
   await openPdf(page, original);
   await page.getByRole('button', { name: 'Redact entire current page' }).click();
+  await page.getByRole('dialog', { name: 'Redact entire page' }).getByRole('button', { name: 'Redact page' }).click();
   await expect(page.getByText(/Redaction is unavailable for signed or protected PDFs/)).toBeVisible();
   expect(await download(page)).toEqual(original);
 });
@@ -163,6 +166,7 @@ test('refuses redaction while a floating text draft exists and preserves it', as
   await page.getByRole('button', { name: 'Security', exact: true }).click();
   await page.getByRole('button', { name: 'Clean', exact: true }).click();
   await page.getByRole('button', { name: 'Redact entire current page' }).click();
+  await page.getByRole('dialog', { name: 'Redact entire page' }).getByRole('button', { name: 'Redact page' }).click();
   await expect(page.getByText(/Finish or save pending text/)).toBeVisible();
   await expect(draft).toHaveValue('PRESERVED DRAFT');
   const text = extracted(await download(page));
