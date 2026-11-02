@@ -523,6 +523,8 @@ export default function EditorPage() {
     setActiveMatchIndex(index);
   }, []);
   const [searchBusy, setSearchBusy] = useState(false);
+  // Result of the last replace-all; cleared when the query changes or search closes.
+  const [replaceStatus, setReplaceStatus] = useState<string | null>(null);
   const searchBusyRef = useRef(false);
   const lastSearchRef = useRef<{ doc: PDFDocumentData | null; query: string; caseSensitive: boolean } | null>(null);
   const [showExportPanel, setShowExportPanel] = useState(false);
@@ -2952,6 +2954,7 @@ export default function EditorPage() {
     if (!doc || !engineRef.current || searchBusyRef.current || !findText.trim()) return;
     searchBusyRef.current = true;
     setSearchBusy(true);
+    setReplaceStatus(null);
     try {
       const engine = engineRef.current;
       await queueNativeEdit(doc, async isCurrent => {
@@ -2965,6 +2968,7 @@ export default function EditorPage() {
           setRenderKey(k => k + 1);
           setThumbnailKey(k => k + 1);
         }
+        if (isCurrent()) setReplaceStatus(`Replaced ${replacedCount} ${replacedCount === 1 ? 'match' : 'matches'}`);
       });
     } catch (err) {
       console.error('[Search] Replace all error:', err);
@@ -6473,9 +6477,9 @@ export default function EditorPage() {
               <div className="pointer-events-auto">
                 <FindReplacePanel
                   findText={findText}
-                  onFindTextChange={setFindText}
+                  onFindTextChange={value => { setFindText(value); setReplaceStatus(null); }}
                   replaceText={replaceText}
-                  onReplaceTextChange={setReplaceText}
+                  onReplaceTextChange={value => { setReplaceText(value); setReplaceStatus(null); }}
                   matchCount={searchResults.length}
                   currentMatchIndex={activeMatchIndex}
                   onNextMatch={handleNextMatch}
@@ -6484,8 +6488,9 @@ export default function EditorPage() {
                   onReplaceAll={handleReplaceAll}
                   caseSensitive={caseSensitive}
                   onToggleCaseSensitive={() => setCaseSensitive(v => !v)}
-                  onClose={() => setIsSearchOpen(false)}
+                  onClose={() => { setIsSearchOpen(false); setReplaceStatus(null); }}
                   busy={searchBusy}
+                  status={replaceStatus}
                 />
                 {searchResults[activeMatchIndex]?.highlightVisible === false && (
                   <p role="status" aria-live="polite" className="mt-1 max-w-72 rounded bg-zinc-800 px-2 py-1 text-xs text-zinc-200">

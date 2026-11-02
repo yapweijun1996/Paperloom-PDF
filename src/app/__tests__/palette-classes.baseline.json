@@ -5,7 +5,6 @@
   "editor/components/EmbeddedImageOverlay.tsx": 2,
   "editor/components/ExportPanel.tsx": 70,
   "editor/components/FieldRenameNotice.tsx": 4,
-  "editor/components/FindReplacePanel.tsx": 30,
   "editor/components/ImageBoxFields.tsx": 1,
   "editor/components/LinkPopover.tsx": 38,
   "editor/components/PdfConformanceNotice.tsx": 3,
@@ -17,6 +16,6 @@
   "editor/components/signatures/CertificateImportDialog.tsx": 45,
   "editor/components/signatures/SignatureCreateDialog.tsx": 51,
   "editor/components/signatures/SignatureOverlay.tsx": 19,
-  "editor/page.tsx": 83,
+  "editor/page.tsx": 75,
   "page.tsx": 5
 }
