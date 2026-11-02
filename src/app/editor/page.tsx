@@ -82,6 +82,7 @@ import { ThumbnailsSidebar, deletePageConfirmation } from './components/Thumbnai
 import { generateThumbnails, ThumbnailCoordinator } from './thumbnail-generation';
 import { captureFormThumbnailSnapshot, changedFormThumbnailPages, type FormThumbnailSnapshot } from './form-thumbnail-pages';
 import { FieldRenameNotice } from './components/FieldRenameNotice';
+import { WatermarkAppliedNotice } from './components/WatermarkAppliedNotice';
 import { FindReplacePanel } from './components/FindReplacePanel';
 import { StatusBar } from './components/StatusBar';
 import { ExportPanel } from './components/ExportPanel';
@@ -410,7 +411,8 @@ export default function EditorPage() {
   const [watermarkPosition, setWatermarkPosition] = useState<WatermarkPosition>('center');
   const [watermarkMosaic, setWatermarkMosaic] = useState(false);
   const [watermarkLivePreview, setWatermarkLivePreview] = useState(true);
-  const [showApplySuccessModal, setShowApplySuccessModal] = useState(false);
+  const [showWatermarkAppliedNotice, setShowWatermarkAppliedNotice] = useState(false);
+  const dismissWatermarkAppliedNotice = useCallback(() => setShowWatermarkAppliedNotice(false), []);
   const [watermarkPageFrom, setWatermarkPageFrom] = useState(1);
   const [watermarkPageTo, setWatermarkPageTo] = useState(1);
   const [watermarkLayer, setWatermarkLayer] = useState<'above' | 'below'>('above');
@@ -5098,7 +5100,7 @@ export default function EditorPage() {
       setDoc({ ...doc });
       setRenderKey(k => k + 1);
       setWatermarkLivePreview(false);
-      setShowApplySuccessModal(true);
+      setShowWatermarkAppliedNotice(true);
     } catch (e) {
       console.error('[Editor] Apply watermark failed:', e);
       setError(`Failed to apply watermark: ${e instanceof Error ? e.message : String(e)}`);
@@ -7515,6 +7517,11 @@ export default function EditorPage() {
       )}
 
       <FieldRenameNotice changes={renamedFields} onDismiss={() => setRenamedFields([])} />
+      <WatermarkAppliedNotice
+        open={showWatermarkAppliedNotice}
+        onDismiss={dismissWatermarkAppliedNotice}
+        onTurnOnPreview={() => setWatermarkLivePreview(true)}
+      />
 
       {/* Error toast */}
       {error && (
@@ -7547,23 +7554,6 @@ export default function EditorPage() {
                 Yes, Remove
               </button>
             </div>
-          </div>
-        </div>
-      )}
-
-      {showApplySuccessModal && (
-        <div className="fixed inset-0 z-[500] bg-black/80 flex items-center justify-center p-4 animate-in fade-in duration-200">
-          <div className="z-[600] bg-zinc-900 border border-zinc-700/50 rounded-xl p-6 shadow-2xl max-w-sm w-full text-center">
-            <h3 className="text-white font-medium text-lg mb-4">Watermark Applied</h3>
-            <p className="text-zinc-400 text-sm mb-6 leading-relaxed">
-              Watermark has been applied and live preview is off. To add more watermarks, turn on the live preview to preview it live.
-            </p>
-            <button
-              onClick={() => setShowApplySuccessModal(false)}
-              className="w-full px-4 py-2.5 rounded font-medium text-sm bg-bloom-500 hover:bg-bloom-700 text-white transition-colors"
-            >
-              Okay
-            </button>
           </div>
         </div>
       )}
