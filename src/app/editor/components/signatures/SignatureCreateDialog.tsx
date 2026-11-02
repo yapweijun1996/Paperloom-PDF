@@ -238,7 +238,7 @@ export function SignatureCreateDialog({ open, onOpenChange, onSave }: SignatureC
       description="Create a reusable signature and choose how to store it."
     >
       <Button variant="ghost" size="sm" aria-label="Close signature dialog" className="absolute right-3 top-3 w-8 px-0" onClick={() => onOpenChange(false)}>
-        <X size={16} aria-hidden="true" />
+        <X size={16} aria-hidden="true" className="shrink-0" />
       </Button>
 
       <div className="mt-4 flex border-b border-app">

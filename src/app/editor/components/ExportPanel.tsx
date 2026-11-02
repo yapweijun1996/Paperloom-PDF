@@ -168,7 +168,7 @@ export function ExportPanel({
                   type="button"
                   aria-pressed={selected}
                   onClick={() => setSelectedFormat(fmt.id)}
-                  className={`group relative flex items-center gap-3 rounded-xl border px-4 py-3.5 text-left transition-colors ${
+                  className={`group relative flex items-center gap-3 rounded-xl border py-3.5 pl-3 pr-7 text-left transition-colors sm:pl-4 ${
                     selected
                       ? 'border-accent bg-panel-elevated ring-2 ring-accent'
                       : 'border-app bg-panel-elevated hover:border-app-strong'
@@ -187,7 +187,7 @@ export function ExportPanel({
                     <span className="mt-0.5 block truncate text-[10px] leading-snug text-app-faint">{fmt.extension}</span>
                   </span>
                   {selected && (
-                    <span aria-hidden="true" className="flex size-5 shrink-0 items-center justify-center rounded-full bg-bloom-100 text-accent">
+                    <span aria-hidden="true" className="absolute right-2 top-2 flex size-5 items-center justify-center rounded-full bg-bloom-100 text-accent">
                       <Check size={12} strokeWidth={3} />
                     </span>
                   )}
@@ -332,7 +332,7 @@ export function ExportPanel({
   return (
     <Dialog open={isOpen} onOpenChange={onOpenChange} title={title} description={description} size="lg">
       <Button variant="ghost" size="sm" aria-label="Close export panel" className="absolute right-3 top-3 w-8 px-0" onClick={onClose}>
-        <X size={18} aria-hidden="true" />
+        <X size={18} aria-hidden="true" className="shrink-0" />
       </Button>
       {content}
     </Dialog>

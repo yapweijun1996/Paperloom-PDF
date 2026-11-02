@@ -127,7 +127,7 @@ export function CertificateImportDialog({
       </>}
     >
       <Button variant="ghost" size="sm" aria-label="Close certificates" className="absolute right-3 top-3 w-8 px-0" onClick={() => onOpenChange(false)}>
-        <X size={16} aria-hidden="true" />
+        <X size={16} aria-hidden="true" className="shrink-0" />
       </Button>
 
       <div className="mt-5 space-y-4">
