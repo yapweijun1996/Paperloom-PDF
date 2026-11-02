@@ -19,7 +19,7 @@ rules, and `docs/UI_LAYERS.md` for the stacking scale.
 | `TextInput`, `NumberInput`, `Select` | Native controls styled with tokens | native props | Read their wiring from the surrounding `Field`; explicit props win. `NumberInput` is `type=number` with `inputMode="decimal"`. `Select` is a native `select`. |
 | `TextArea` | Multi-line text control | native props, `secret` | Reads Field wiring like the other controls. `secret` sets `spellCheck=false`, `autoComplete="off"` and turns off autocapitalise and autocorrect, for pasted keys and certificates. |
 | `SecretInput` | Password input | `autoComplete` (required: `current-password` \| `new-password` \| `one-time-code` \| `off`) | `type=password`, `spellCheck=false`, no autocapitalise or autocorrect. |
-| `Notice` | Inline status message | `tone` (`info` \| `success` \| `warning` \| `danger`), `title` | `role=status`, or `role=alert` for `danger`; uses the `-soft` fill with its foreground token. |
+| `Notice` | Inline status message | `tone` (`info` \| `success` \| `warning` \| `danger`), `title`, `live` (default `true`) | `role=status`, or `role=alert` for `danger`; `live={false}` drops the role for a notice announced elsewhere. Uses the `-soft` fill with its foreground token. |
 | `MobileSheet` | Bottom sheet (Radix) | `open`, `onOpenChange`, `title` (required), `description`, `closeLabel` | Portalled to `document.body`; `role=dialog`, `aria-modal`, focus trap and return; Escape, backdrop click and the 44px close button close it. `--backdrop` at `Z_LAYERS.drawerBackdrop`, panel at `Z_LAYERS.drawer`, safe-area bottom padding, body scrolls within `max-h-[85dvh]`. |
 
 Every primitive passes `title`, `aria-*` and `data-*` attributes through to its

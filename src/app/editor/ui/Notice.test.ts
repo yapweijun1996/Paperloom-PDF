@@ -31,4 +31,11 @@ describe('Notice', () => {
     expect(notice.getAttribute('data-testid')).toBe('notice');
     expect(notice.id).toBe('n1');
   });
+  it('drops the live-region role when live is false, keeping tone and content', async () => {
+    await harness.render(createElement(Notice, { tone: 'danger', live: false }, 'Quiet'));
+    expect(document.querySelector('[role]')).toBeNull();
+    const notice = document.querySelector('[data-tone="danger"]')!;
+    expect(notice.textContent).toBe('Quiet');
+    expect(notice.classList.contains('bg-danger-soft')).toBe(true);
+  });
 });

@@ -23,15 +23,17 @@ export interface NoticeProps extends Omit<ComponentPropsWithoutRef<'div'>, 'titl
   tone?: NoticeTone;
   title?: ReactNode;
   children?: ReactNode;
+  /** False drops the live-region role, for a notice that is already announced elsewhere. Default true. */
+  live?: boolean;
 }
 
 /** Inline status message. Danger is announced assertively (role=alert); other tones politely (role=status). */
-export function Notice({ tone = 'info', title, children, className, ...rest }: NoticeProps) {
+export function Notice({ tone = 'info', title, children, className, live = true, ...rest }: NoticeProps) {
   const Icon = TONE_ICONS[tone];
   return (
     <div
       {...rest}
-      role={tone === 'danger' ? 'alert' : 'status'}
+      role={live ? (tone === 'danger' ? 'alert' : 'status') : undefined}
       data-tone={tone}
       className={cx('flex items-start gap-2 rounded-xl border px-3 py-2 text-sm', TONE_CLASSES[tone], className)}
     >
