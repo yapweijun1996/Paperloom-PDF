@@ -86,9 +86,12 @@ describe('IconButton', () => {
     expect(button.title).toBe('Rotate');
     expect(button.dataset.testid).toBe('rotate');
     expect(button.querySelector('[data-icon]')!.parentElement!.getAttribute('aria-hidden')).toBe('true');
-    for (const name of ['min-h-6', 'min-w-6', 'pointer-coarse:min-h-11', 'pointer-coarse:min-w-11']) {
+    for (const name of ['size-9', 'min-h-6', 'min-w-6', 'pointer-coarse:min-h-11', 'pointer-coarse:min-w-11']) {
       expect(button.classList.contains(name), name).toBe(true);
     }
+    // Icon sizing replaces, rather than fights, the text-button height and padding.
+    expect(button.classList.contains('h-9')).toBe(false);
+    expect(button.classList.contains('px-4')).toBe(false);
   });
 
   it('shows a visible tooltip on keyboard focus at the dropdown layer, and hides it on Escape', async () => {
@@ -110,6 +113,8 @@ describe('IconButton', () => {
     expect(button.disabled).toBe(true);
     expect(button.getAttribute('aria-busy')).toBe('true');
     expect(button.dataset.variant).toBe('danger');
+    expect(button.querySelector('[data-icon]')).toBeNull();
+    expect(button.querySelector('[data-testid="button-spinner"]')).not.toBeNull();
     await harness.render(createElement(IconButton, { 'aria-label': 'Delete', icon: icon() }));
     await act(async () => { document.querySelector<HTMLButtonElement>('button[aria-label="Delete"]')!.focus(); });
     expect(document.querySelector('[role="tooltip"]')?.textContent).toBe('Delete');

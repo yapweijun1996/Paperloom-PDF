@@ -32,16 +32,19 @@ export interface ButtonProps extends ComponentPropsWithRef<'button'> {
   loading?: boolean;
 }
 
-export function Button({
+type ButtonBaseProps = Omit<ButtonProps, 'size'> & { sizeClasses: string };
+
+/** Shared rendering for Button and IconButton; each passes its own static size classes. */
+function ButtonBase({
   variant = 'secondary',
-  size = 'md',
+  sizeClasses,
   loading = false,
   disabled,
   type = 'button',
   className,
   children,
   ...rest
-}: ButtonProps) {
+}: ButtonBaseProps) {
   return (
     <button
       {...rest}
@@ -49,7 +52,7 @@ export function Button({
       disabled={disabled || loading}
       aria-busy={loading || undefined}
       data-variant={variant}
-      className={cx(BASE_CLASSES, VARIANT_CLASSES[variant], SIZE_CLASSES[size], className)}
+      className={cx(BASE_CLASSES, VARIANT_CLASSES[variant], sizeClasses, className)}
     >
       {loading && <Loader2 aria-hidden="true" data-testid="button-spinner" className="size-4 animate-spin" />}
       {children}
@@ -57,9 +60,13 @@ export function Button({
   );
 }
 
+export function Button({ size = 'md', ...rest }: ButtonProps) {
+  return <ButtonBase {...rest} sizeClasses={SIZE_CLASSES[size]} />;
+}
+
 const ICON_SIZE_CLASSES: Record<ButtonSize, string> = {
-  sm: 'size-7',
-  md: 'size-9',
+  sm: 'size-7 min-h-6 min-w-6 pointer-coarse:min-w-11',
+  md: 'size-9 min-h-6 min-w-6 pointer-coarse:min-w-11',
 };
 
 export interface IconButtonProps extends Omit<ButtonProps, 'children' | 'aria-label' | 'size'> {
@@ -90,14 +97,9 @@ export function IconButton({
     <Tooltip.Provider delayDuration={300}>
       <Tooltip.Root>
         <Tooltip.Trigger asChild>
-          <Button
-            {...rest}
-            variant={variant}
-            size={size}
-            className={cx('min-h-6 min-w-6 px-0 pointer-coarse:min-w-11', ICON_SIZE_CLASSES[size], className)}
-          >
-            <span aria-hidden="true" className="inline-flex">{icon}</span>
-          </Button>
+          <ButtonBase {...rest} variant={variant} sizeClasses={ICON_SIZE_CLASSES[size]} className={className}>
+            {!rest.loading && <span aria-hidden="true" className="inline-flex">{icon}</span>}
+          </ButtonBase>
         </Tooltip.Trigger>
         <Tooltip.Portal>
           <Tooltip.Content
