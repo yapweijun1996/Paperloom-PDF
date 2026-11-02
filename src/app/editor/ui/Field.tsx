@@ -96,6 +96,22 @@ export function SecretInput({ className, autoComplete, ...rest }: SecretInputPro
   );
 }
 
+const TEXTAREA_CLASSES = 'w-full resize-y rounded-xl border border-border-strong bg-panel-elevated px-3 py-2 text-sm text-app placeholder:text-app-faint focus:border-accent disabled:cursor-not-allowed disabled:opacity-50 aria-invalid:border-danger';
+
+export type TextAreaProps = ComponentPropsWithRef<'textarea'> & {
+  /** For keys, certificates and tokens: no spellcheck, autocomplete, autocapitalise or autocorrect. */
+  secret?: boolean;
+};
+
+/** Multi-line text control. `secret` keeps pasted key material out of spellcheck and autofill. */
+export function TextArea({ className, secret = false, ...rest }: TextAreaProps) {
+  const wiring = useFieldControl(rest);
+  const secretProps = secret
+    ? { spellCheck: false, autoComplete: 'off', autoCapitalize: 'off', autoCorrect: 'off', 'data-secret': '' }
+    : {};
+  return <textarea {...rest} {...wiring} {...secretProps} className={cx(TEXTAREA_CLASSES, className)} />;
+}
+
 export type SelectProps = ComponentPropsWithRef<'select'>;
 
 /** Native select styled with tokens; keeps platform pickers on touch devices. */

@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { act, createElement } from 'react';
 import { describe, expect, it, vi } from 'vitest';
-import { Field, NumberInput, SecretInput, Select, TextInput } from './Field';
+import { Field, NumberInput, SecretInput, Select, TextArea, TextInput } from './Field';
 import { mountHarness } from './__tests__/harness';
 
 const harness = mountHarness();
@@ -77,6 +77,20 @@ describe('inputs', () => {
     expect(input.getAttribute('spellcheck')).toBe('false');
     expect(input.getAttribute('autocapitalize')).toBe('off');
     expect(document.querySelector('label')!.htmlFor).toBe(input.id);
+  });
+
+  it('TextArea takes Field wiring, and secret mode disables spellcheck and autofill', async () => {
+    await harness.render(createElement(Field, { label: 'Notes', hint: 'Optional' }, createElement(TextArea, { rows: 3 })));
+    let area = control<HTMLTextAreaElement>('textarea');
+    expect(document.querySelector('label')!.htmlFor).toBe(area.id);
+    expect(area.getAttribute('aria-describedby')).toBe(`${area.id}-hint`);
+    expect(area.hasAttribute('spellcheck')).toBe(false);
+    await harness.render(createElement(Field, { label: 'PEM' }, createElement(TextArea, { secret: true })));
+    area = control<HTMLTextAreaElement>('textarea');
+    expect(area.getAttribute('spellcheck')).toBe('false');
+    expect(area.getAttribute('autocomplete')).toBe('off');
+    expect(area.getAttribute('autocapitalize')).toBe('off');
+    expect(area.getAttribute('autocorrect')).toBe('off');
   });
 
   it('Select renders a native select with token classes, wiring and keyboard-native options', async () => {
