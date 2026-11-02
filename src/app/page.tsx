@@ -218,7 +218,9 @@ export default function Home() {
               <FileUp size={40} />
             </div>
             <p className="text-base font-semibold text-app mb-1">
-              Drop a PDF here or click to browse
+              {/* CSS-only swap avoids a hydration mismatch in the static export. */}
+              <span className="pointer-coarse:hidden">Drop a PDF here or click to browse</span>
+              <span className="hidden pointer-coarse:inline">Tap to choose a PDF</span>
             </p>
             <p className="text-xs text-app-faint font-medium">
               100% Client-Side Engine &bull; Private &bull; Fast
