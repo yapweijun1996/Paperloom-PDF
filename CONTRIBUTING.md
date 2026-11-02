@@ -50,6 +50,19 @@ Keep browser behavior local and preserve the engine boundaries. Changes must not
 - Use `kebab-case` filenames and descriptive names.
 - Add tests beside the code they cover where practical.
 
+## Building editor UI
+
+- Build editor chrome from the shared primitives in `src/app/editor/ui/`
+  (Dialog, ConfirmDialog, Button, IconButton, Field and inputs, Notice,
+  MobileSheet). Their API and rules are in
+  [`src/app/editor/ui/README.md`](src/app/editor/ui/README.md).
+- Use theme tokens, never raw Tailwind palette classes or hex colours. Tokens,
+  contrast pairs and the palette ratchet are described in
+  [`docs/BRAND.md`](docs/BRAND.md); layers are in
+  [`docs/UI_LAYERS.md`](docs/UI_LAYERS.md).
+- Dark mode follows the operating system until the user picks a theme; check new
+  UI in both themes and at phone width.
+
 ## Testing and Review
 
 Before opening a pull request, run:

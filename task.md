@@ -925,6 +925,10 @@ suggested order.
   first ratchet): semantic danger/warning/success/info, focus-ring and on-accent
   tokens, de-duplicated `globals.css`, unique tool-icon gradient ids, token and
   raw-palette ratchet tests, and e2e data hooks; no visual change.
+  Batch B: dark mode follows the OS until the user chooses, themeColor per
+  scheme, shared `src/app/editor/ui/` primitives (Dialog, ConfirmDialog,
+  Button, IconButton, Field inputs, Notice, MobileSheet), and the password and
+  unsaved-changes dialogs migrated onto them.
 - **Priority / effort:** P2 / medium to high. **Review points:** #31–#37.
   Related to TASK-07 and TASK-12.
 - **First step:** Expose the existing merge, split and remove-page handlers in
