@@ -38,7 +38,7 @@ test('edits and flattens a nested form while preserving values, then undoes flat
   await input.press('Enter');
   await expect(page.getByTitle('Undo (Ctrl+Z)')).toBeEnabled();
   await page.getByRole('button', { name: 'Flatten All', exact: true }).click();
-  await expect(page.getByText('No AcroForm fields on this page.', { exact: false })).toBeVisible();
+  await expect(page.getByText('No form fields on this page.', { exact: false })).toBeVisible();
   const flat = await downloadPdf(page);
   const independent = await PDFDocument.load(flat);
   expect(independent.getForm().getFields()).toHaveLength(0);

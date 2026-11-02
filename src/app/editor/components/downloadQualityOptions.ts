@@ -22,10 +22,11 @@ export const DPI_PRESETS = [
 
 export const COMPRESSION_PRESETS = [
   { value: null, label: 'Original', desc: 'No re-encoding' },
-  { value: 20, label: 'Extreme', desc: 'Smallest file' },
-  { value: 50, label: 'High', desc: 'Good balance' },
-  { value: 75, label: 'Medium', desc: 'Better quality' },
-  { value: 100, label: 'Low', desc: 'Highest quality' },
+  // Labels name the amount of compression; descriptions name the result.
+  { value: 20, label: 'Extreme', desc: 'Smallest file, visible blur' },
+  { value: 50, label: 'High', desc: 'Small file, softer images' },
+  { value: 75, label: 'Medium', desc: 'Balanced size and quality' },
+  { value: 100, label: 'Low', desc: 'Largest file, sharpest images' },
 ];
 
 export function downloadQualityLabel({ quality, dpi }: CompressedDownloadOptions): string {

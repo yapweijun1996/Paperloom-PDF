@@ -2,7 +2,7 @@
 import { act, createElement, type ComponentProps } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { PropertiesSidebar } from './PropertiesSidebar';
+import { PropertiesSidebar, formFieldTypeLabel } from './PropertiesSidebar';
 
 type Props = ComponentProps<typeof PropertiesSidebar>;
 let root: Root;
@@ -65,4 +65,25 @@ it('names the watermark position grid', () => {
   expect(byLabel('Centre')!.getAttribute('aria-pressed')).toBe('true');
   act(() => byLabel('Bottom right')!.click());
   expect(setPosition).toHaveBeenCalledWith('bottom-right');
+});
+
+it.each([
+  [{ fieldType: 'Tx', buttonFlags: 0, choiceFlags: 0 }, 'Text'],
+  [{ fieldType: 'Btn', buttonFlags: 0, choiceFlags: 0 }, 'Checkbox'],
+  [{ fieldType: 'Btn', buttonFlags: 1 << 15, choiceFlags: 0 }, 'Radio button'],
+  [{ fieldType: 'Btn', buttonFlags: 1 << 16, choiceFlags: 0 }, 'Button'],
+  [{ fieldType: 'Ch', buttonFlags: 0, choiceFlags: 1 << 17 }, 'Dropdown'],
+  [{ fieldType: 'Ch', buttonFlags: 0, choiceFlags: 0 }, 'List'],
+  [{ fieldType: 'Sig', buttonFlags: 0, choiceFlags: 0 }, 'Signature'],
+] as const)('labels form field type %j as %s', (field, label) => {
+  expect(formFieldTypeLabel(field)).toBe(label);
+});
+
+it('uses plain language for empty forms and blend mode', () => {
+  render({ activeTool: 'select', formFields: [] });
+  expect(container.textContent).toContain('No form fields on this page.');
+  expect(container.textContent).not.toContain('AcroForm');
+  render({ activeTool: 'watermark', watermarkType: 'text', watermarkBlendMode: 'Normal', setWatermarkBlendMode: vi.fn() });
+  const normal = [...container.querySelectorAll('option')].find(option => option.value === 'Normal')!;
+  expect(normal.textContent).toBe('Normal');
 });

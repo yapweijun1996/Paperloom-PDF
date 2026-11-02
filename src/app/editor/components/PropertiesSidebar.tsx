@@ -24,6 +24,19 @@ const SWATCH_NAMES: Record<string, string> = {
 };
 const swatchName = (color: string) => SWATCH_NAMES[color.toLowerCase()] ?? color.toUpperCase();
 
+/** Plain-language name for a form field's type. */
+export function formFieldTypeLabel(field: Pick<AcroFormWidget, 'fieldType' | 'buttonFlags' | 'choiceFlags'>): string {
+  switch (field.fieldType) {
+    case 'Tx': return 'Text';
+    case 'Btn':
+      if (field.buttonFlags & (1 << 16)) return 'Button';
+      return field.buttonFlags & (1 << 15) ? 'Radio button' : 'Checkbox';
+    case 'Ch': return field.choiceFlags & (1 << 17) ? 'Dropdown' : 'List';
+    case 'Sig': return 'Signature';
+    default: return 'Field';
+  }
+}
+
 const WATERMARK_POSITION_NAMES: Record<WatermarkPosition, string> = {
   'top-left': 'Top left', 'top-center': 'Top centre', 'top-right': 'Top right',
   'center-left': 'Middle left', center: 'Centre', 'center-right': 'Middle right',
@@ -1007,7 +1020,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
 
           {formFields.length === 0 ? (
             <p className="text-[11px] text-app-faint leading-relaxed">
-              No AcroForm fields on this page. Open a fillable PDF to edit text, checkbox, and dropdown fields here. Amber boxes appear on the page when fields are detected.
+              No form fields on this page. Open a fillable PDF to edit text, checkbox, and dropdown fields here. Amber boxes appear on the page when fields are detected.
             </p>
           ) : (
           <>
@@ -1026,7 +1039,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                 }`}
               >
                 <div className="font-medium truncate">{field.fieldName || 'Unnamed'}</div>
-                <div className="text-[10px] text-app-faint">{field.fieldType}</div>
+                <div className="text-[10px] text-app-faint">{formFieldTypeLabel(field)}</div>
               </button>
             ))}
           </div>
@@ -1401,7 +1414,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                 onChange={(e) => setWatermarkBlendMode?.(e.target.value)}
                 className="w-full bg-panel-elevated border border-app rounded px-2 py-2 text-[11px] text-app outline-none focus:border-accent transition-colors appearance-none cursor-pointer"
               >
-                <option value="Normal">Normal (source-over)</option>
+                <option value="Normal">Normal</option>
                 <option value="Multiply">Multiply</option>
                 <option value="Screen">Screen</option>
                 <option value="Overlay">Overlay</option>

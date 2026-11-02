@@ -14,6 +14,18 @@ describe('download quality selections', () => {
     expect(downloadQualityLabel(DEFAULT_DOWNLOAD_OPTIONS)).toBe('Download (original quality)');
   });
 
+  it('describes compression results consistently from smallest to sharpest', () => {
+    expect(COMPRESSION_PRESETS.map(preset => [preset.label, preset.desc])).toEqual([
+      ['Original', 'No re-encoding'],
+      ['Extreme', 'Smallest file, visible blur'],
+      ['High', 'Small file, softer images'],
+      ['Medium', 'Balanced size and quality'],
+      ['Low', 'Largest file, sharpest images'],
+    ]);
+    const qualities = COMPRESSION_PRESETS.slice(1).map(preset => preset.value!);
+    expect(qualities).toEqual([...qualities].sort((a, b) => a - b));
+  });
+
   it.each([
     [{ dpi: 150, quality: 0.75 }, 'Download (75% · 150 DPI)'],
     [{ dpi: null, quality: 0.75 }, 'Download (75% · original DPI)'],

@@ -140,8 +140,8 @@ export function DownloadDropdown({
         </div>
         <div className="flex gap-1.5 p-1 bg-panel-elevated rounded-xl border border-app">
           {[
-            { value: 'optimized' as const, label: 'Optimized', desc: 'GC + dedup' },
-            { value: 'quick' as const, label: 'Quick', desc: 'Incremental' },
+            { value: 'optimized' as const, label: 'Optimized', desc: 'Clean up unused data' },
+            { value: 'quick' as const, label: 'Quick', desc: 'Fast save (append changes)' },
           ].map(opt => (
             <button
               key={opt.value}
