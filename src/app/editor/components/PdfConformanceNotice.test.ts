@@ -21,6 +21,8 @@ it('warns when a document with a PDF/A claim is edited and does not warn while u
   act(() => root.render(createElement(PdfConformanceNotice, { doc, isDirty: true, announce: false })));
   expect(element.querySelector('[role="status"]')).toBeNull();
   expect(element.textContent).toMatch(/PDF\/A.*may invalidate/i);
+  expect(element.querySelector('[data-tone="warning"]')).not.toBeNull();
+  expect(element.innerHTML).not.toMatch(/amber-/);
 });
 
 it('warns that the claim is unknown when metadata cannot be parsed', () => {

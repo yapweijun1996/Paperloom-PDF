@@ -4,7 +4,6 @@
   "editor/components/EditableLineBox.tsx": 1,
   "editor/components/EmbeddedImageOverlay.tsx": 2,
   "editor/components/ImageBoxFields.tsx": 1,
-  "editor/components/PdfConformanceNotice.tsx": 3,
   "editor/components/PropertiesSidebar.tsx": 67,
   "editor/components/ThumbnailsSidebar.tsx": 4,
   "editor/components/Toolbar.tsx": 5,
