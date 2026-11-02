@@ -48,10 +48,13 @@ its own z-index; the toolbar is above the sidebars so its download menu can
 paint over them. The download menu uses 400 as a mobile sheet and 200 at `md`
 and larger, still contained by the toolbar context and below global drawers.
 
-A backdrop must be below its own panel. Password and confirmation dialogs use
-a combined fullscreen backdrop/container at 500, with their direct flex-item
-content at 600. Radix dialogs use separate portalled overlay/content nodes at
-500/600. Global status/error toasts use 700; canvas progress/search UI remains
+A backdrop must be below its own panel. Hand-made confirmation modals that
+remain in `page.tsx` use a combined fullscreen backdrop/container at 500, with
+their direct flex-item content at 600. Radix dialogs, including the shared
+`Dialog` primitive in `src/app/editor/ui/` (used by the password and unsaved
+changes dialogs), use separate portalled overlay/content nodes at 500/600; the
+shared `MobileSheet` uses 300/400. `IconButton` tooltips portal at 200, so they
+paint below drawers and modals. Global status/error toasts use 700; canvas progress/search UI remains
 canvas-local and must not pierce global surfaces.
 
 ## Regression checks
