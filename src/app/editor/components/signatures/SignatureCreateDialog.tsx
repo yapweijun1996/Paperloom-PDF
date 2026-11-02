@@ -1,7 +1,7 @@
 'use client';
 
-import React, { useCallback, useEffect, useRef, useState } from 'react';
-import * as Dialog from '@radix-ui/react-dialog';
+import React, { useCallback, useEffect, useId, useRef, useState } from 'react';
+import { Button, Dialog, DialogFooter, Field, Notice, Select, TextInput } from '../../ui';
 import { X, PenLine, Upload, Type, Eraser, Check } from 'lucide-react';
 import {
   SignatureDrawEngine,
@@ -45,8 +45,8 @@ export function SignatureCreateDialog({ open, onOpenChange, onSave }: SignatureC
   const [uploadDims, setUploadDims] = useState<{ w: number; h: number } | null>(null);
   const [templateId, setTemplateId] = useState('minimal');
   const [error, setError] = useState<string | null>(null);
+  const idPrefix = useId();
   // A new session clears transient upload and error state but retains style choices.
-  const triggerRef = useRef<HTMLElement | null>(null);
   const [previousOpen, setPreviousOpen] = useState(false);
   if (previousOpen !== open) {
     setPreviousOpen(open);
@@ -230,241 +230,212 @@ export function SignatureCreateDialog({ open, onOpenChange, onSave }: SignatureC
   const templates = listAppearanceTemplates();
 
   return (
-    <Dialog.Root open={open} onOpenChange={onOpenChange}>
-      <Dialog.Portal>
-        {/* Z_LAYERS.modalBackdrop (500) / modal (600). */}
-        <Dialog.Overlay className="fixed inset-0 bg-black/60 z-[500]" />
-        <Dialog.Content onOpenAutoFocus={() => {
-          triggerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-        }} onCloseAutoFocus={(event) => {
-          if (triggerRef.current?.isConnected) {
-            event.preventDefault();
-            triggerRef.current.focus();
-          }
-        }} data-theme="dark" className="fixed left-1/2 top-1/2 z-[600] w-[min(560px,94vw)] -translate-x-1/2 -translate-y-1/2 rounded-xl border border-zinc-700 bg-zinc-900 shadow-2xl focus:outline-none">
-          <Dialog.Description className="sr-only">Create a reusable signature and choose how to store it.</Dialog.Description>
-          <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-700">
-            <Dialog.Title className="text-sm font-semibold text-zinc-100">
-              Create signature
-            </Dialog.Title>
-            <Dialog.Close aria-label="Close signature dialog" className="p-1 rounded text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800">
-              <X size={16} />
-            </Dialog.Close>
-          </div>
+    <Dialog
+      open={open}
+      onOpenChange={onOpenChange}
+      size="lg"
+      title="Create signature"
+      description="Create a reusable signature and choose how to store it."
+    >
+      <Button variant="ghost" size="sm" aria-label="Close signature dialog" className="absolute right-3 top-3 w-8 px-0" onClick={() => onOpenChange(false)}>
+        <X size={16} aria-hidden="true" />
+      </Button>
 
-          <div className="flex border-b border-zinc-700">
-            {(
-              [
-                ['draw', PenLine, 'Draw'],
-                ['upload', Upload, 'Upload'],
-                ['typed', Type, 'Type'],
-              ] as const
-            ).map(([id, Icon, label]) => (
-              <button
-                key={id}
-                type="button"
-                onClick={() => setTab(id)}
-                className={`flex-1 flex items-center justify-center gap-2 py-2.5 text-xs font-medium transition-colors ${
-                  tab === id
-                    ? 'text-accent border-b-2 border-accent bg-zinc-800/40'
-                    : 'text-zinc-400 hover:text-zinc-200'
-                }`}
-              >
-                <Icon size={14} />
-                {label}
-              </button>
-            ))}
-          </div>
+      <div className="mt-4 flex border-b border-app">
+        {(
+          [
+            ['draw', PenLine, 'Draw'],
+            ['upload', Upload, 'Upload'],
+            ['typed', Type, 'Type'],
+          ] as const
+        ).map(([id, Icon, label]) => (
+          <button
+            key={id}
+            type="button"
+            aria-pressed={tab === id}
+            onClick={() => setTab(id)}
+            className={`-mb-px flex flex-1 items-center justify-center gap-2 border-b-2 py-2.5 text-xs font-medium transition-colors pointer-coarse:min-h-11 ${
+              tab === id
+                ? 'border-accent text-accent'
+                : 'border-transparent text-app-muted hover:text-app'
+            }`}
+          >
+            <Icon size={14} aria-hidden="true" />
+            {label}
+          </button>
+        ))}
+      </div>
 
-          <div className="p-4 space-y-4 max-h-[70vh] overflow-y-auto">
-            <div className="space-y-1.5">
-              <label className="text-[11px] font-medium text-zinc-300">Name</label>
+      <div className="mt-4 space-y-4">
+        <Field label="Name">
+          <TextInput value={name} onChange={(e) => setName(e.target.value)} />
+        </Field>
+
+        {tab === 'draw' && (
+          <div className="space-y-3">
+            <div className="flex items-center gap-3 text-xs text-app-muted">
+              <label htmlFor={`${idPrefix}-ink`}>Ink</label>
               <input
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                className="w-full bg-zinc-800 border border-zinc-700 rounded px-3 py-2 text-xs text-zinc-200 outline-none focus:border-accent"
+                id={`${idPrefix}-ink`}
+                type="color"
+                value={drawColor}
+                onChange={(e) => setDrawColor(e.target.value)}
+                className="h-7 w-7 cursor-pointer rounded"
               />
-            </div>
-
-            {tab === 'draw' && (
-              <div className="space-y-3">
-                <div className="flex items-center gap-3">
-                  <label className="text-[11px] text-zinc-400">Ink</label>
-                  <input
-                    type="color"
-                    value={drawColor}
-                    onChange={(e) => setDrawColor(e.target.value)}
-                    className="w-7 h-7 rounded cursor-pointer"
-                  />
-                  <label className="text-[11px] text-zinc-400 ml-2">Width</label>
-                  <input
-                    type="range"
-                    min={1}
-                    max={8}
-                    step={0.5}
-                    value={drawWidth}
-                    onChange={(e) => setDrawWidth(Number(e.target.value))}
-                    className="flex-1"
-                  />
-                  <button
-                    type="button"
-                    className="flex items-center gap-1 px-2 py-1 text-[11px] text-zinc-300 bg-zinc-800 border border-zinc-700 rounded hover:bg-zinc-700"
-                    onClick={() => {
-                      engineRef.current.clear();
-                      redraw();
-                    }}
-                  >
-                    <Eraser size={12} /> Clear
-                  </button>
-                </div>
-                <canvas
-                  ref={canvasRef}
-                  width={520}
-                  height={180}
-                  className="w-full rounded-lg border border-zinc-700 bg-white touch-none cursor-crosshair"
-                  style={{ touchAction: 'none' }}
-                  onPointerDown={onPointerDown}
-                  onPointerMove={onPointerMove}
-                  onPointerUp={onPointerUp}
-                  onPointerLeave={onPointerUp}
-                />
-                <p className="text-[10px] text-zinc-500">
-                  Draw with mouse, touch, or pen. Transparency is preserved on export.
-                </p>
-              </div>
-            )}
-
-            {tab === 'upload' && (
-              <div className="space-y-3">
-                <input
-                  ref={fileRef}
-                  type="file"
-                  accept=".png,.jpg,.jpeg,.svg,image/png,image/jpeg,image/svg+xml"
-                  className="hidden"
-                  onChange={handleUpload}
-                />
-                <button
-                  type="button"
-                  onClick={() => fileRef.current?.click()}
-                  className="w-full py-8 rounded-lg border border-dashed border-zinc-600 text-zinc-400 text-xs hover:border-accent hover:text-accent transition-colors"
-                >
-                  Click to upload PNG, JPG, or SVG
-                </button>
-                {uploadPreview && (
-                  <div className="rounded-lg border border-zinc-700 bg-zinc-950 p-3 flex justify-center">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img
-                      src={uploadPreview}
-                      alt="Upload preview"
-                      className="max-h-32 object-contain"
-                    />
-                  </div>
-                )}
-              </div>
-            )}
-
-            {tab === 'typed' && (
-              <div className="space-y-3">
-                <input
-                  value={typedText}
-                  onChange={(e) => setTypedText(e.target.value)}
-                  placeholder="Type your name"
-                  className="w-full bg-zinc-800 border border-zinc-700 rounded px-3 py-2 text-xs text-zinc-200 outline-none focus:border-accent"
-                />
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="space-y-1">
-                    <label className="text-[11px] text-zinc-400">Font</label>
-                    <select
-                      value={typedFont}
-                      onChange={(e) => setTypedFont(e.target.value)}
-                      className="w-full bg-zinc-800 border border-zinc-700 rounded px-2 py-1.5 text-xs text-zinc-200"
-                    >
-                      {fonts.map((f) => (
-                        <option key={f} value={f}>
-                          {f.split(',')[0]}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <div className="space-y-1">
-                    <label className="text-[11px] text-zinc-400">Size</label>
-                    <input
-                      type="range"
-                      min={24}
-                      max={72}
-                      value={typedSize}
-                      onChange={(e) => setTypedSize(Number(e.target.value))}
-                      className="w-full"
-                    />
-                  </div>
-                </div>
-                <div className="flex items-center gap-2">
-                  <label className="text-[11px] text-zinc-400">Color</label>
-                  <input
-                    type="color"
-                    value={typedColor}
-                    onChange={(e) => setTypedColor(e.target.value)}
-                    className="w-7 h-7 rounded cursor-pointer"
-                  />
-                </div>
-                <div
-                  className="rounded-lg border border-zinc-700 bg-white px-4 py-6 text-center"
-                  style={{
-                    fontFamily: typedFont,
-                    fontSize: typedSize * 0.55,
-                    color: typedColor,
-                  }}
-                >
-                  {typedText.trim() || 'Your name'}
-                </div>
-              </div>
-            )}
-
-            <div className="space-y-1.5">
-              <label className="text-[11px] font-medium text-zinc-300">Appearance template</label>
-              <select
-                value={templateId}
-                onChange={(e) => setTemplateId(e.target.value)}
-                className="w-full bg-zinc-800 border border-zinc-700 rounded px-3 py-2 text-xs text-zinc-200"
+              <label htmlFor={`${idPrefix}-width`} className="ml-2">Width</label>
+              <input
+                id={`${idPrefix}-width`}
+                type="range"
+                min={1}
+                max={8}
+                step={0.5}
+                value={drawWidth}
+                onChange={(e) => setDrawWidth(Number(e.target.value))}
+                className="flex-1 accent-accent"
+              />
+              <Button
+                size="sm"
+                onClick={() => {
+                  engineRef.current.clear();
+                  redraw();
+                }}
               >
-                {templates.map((t) => (
-                  <option key={t.id} value={t.id}>
-                    {t.name} — {t.description}
-                  </option>
-                ))}
-              </select>
+                <Eraser size={12} aria-hidden="true" /> Clear
+              </Button>
             </div>
-
-            <fieldset className="space-y-2 text-xs text-zinc-300">
-              <legend className="mb-1 font-medium">Keep in signature library</legend>
-              <label className="flex items-start gap-2">
-                <input type="radio" name="signature-storage" checked={storage === 'session'} onChange={() => setStorage('session')} />
-                <span>This session only (removed from the library on reload)</span>
-              </label>
-              <label className="flex items-start gap-2">
-                <input type="radio" name="signature-storage" checked={storage === 'device'} onChange={() => setStorage('device')} />
-                <span>Save on this device (not encrypted)</span>
-              </label>
-              <p className="text-[10px] text-zinc-400">Signatures placed in a PDF may also be kept in the document or its recovery data.</p>
-            </fieldset>
-
-            {error && <p className="text-[11px] text-red-400">{error}</p>}
+            {/* The pad stays white: it previews ink on paper, not theme chrome. */}
+            <canvas
+              ref={canvasRef}
+              width={520}
+              height={180}
+              className="w-full touch-none cursor-crosshair rounded-lg border border-app bg-white"
+              style={{ touchAction: 'none' }}
+              onPointerDown={onPointerDown}
+              onPointerMove={onPointerMove}
+              onPointerUp={onPointerUp}
+              onPointerLeave={onPointerUp}
+            />
+            <p className="text-[11px] text-app-muted">
+              Draw with mouse, touch, or pen. Transparency is preserved on export.
+            </p>
           </div>
+        )}
 
-          <div className="flex justify-end gap-2 px-4 py-3 border-t border-zinc-700">
-            <Dialog.Close className="px-3 py-1.5 text-xs text-zinc-300 rounded hover:bg-zinc-800">
-              Cancel
-            </Dialog.Close>
+        {tab === 'upload' && (
+          <div className="space-y-3">
+            <input
+              ref={fileRef}
+              type="file"
+              accept=".png,.jpg,.jpeg,.svg,image/png,image/jpeg,image/svg+xml"
+              className="hidden"
+              onChange={handleUpload}
+            />
             <button
               type="button"
-              onClick={() => void handleSave()}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-bloom-500 rounded hover:bg-bloom-600"
+              onClick={() => fileRef.current?.click()}
+              className="w-full rounded-xl border border-dashed border-border-strong py-8 text-xs text-app-muted transition-colors hover:border-accent hover:text-accent"
             >
-              <Check size={14} /> Save to library
+              Click to upload PNG, JPG, or SVG
             </button>
+            {uploadPreview && (
+              <div className="flex justify-center rounded-lg border border-app bg-white p-3">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={uploadPreview}
+                  alt="Upload preview"
+                  className="max-h-32 object-contain"
+                />
+              </div>
+            )}
           </div>
-        </Dialog.Content>
-      </Dialog.Portal>
-    </Dialog.Root>
+        )}
+
+        {tab === 'typed' && (
+          <div className="space-y-3">
+            <TextInput
+              value={typedText}
+              onChange={(e) => setTypedText(e.target.value)}
+              placeholder="Type your name"
+              aria-label="Typed name"
+            />
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Font">
+                <Select value={typedFont} onChange={(e) => setTypedFont(e.target.value)}>
+                  {fonts.map((f) => (
+                    <option key={f} value={f}>
+                      {f.split(',')[0]}
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+              <div className="flex flex-col gap-1">
+                <label htmlFor={`${idPrefix}-size`} className="text-xs font-medium text-app-muted">Size</label>
+                <input
+                  id={`${idPrefix}-size`}
+                  type="range"
+                  min={24}
+                  max={72}
+                  value={typedSize}
+                  onChange={(e) => setTypedSize(Number(e.target.value))}
+                  className="h-9 w-full accent-accent"
+                />
+              </div>
+            </div>
+            <div className="flex items-center gap-2 text-xs text-app-muted">
+              <label htmlFor={`${idPrefix}-color`}>Color</label>
+              <input
+                id={`${idPrefix}-color`}
+                type="color"
+                value={typedColor}
+                onChange={(e) => setTypedColor(e.target.value)}
+                className="h-7 w-7 cursor-pointer rounded"
+              />
+            </div>
+            <div
+              className="rounded-lg border border-app bg-white px-4 py-6 text-center"
+              style={{
+                fontFamily: typedFont,
+                fontSize: typedSize * 0.55,
+                color: typedColor,
+              }}
+            >
+              {typedText.trim() || 'Your name'}
+            </div>
+          </div>
+        )}
+
+        <Field label="Appearance template">
+          <Select value={templateId} onChange={(e) => setTemplateId(e.target.value)}>
+            {templates.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.name} — {t.description}
+              </option>
+            ))}
+          </Select>
+        </Field>
+
+        <fieldset className="space-y-2 text-xs text-app">
+          <legend className="mb-1 font-medium">Keep in signature library</legend>
+          <label className="flex items-start gap-2">
+            <input type="radio" name="signature-storage" className="accent-accent" checked={storage === 'session'} onChange={() => setStorage('session')} />
+            <span>This session only (removed from the library on reload)</span>
+          </label>
+          <label className="flex items-start gap-2">
+            <input type="radio" name="signature-storage" className="accent-accent" checked={storage === 'device'} onChange={() => setStorage('device')} />
+            <span>Save on this device (not encrypted)</span>
+          </label>
+          <p className="text-[11px] text-app-muted">Signatures placed in a PDF may also be kept in the document or its recovery data.</p>
+        </fieldset>
+
+        {error && <Notice tone="danger" className="text-xs">{error}</Notice>}
+      </div>
+
+      <DialogFooter>
+        <Button variant="ghost" onClick={() => onOpenChange(false)}>Cancel</Button>
+        <Button variant="primary" onClick={() => void handleSave()}>
+          <Check size={14} aria-hidden="true" /> Save to library
+        </Button>
+      </DialogFooter>
+    </Dialog>
   );
 }
