@@ -27,8 +27,11 @@ async function removePage(page, index) {
   const buttons = page.getByRole('button', { name: 'Delete page', exact: true });
   await buttons.nth(index).scrollIntoViewIfNeeded();
   await buttons.nth(index).locator('..').hover();
-  page.once('dialog', dialog => dialog.accept());
   await buttons.nth(index).click();
+  const confirm = page.getByRole('dialog', { name: 'Delete page' });
+  await expect(confirm).toContainText(`Delete page ${index + 1}? You can undo this.`);
+  await confirm.getByRole('button', { name: 'Delete', exact: true }).click();
+  await expect(confirm).toHaveCount(0);
 }
 
 for (const field of [false, true]) test(`${field ? 'field' : 'stamp'}: locked page deletion is rejected, another page deletes, unlock permits deletion`, async ({ page }) => {

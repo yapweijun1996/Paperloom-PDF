@@ -89,6 +89,7 @@ import { ExportPanel } from './components/ExportPanel';
 import { PasswordDialog } from './components/PasswordDialog';
 import { PdfConformanceNotice } from './components/PdfConformanceNotice';
 import { UnsavedChangesDialog } from './components/UnsavedChangesDialog';
+import { Notice, useConfirm } from './ui';
 import { SecurityPanel } from './components/SecurityPanel';
 import { hasPendingFormFieldDraft, isButtonWidgetChecked } from './components/button-field-state';
 import { useTextStyleActions, type TextStyleUI } from './hooks/useTextStyleActions';
@@ -423,7 +424,9 @@ export default function EditorPage() {
   const [watermarkBlendMode, setWatermarkBlendMode] = useState('Normal');
 
   const [detectedWatermarks, setDetectedWatermarks] = useState<DetectedWatermark[] | null>(null);
-  const [isConfirmingRemoval, setIsConfirmingRemoval] = useState(false);
+  // One modal confirmation and one informational toast replace window.confirm/alert.
+  const { confirm: requestConfirm, dialog: confirmDialog } = useConfirm();
+  const [notice, setNotice] = useState<{ tone: 'info' | 'warning'; message: string } | null>(null);
 
   // Display items (images/paths) for selection overlays
   const [displayItems, setDisplayItems] = useState<(ImageItem | PathItem)[]>([]);
@@ -3139,6 +3142,7 @@ export default function EditorPage() {
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (closeDialogOpen || closeOperationRef.current || downloadOperationRef.current) return;
+      if ((e.target as Element | null)?.closest?.('[role="dialog"][aria-modal="true"]')) return;
       const target = e.target as HTMLElement | null;
       const inTextEdit =
         !!editingLineRef.current ||
@@ -5221,10 +5225,6 @@ export default function EditorPage() {
     }
   }, [doc]);
 
-  const handleConfirmRemoveWatermarks = useCallback(() => {
-    setIsConfirmingRemoval(true);
-  }, []);
-
   const executeRemoveWatermarks = useCallback(() => {
     if (!doc || !engineRef.current || !detectedWatermarks) return;
     try {
@@ -5234,12 +5234,21 @@ export default function EditorPage() {
       setDoc({ ...doc });
       setRenderKey(k => k + 1);
       setDetectedWatermarks(null);
-      setIsConfirmingRemoval(false);
     } catch (e) {
       console.error('[Editor] Remove watermarks failed:', e);
       setError(`Failed to remove watermarks: ${e instanceof Error ? e.message : String(e)}`);
     }
   }, [doc, detectedWatermarks, setDoc]);
+
+  const handleConfirmRemoveWatermarks = useCallback(async () => {
+    const confirmed = await requestConfirm({
+      title: 'Remove Watermarks',
+      message: 'Do you really want to remove the detected watermarks from this document? This action cannot be undone.',
+      confirmLabel: 'Yes, Remove',
+      tone: 'danger',
+    });
+    if (confirmed) executeRemoveWatermarks();
+  }, [requestConfirm, executeRemoveWatermarks]);
 
   const handleCancelScan = useCallback(() => {
     setDetectedWatermarks(null);
@@ -5635,7 +5644,11 @@ export default function EditorPage() {
   const handleSplitAllPages = useCallback(async () => {
     if (!doc || !engineRef.current || doc.pages.length < 2) return;
     const keys = doc.pages.map(page => page.ref.toKey());
-    if (!window.confirm(`Download ${keys.length} separate PDF files (one per page)? Your browser may ask for permission.`)) return;
+    if (!await requestConfirm({
+      title: 'Download each page',
+      message: `Download ${keys.length} separate PDF files (one per page)? Your browser may ask for permission.`,
+      confirmLabel: 'Download',
+    })) return;
     try {
       const results = await preparePageDownloads(keys);
       if (!results) return;
@@ -5647,13 +5660,26 @@ export default function EditorPage() {
     } catch (e) {
       if (!showUnsupportedGlyphWarning(e)) setError(`Failed to split pages: ${e instanceof Error ? e.message : String(e)}`);
     }
-  }, [doc, fileName, downloadPdfBytes, preparePageDownloads, showUnsupportedGlyphWarning]);
+  }, [doc, fileName, downloadPdfBytes, preparePageDownloads, showUnsupportedGlyphWarning, requestConfirm]);
+
+  /** Shared by the thumbnail delete buttons and "Remove current page"; deletion stays undoable. */
+  const requestDeletePage = useCallback(async (index: number) => {
+    if (!doc || doc.pages.length <= 1) return;
+    const key = doc.pages[index]?.ref.toKey();
+    if (!key) return;
+    const confirmed = await requestConfirm({
+      title: 'Delete page',
+      message: deletePageConfirmation(index + 1),
+      confirmLabel: 'Delete',
+      tone: 'danger',
+    });
+    // The page list may have changed while the dialog was open.
+    if (confirmed && doc.pages[index]?.ref.toKey() === key) await handleDeletePage(index);
+  }, [doc, handleDeletePage, requestConfirm]);
 
   const handleRemoveCurrentPage = useCallback(() => {
-    if (!doc || doc.pages.length <= 1) return;
-    if (!window.confirm(deletePageConfirmation(currentPage + 1))) return;
-    handleDeletePage(currentPage);
-  }, [doc, currentPage, handleDeletePage]);
+    void requestDeletePage(currentPage);
+  }, [currentPage, requestDeletePage]);
 
   const handleDeleteSelectedDisplayItem = useCallback(async () => {
     if (!doc || !engineRef.current || !selectedDisplayItem) return;
@@ -5669,10 +5695,13 @@ export default function EditorPage() {
         const pageArea = Math.max(1, page.mediaBox.width * page.mediaBox.height);
         const imgArea = Math.max(0, item.width) * Math.max(0, item.height);
         if (imgArea / pageArea >= 0.5) {
-          const ok = window.confirm(
-            'This image covers most of the page. Deleting it will remove most of what you see. Continue?',
-          );
-          if (!ok) return;
+          const ok = await requestConfirm({
+            title: 'Delete image',
+            message: 'This image covers most of the page. Deleting it will remove most of what you see. Continue?',
+            confirmLabel: 'Delete',
+            tone: 'danger',
+          });
+          if (!ok || !lease.isCurrent() || doc.pages[currentPage]?.ref.toKey() !== pageKey) return;
         }
       }
 
@@ -5720,7 +5749,7 @@ export default function EditorPage() {
       console.error('[Editor] Delete object failed:', e);
       setError(`Delete failed: ${e instanceof Error ? e.message : String(e)}`);
     }
-  }, [doc, currentPage, selectedDisplayItem, pushEditorHistory, queueNativeEdit, setThumbnailKey]);
+  }, [doc, currentPage, selectedDisplayItem, pushEditorHistory, queueNativeEdit, setThumbnailKey, requestConfirm]);
 
   const handleInsertBlankPage = useCallback(async (index: number) => {
     if (!doc || !engineRef.current) return;
@@ -5821,6 +5850,7 @@ export default function EditorPage() {
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (closeDialogOpen || closeOperationRef.current || downloadOperationRef.current) return;
+      if ((e.target as Element | null)?.closest?.('[role="dialog"][aria-modal="true"]')) return;
       // Don't intercept when the hidden input has focus (editing)
       if (editingLine) return;
 
@@ -5996,6 +6026,7 @@ export default function EditorPage() {
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
       if (closeDialogOpen || closeOperationRef.current || downloadOperationRef.current) return;
+      if ((e.target as Element | null)?.closest?.('[role="dialog"][aria-modal="true"]')) return;
       if (e.code !== 'Space' || e.repeat) return;
       if (editingLine) return;
       if (document.activeElement?.tagName === 'INPUT' || document.activeElement?.tagName === 'TEXTAREA') return;
@@ -6248,7 +6279,7 @@ export default function EditorPage() {
               setLinkCreatePending(false);
               closeLinkPopover();
               if (links.length === 0) {
-                window.alert('No links found on this page.');
+                setNotice({ tone: 'info', message: 'No links found on this page.' });
               }
             } catch (err) {
               console.warn('[Editor] Scan links failed:', err);
@@ -6266,7 +6297,7 @@ export default function EditorPage() {
             // Create from current text selection / line
             const line = editAnchorLineRef.current ?? selectedLine ?? editingLine;
             if (!line) {
-              window.alert('Select or click a text line first, then add a link.');
+              setNotice({ tone: 'warning', message: 'Select or click a text line first, then add a link.' });
               return;
             }
             const sel = editSelRef.current;
@@ -6301,7 +6332,7 @@ export default function EditorPage() {
               setRenderKey(k => k + 1);
               setThumbnailKey(k => k + 1);
             } catch (err) {
-              if (err === noSelection) window.alert(noSelection.message);
+              if (err === noSelection) setNotice({ tone: 'warning', message: noSelection.message });
               else {
                 console.warn('[Editor] Add link failed:', err);
                 setError(`Add link failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -6315,7 +6346,7 @@ export default function EditorPage() {
           onAddLink={() => {
             const line = editAnchorLineRef.current ?? selectedLine ?? editingLine;
             if (!line) {
-              window.alert('Select or click a text line first, then add a link.');
+              setNotice({ tone: 'warning', message: 'Select or click a text line first, then add a link.' });
               return;
             }
             closeLinkPopover();
@@ -7388,7 +7419,7 @@ export default function EditorPage() {
               setLinkCreatePending(false);
               changePage(i);
             }}
-            onDeletePage={handleDeletePage}
+            onDeletePage={requestDeletePage}
             onInsertBlankPage={handleInsertBlankPage}
             onInsertPdf={handleInsertPdf}
             onRotatePage={handleRotatePage}
@@ -7468,7 +7499,7 @@ export default function EditorPage() {
               changePage(i);
               setShowMobileThumbnails(false);
             }}
-            onDeletePage={handleDeletePage}
+            onDeletePage={requestDeletePage}
             onInsertBlankPage={handleInsertBlankPage}
             onInsertPdf={handleInsertPdf}
             onRotatePage={handleRotatePage}
@@ -7506,6 +7537,17 @@ export default function EditorPage() {
         </div>
       )}
 
+      {notice && (
+        <Notice tone={notice.tone} className="fixed bottom-10 left-1/2 z-[700] max-w-[90vw] -translate-x-1/2 shadow-xl">
+          <div className="flex items-center gap-4">
+            {notice.message}
+            <button type="button" onClick={() => setNotice(null)} aria-label="Dismiss message" className="shrink-0 rounded opacity-80 hover:opacity-100">
+              <X size={16} aria-hidden="true" />
+            </button>
+          </div>
+        </Notice>
+      )}
+
       {glyphWarning && (
         <div role="status" aria-live="polite" className="fixed bottom-10 left-1/2 -translate-x-1/2 max-w-[90vw] bg-zinc-900 border border-amber-500/40 text-amber-200 px-4 py-3 rounded-xl text-sm flex items-center gap-4 shadow-xl z-[700]">
           <span>{glyphWarning}</span>
@@ -7537,31 +7579,7 @@ export default function EditorPage() {
           </button>
         </div>
       )}
-      {/* Z_LAYERS.modalBackdrop (500) / modal (600); content is a flex item. */}
-      {isConfirmingRemoval && (
-        <div className="fixed inset-0 z-[500] bg-black/80 flex items-center justify-center p-4 animate-in fade-in duration-200">
-          <div className="z-[600] bg-zinc-900 border border-zinc-700/50 rounded-xl p-6 shadow-2xl max-w-sm w-full">
-            <h3 className="text-white font-medium text-lg mb-2">Remove Watermarks</h3>
-            <p className="text-zinc-400 text-sm mb-6">
-              Do you really want to remove the detected watermarks from this document? This action cannot be undone.
-            </p>
-            <div className="flex gap-3 justify-end">
-              <button
-                onClick={() => setIsConfirmingRemoval(false)}
-                className="px-4 py-2 rounded font-medium text-sm text-zinc-300 hover:text-white hover:bg-zinc-800 transition-colors"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={executeRemoveWatermarks}
-                className="px-4 py-2 rounded font-medium text-sm bg-red-600 hover:bg-red-700 text-white transition-colors"
-              >
-                Yes, Remove
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      {confirmDialog}
 
       <SignatureCreateDialog
         open={signatureCreateOpen}

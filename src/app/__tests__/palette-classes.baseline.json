@@ -13,6 +13,6 @@
   "editor/components/UnassignedOverlays.tsx": 1,
   "editor/components/signatures/SignatureCreateDialog.tsx": 3,
   "editor/components/signatures/SignatureOverlay.tsx": 19,
-  "editor/page.tsx": 75,
+  "editor/page.tsx": 64,
   "page.tsx": 5
 }

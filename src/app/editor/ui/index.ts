@@ -9,3 +9,5 @@ export { MobileSheet } from './MobileSheet';
 export type { MobileSheetProps } from './MobileSheet';
 export { Notice } from './Notice';
 export type { NoticeProps, NoticeTone } from './Notice';
+export { useConfirm } from './useConfirm';
+export type { ConfirmOptions } from './useConfirm';

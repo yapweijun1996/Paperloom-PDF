@@ -2,7 +2,7 @@
 import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { ThumbnailsSidebar } from './ThumbnailsSidebar';
+import { ThumbnailsSidebar, deletePageConfirmation } from './ThumbnailsSidebar';
 
 let root: Root;
 let container: HTMLDivElement;
@@ -135,6 +135,7 @@ describe('thumbnail page controls', () => {
     const remove = vi.fn();
     const confirm = vi.fn(() => true);
     vi.stubGlobal('confirm', confirm);
+    expect(deletePageConfirmation(2)).toBe('Delete page 2? You can undo this.');
     act(() => root.render(createElement(ThumbnailsSidebar, {
       totalPages: 2, currentPage: 0, thumbnails: ['first', 'second'],
       isGeneratingThumbnails: false, onPageSelect: vi.fn(), onDeletePage: remove, onRotatePage: vi.fn(),
@@ -151,7 +152,8 @@ describe('thumbnail page controls', () => {
       expect(rotateSecond.className.split(/\s+/)).toContain(token);
     }
     act(() => deletes[1].click());
-    expect(confirm).toHaveBeenCalledWith('Delete page 2? You can undo this.');
+    // The editor owns the ConfirmDialog; the sidebar never uses window.confirm.
+    expect(confirm).not.toHaveBeenCalled();
     expect(remove).toHaveBeenCalledWith(1);
 
     act(() => root.render(createElement(ThumbnailsSidebar, {

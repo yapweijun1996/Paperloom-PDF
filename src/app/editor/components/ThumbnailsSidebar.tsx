@@ -24,6 +24,7 @@ interface ThumbnailsSidebarProps {
   thumbnails: string[];
   isGeneratingThumbnails: boolean;
   onPageSelect: (index: number) => void;
+  /** Requests deletion; the owner confirms with deletePageConfirmation before deleting. */
   onDeletePage?: (index: number) => void;
   onInsertBlankPage?: (index: number) => void;
   onInsertPdf?: (index: number, file: File) => void;
@@ -452,9 +453,7 @@ export function ThumbnailsSidebar({
                           className={`absolute top-2 right-2 bg-red-500/90 text-white p-1 rounded-md ${pageActionVisibility} ${pageActionTarget} transition-all shadow-md hover:bg-red-500 hover:scale-110 z-[100]`}
                           onClick={(e) => {
                             e.stopPropagation();
-                            if (window.confirm(deletePageConfirmation(i + 1))) {
-                              onDeletePage?.(i);
-                            }
+                            onDeletePage?.(i);
                           }}
                         >
                           <Trash2 size={12} />

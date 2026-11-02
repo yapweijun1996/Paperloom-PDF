@@ -151,10 +151,11 @@ test('mobile touch layout: prompt, toolbar targets, tool strip, download sheet a
     await expect(page.getByRole('button', { name: 'Rotate page 2 90° clockwise' })).toHaveCount(1);
     await page.getByRole('button', { name: 'Rotate page 1', exact: true }).scrollIntoViewIfNeeded();
     await shot(page, 'mobile-390-thumbnails.png');
-    let message = '';
-    page.once('dialog', dialog => { message = dialog.message(); dialog.dismiss(); });
     await deletes.nth(1).tap();
-    await expect.poll(() => message).toBe('Delete page 2? You can undo this.');
+    const confirmDelete = page.getByRole('dialog', { name: 'Delete page' });
+    await expect(confirmDelete).toContainText('Delete page 2? You can undo this.');
+    await confirmDelete.getByRole('button', { name: 'Cancel', exact: true }).tap();
+    await expect(confirmDelete).toHaveCount(0);
     await expect(deletes).toHaveCount(2);
     expect(errors).toEqual([]);
   } finally {
