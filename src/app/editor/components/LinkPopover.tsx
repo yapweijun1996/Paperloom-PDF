@@ -1,6 +1,8 @@
 'use client';
 
 import React, { useEffect, useRef } from 'react';
+import { ChevronsUpDown, X } from 'lucide-react';
+import { Button, TextInput } from '../ui';
 
 export type LinkPopoverMode = 'hover' | 'edit';
 
@@ -67,86 +69,61 @@ export function LinkPopover({
 
       {/* Caret pointer */}
       <div
-        className="absolute top-1.5 left-1/2 -translate-x-1/2 w-3 h-3 rotate-45 bg-zinc-100 border-l border-t border-zinc-200"
+        className="absolute top-1.5 left-1/2 -translate-x-1/2 w-3 h-3 rotate-45 bg-panel border-l border-t border-app"
         aria-hidden
       />
 
       {mode === 'hover' ? (
-        <div className="relative bg-zinc-100 rounded-xl shadow-lg border border-zinc-200/80 p-2.5 min-w-[220px] max-w-[320px]">
-          <div className="bg-zinc-200/80 rounded-lg px-3 py-2 text-[12px] text-zinc-700 font-mono truncate mb-2">
+        <div className="relative min-w-[220px] max-w-[320px] rounded-xl border border-app bg-panel p-2.5 text-app shadow-lg">
+          <div className="mb-2 truncate rounded-lg bg-panel-elevated px-3 py-2 font-mono text-[12px] text-app-muted">
             {url || '(empty URL)'}
           </div>
           <div className="flex gap-2">
-            <button
-              type="button"
-              onClick={onEdit}
-              className="flex-1 py-2 rounded-lg bg-zinc-200 hover:bg-zinc-300 text-zinc-700 text-[12px] font-semibold transition-colors"
-            >
-              Edit
-            </button>
-            <button
-              type="button"
-              onClick={onOpen}
-              className="flex-1 py-2 rounded-lg bg-orange-500 hover:bg-orange-600 text-white text-[12px] font-semibold transition-colors"
-            >
-              Open Link
-            </button>
+            <Button size="sm" className="flex-1" onClick={onEdit}>Edit</Button>
+            <Button size="sm" variant="primary" className="flex-1" onClick={onOpen}>Open Link</Button>
           </div>
         </div>
       ) : (
-        <div className="relative bg-zinc-200 rounded-xl shadow-lg border border-zinc-300/80 p-3 w-[280px]">
+        <div className="relative w-[280px] rounded-xl border border-app bg-panel p-3 text-app shadow-lg">
           <div className="space-y-2.5">
-            <label className="flex items-center gap-2 text-[12px] text-zinc-600">
+            <label className="flex items-center gap-2 text-[12px] text-app-muted">
               <span className="w-14 shrink-0">Display:</span>
-              <input
+              <TextInput
                 ref={displayRef}
-                type="text"
                 value={displayText}
                 onChange={(e) => onDisplayChange?.(e.target.value)}
-                className="flex-1 min-w-0 rounded-md border-2 border-orange-400 bg-white px-2 py-1 text-[12px] text-zinc-800 outline-none"
+                className="min-w-0 flex-1"
               />
             </label>
-            <label className="flex items-center gap-2 text-[12px] text-zinc-600">
+            <div className="flex items-center gap-2 text-[12px] text-app-muted">
               <span className="w-14 shrink-0">Link to:</span>
-              <div className="flex-1 flex items-center rounded-md border border-zinc-300 bg-white px-2 py-1 text-[12px] text-zinc-800">
+              <div className="flex flex-1 items-center rounded-xl border border-border-strong bg-panel-elevated px-3 py-1.5 text-[12px] text-app">
                 <span className="flex-1">Web page</span>
-                <span className="ml-1 w-5 h-5 rounded bg-orange-500 text-white text-[10px] flex items-center justify-center">↕</span>
+                <ChevronsUpDown size={14} aria-hidden="true" className="text-accent" />
               </div>
-            </label>
-            <label className="flex items-center gap-2 text-[12px] text-zinc-600">
+            </div>
+            <label className="flex items-center gap-2 text-[12px] text-app-muted">
               <span className="w-14 shrink-0">Link:</span>
-              <input
+              <TextInput
                 type="url"
                 value={url}
                 onChange={(e) => onUrlChange?.(e.target.value)}
-                className="flex-1 min-w-0 rounded-md border border-zinc-300 bg-white px-2 py-1 text-[12px] text-zinc-800 outline-none focus:border-orange-400"
+                className="min-w-0 flex-1"
               />
             </label>
             <div className="flex gap-2 pt-1">
-              <button
-                type="button"
-                onClick={onRemove}
-                className="flex-1 py-2 rounded-lg bg-zinc-300 hover:bg-zinc-400 text-zinc-700 text-[12px] font-semibold transition-colors"
-              >
-                Remove
-              </button>
-              <button
-                type="button"
-                onClick={onOpen}
-                className="flex-1 py-2 rounded-lg bg-zinc-300 hover:bg-zinc-400 text-zinc-700 text-[12px] font-semibold transition-colors"
-              >
-                Open Link
-              </button>
+              <Button size="sm" className="flex-1" onClick={onRemove}>Remove</Button>
+              <Button size="sm" className="flex-1" onClick={onOpen}>Open Link</Button>
             </div>
           </div>
           {onClose && (
             <button
               type="button"
               onClick={onClose}
-              className="absolute -top-2 -right-2 w-5 h-5 rounded-full bg-zinc-500 text-white text-[10px] leading-none hover:bg-zinc-600"
+              className="absolute -top-2 -right-2 flex size-6 items-center justify-center rounded-full border border-app bg-panel-elevated text-app-muted shadow-sm hover:text-app"
               aria-label="Close"
             >
-              ×
+              <X size={12} aria-hidden="true" />
             </button>
           )}
         </div>
