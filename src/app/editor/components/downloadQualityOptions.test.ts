@@ -17,10 +17,10 @@ describe('download quality selections', () => {
   it('describes compression results consistently from smallest to sharpest', () => {
     expect(COMPRESSION_PRESETS.map(preset => [preset.label, preset.desc])).toEqual([
       ['Original', 'No re-encoding'],
-      ['Extreme', 'Smallest file, visible blur'],
-      ['High', 'Small file, softer images'],
-      ['Medium', 'Balanced size and quality'],
-      ['Low', 'Largest file, sharpest images'],
+      ['Extreme', 'Smallest, blurriest'],
+      ['High', 'Smaller, softer'],
+      ['Medium', 'Balanced'],
+      ['Low', 'Largest, sharpest'],
     ]);
     const qualities = COMPRESSION_PRESETS.slice(1).map(preset => preset.value!);
     expect(qualities).toEqual([...qualities].sort((a, b) => a - b));
