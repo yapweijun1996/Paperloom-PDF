@@ -161,3 +161,24 @@ test('mobile touch layout: prompt, toolbar targets, tool strip, download sheet a
     await context.close();
   }
 });
+
+for (const viewport of [{ width: 768, height: 1024 }, { width: 1280, height: 800 }]) {
+  test(`touch header with 44px targets does not cover the editor at ${viewport.width}x${viewport.height}`, async ({ browser }) => {
+    const context = await browser.newContext({ viewport, isMobile: viewport.width < 1000, hasTouch: true });
+    try {
+      const page = await context.newPage();
+      await openPdf(page);
+      const header = await page.locator('header').boundingBox();
+      const overflow = await page.locator('header').evaluate(element => element.scrollHeight - element.clientHeight);
+      expect(overflow).toBeLessThanOrEqual(1);
+      const select = page.getByRole('button', { name: 'Select', exact: true });
+      const selectBox = await select.boundingBox();
+      expect(selectBox.y).toBeGreaterThanOrEqual(header.y + header.height - 1);
+      await select.click();
+      await expect(select).toHaveAttribute('aria-pressed', 'true');
+      await shot(page, `touch-${viewport.width}-header.png`);
+    } finally {
+      await context.close();
+    }
+  });
+}
