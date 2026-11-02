@@ -1,50 +1,9 @@
 // @vitest-environment node
-import { readdirSync, readFileSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { relative } from 'node:path';
 import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 import { Z_LAYERS } from './zLayers';
-
-type Opening = ts.JsxOpeningElement | ts.JsxSelfClosingElement;
-
-function sourceFiles(directory: string): string[] {
-  return readdirSync(directory, { withFileTypes: true }).flatMap(entry => {
-    const file = join(directory, entry.name);
-    if (entry.isDirectory()) return sourceFiles(file);
-    return /\.tsx?$/.test(file) && !/\.(test|spec)\.tsx?$/.test(file) ? [file] : [];
-  }).sort();
-}
-
-function attribute(opening: Opening, name: string): ts.JsxAttribute | undefined {
-  return opening.attributes.properties.find((item): item is ts.JsxAttribute =>
-    ts.isJsxAttribute(item) && item.name.getText() === name);
-}
-
-// Expand conditional class branches independently, including templates whose
-// common prefix contains the positioning classes. Class order/formatting is irrelevant.
-function classBranches(node: ts.Node | undefined): string[] {
-  if (!node) return [''];
-  if (ts.isStringLiteralLike(node)) return [node.text];
-  if (ts.isJsxExpression(node)) return classBranches(node.expression);
-  if (ts.isParenthesizedExpression(node)) return classBranches(node.expression);
-  if (ts.isConditionalExpression(node)) {
-    return [...classBranches(node.whenTrue), ...classBranches(node.whenFalse)];
-  }
-  if (ts.isTemplateExpression(node)) {
-    return node.templateSpans.reduce<string[]>((prefixes, span) =>
-      prefixes.flatMap(prefix => classBranches(span.expression).map(value => prefix + value + span.literal.text)),
-    [node.head.text]);
-  }
-  if (ts.isBinaryExpression(node)) {
-    if (node.operatorToken.kind === ts.SyntaxKind.PlusToken) {
-      return classBranches(node.left).flatMap(left => classBranches(node.right).map(right => left + right));
-    }
-    if (node.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken) {
-      return ['', ...classBranches(node.right)];
-    }
-  }
-  return ['']; // Non-class expressions (e.g. a numeric width) add no utilities.
-}
+import { attribute, classBranches, openings, parseSource, sourceFiles, type Opening } from './__tests__/classNames';
 
 function inlineLayer(opening: Opening): number | undefined {
   const style = attribute(opening, 'style')?.initializer;
@@ -79,20 +38,7 @@ function layerOf(utilities: string[], opening: Opening): number {
   return values.length ? values[values.length - 1] : Number.NEGATIVE_INFINITY;
 }
 
-function openings(source: ts.SourceFile): Opening[] {
-  const result: Opening[] = [];
-  const visit = (node: ts.Node) => {
-    if (ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)) result.push(node);
-    ts.forEachChild(node, visit);
-  };
-  visit(source);
-  return result;
-}
-
-const sources = sourceFiles(__dirname).map(file => ts.createSourceFile(
-  file, readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true,
-  file.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
-));
+const sources = sourceFiles(__dirname).map(parseSource);
 
 describe('editor stacking boundaries', () => {
   it('keeps all fixed fullscreen surfaces and drawers above canvas and chrome', () => {
