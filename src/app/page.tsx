@@ -16,6 +16,7 @@ import {
 import { isPdfFile } from '@/app/pdf-file-validation';
 import { FileUp, Loader2, Sparkles } from 'lucide-react';
 import { BRAND_BASE_PATH, BRAND_NAME } from '@/lib/brand';
+import { useConfirm } from './editor/ui';
 
 export default function Home() {
   const [isDragging, setIsDragging] = useState(false);
@@ -24,6 +25,7 @@ export default function Home() {
   const [storageReady, setStorageReady] = useState(false);
   const [savedDocument, setSavedDocument] = useState<{ fileName: string; hasRecovery: boolean } | null>(null);
   const [orphanRecovery, setOrphanRecovery] = useState<EditorSessionRecord | null>(null);
+  const { confirm: requestConfirm, dialog: confirmDialog } = useConfirm();
   const operationRef = useRef(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const router = useRouter();
@@ -91,7 +93,12 @@ export default function Home() {
 
   const handleDiscardSaved = useCallback(async () => {
     if (!storageReady || !savedDocument || operationRef.current) return;
-    if (!window.confirm('Discard the saved local document and any recovery changes? This cannot be undone.')) return;
+    if (!await requestConfirm({
+      title: 'Discard saved document',
+      message: 'Discard the saved local document and any recovery changes? This cannot be undone.',
+      confirmLabel: 'Discard',
+      tone: 'danger',
+    }) || operationRef.current) return;
     operationRef.current = true;
     setIsLoading(true);
     setError(null);
@@ -104,11 +111,16 @@ export default function Home() {
       operationRef.current = false;
       setIsLoading(false);
     }
-  }, [savedDocument, storageReady]);
+  }, [savedDocument, storageReady, requestConfirm]);
 
   const handleDiscardOrphan = useCallback(async () => {
     if (!storageReady || !orphanRecovery || operationRef.current) return;
-    if (!window.confirm('Permanently discard this recovery record? Its changes may be lost and cannot be restored.')) return;
+    if (!await requestConfirm({
+      title: 'Discard recovery record',
+      message: 'Permanently discard this recovery record? Its changes may be lost and cannot be restored.',
+      confirmLabel: 'Discard',
+      tone: 'danger',
+    }) || operationRef.current) return;
     operationRef.current = true;
     setIsLoading(true);
     setError(null);
@@ -121,7 +133,7 @@ export default function Home() {
       operationRef.current = false;
       setIsLoading(false);
     }
-  }, [orphanRecovery, storageReady]);
+  }, [orphanRecovery, storageReady, requestConfirm]);
 
   const handleResumeOrphan = useCallback(async () => {
     if (!storageReady || !orphanRecovery || operationRef.current) return;
@@ -244,7 +256,7 @@ export default function Home() {
             {savedDocument.hasRecovery ? 'Recovery changes are available on this device.' : 'A saved document is available on this device.'}
           </p>
           <div className="mt-3 flex flex-wrap gap-2">
-            <button type="button" disabled={!storageReady || isLoading} onClick={() => router.push('/editor')} className="rounded-xl bg-bloom-500 px-3 py-2 text-sm font-semibold text-white disabled:opacity-50">
+            <button type="button" disabled={!storageReady || isLoading} onClick={() => router.push('/editor')} className="rounded-xl bg-bloom-500 px-3 py-2 text-sm font-semibold text-on-accent disabled:opacity-50">
               Resume saved document
             </button>
             <button type="button" disabled={!storageReady || isLoading} onClick={() => void handleDiscardSaved()} className="rounded-xl border border-app px-3 py-2 text-sm text-app-muted hover:bg-panel-elevated disabled:opacity-50">
@@ -261,7 +273,7 @@ export default function Home() {
             Its original document record is missing. You can restore the saved recovery, or discard it if you no longer need those changes.
           </p>
           <div className="mt-3 flex flex-wrap gap-2">
-            <button type="button" disabled={!storageReady || isLoading} onClick={() => void handleResumeOrphan()} className="rounded-xl bg-bloom-500 px-3 py-2 text-sm font-semibold text-white disabled:opacity-50">
+            <button type="button" disabled={!storageReady || isLoading} onClick={() => void handleResumeOrphan()} className="rounded-xl bg-bloom-500 px-3 py-2 text-sm font-semibold text-on-accent disabled:opacity-50">
               Resume recovery
             </button>
             <button type="button" disabled={!storageReady || isLoading} onClick={() => void handleDiscardOrphan()} className="rounded-xl border border-app px-3 py-2 text-sm text-app-muted hover:bg-panel-elevated disabled:opacity-50">
@@ -272,10 +284,11 @@ export default function Home() {
       )}
 
       {error && (
-        <p role="alert" className="text-red-400 bg-red-400/10 border border-red-400/20 px-4 py-2.5 rounded-xl text-sm mt-6 max-w-lg text-center font-medium animate-in slide-in-from-bottom-2 fade-in z-10">
+        <p role="alert" className="text-danger bg-danger-soft border border-danger px-4 py-2.5 rounded-xl text-sm mt-6 max-w-lg text-center font-medium animate-in slide-in-from-bottom-2 fade-in z-10">
           {error}
         </p>
       )}
+      {confirmDialog}
     </div>
   );
 }

@@ -54,6 +54,14 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+/** Answers the shared ConfirmDialog, which portals outside the container. */
+async function respond(label: 'Discard' | 'Cancel') {
+  const dialog = document.querySelector('[role="dialog"]');
+  const button = [...(dialog?.querySelectorAll('button') ?? [])].find(item => item.textContent?.trim() === label);
+  if (!button) throw new Error(`Missing confirmation button: ${label}`);
+  await act(async () => button.click());
+}
+
 function getButton(label: string): HTMLButtonElement {
   const button = [...container.querySelectorAll('button')].find((item) => item.textContent?.trim() === label);
   if (!button) throw new Error(`Missing button: ${label}`);
@@ -73,26 +81,28 @@ describe('saved document on the home page', () => {
   });
 
   it('preserves the saved document when discard is cancelled and clears it only after confirmation', async () => {
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValueOnce(true);
+    const confirm = vi.spyOn(window, 'confirm');
     await act(async () => root.render(createElement(Home)));
     await act(async () => getButton('Discard saved document').click());
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain('This cannot be undone.');
+    await respond('Cancel');
     expect(mocks.clearPdf).not.toHaveBeenCalled();
     expect(container.textContent).toContain('recovery.pdf');
     await act(async () => getButton('Discard saved document').click());
-    expect(confirm).toHaveBeenCalledTimes(2);
+    await respond('Discard');
+    expect(confirm).not.toHaveBeenCalled();
     expect(mocks.clearPdf).toHaveBeenCalledOnce();
     expect(container.textContent).not.toContain('recovery.pdf');
     confirm.mockRestore();
   });
 
   it('reports discard failures and leaves the resume action available', async () => {
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
     mocks.clearPdf.mockRejectedValue(new Error('storage changed'));
     await act(async () => root.render(createElement(Home)));
     await act(async () => getButton('Discard saved document').click());
+    await respond('Discard');
     expect(container.querySelector('[role="alert"]')?.textContent).toContain('storage changed');
     expect(getButton('Resume saved document').disabled).toBe(false);
-    confirm.mockRestore();
   });
 
   it('reports storage read failures and does not offer a destructive action', async () => {
@@ -171,16 +181,16 @@ describe('saved document on the home page', () => {
     const orphan = { fileName: 'orphan.pdf', bytes: new ArrayBuffer(1), updatedAt: 1, overlays: {} };
     mocks.loadPdf.mockResolvedValue(null);
     mocks.inspectOrphan.mockResolvedValue(orphan);
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValueOnce(true);
     await act(async () => root.render(createElement(Home)));
     await act(async () => getButton('Discard orphaned recovery').click());
+    await respond('Cancel');
     expect(mocks.clearOrphan).not.toHaveBeenCalled();
     expect(container.textContent).toContain('orphan.pdf');
     await act(async () => getButton('Discard orphaned recovery').click());
+    await respond('Discard');
     expect(mocks.clearOrphan).toHaveBeenCalledExactlyOnceWith(orphan);
     expect(mocks.clearPdf).not.toHaveBeenCalled();
     expect(container.textContent).not.toContain('orphan.pdf');
-    confirm.mockRestore();
   });
 
   it('leaves the orphan visible when deletion fails or storage changed', async () => {
@@ -188,13 +198,12 @@ describe('saved document on the home page', () => {
     mocks.loadPdf.mockResolvedValue(null);
     mocks.inspectOrphan.mockResolvedValue(orphan);
     mocks.clearOrphan.mockRejectedValue(new Error('storage changed'));
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
     await act(async () => root.render(createElement(Home)));
     await act(async () => getButton('Discard orphaned recovery').click());
+    await respond('Discard');
     expect(container.querySelector('[role="alert"]')?.textContent).toContain('storage changed');
     expect(getButton('Discard orphaned recovery').disabled).toBe(false);
     expect(container.textContent).toContain('orphan.pdf');
-    confirm.mockRestore();
   });
 
   it('refreshes an orphan discovered when a concurrent upload is refused', async () => {
