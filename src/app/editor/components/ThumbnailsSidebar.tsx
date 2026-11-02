@@ -65,6 +65,11 @@ function IconTip({
   );
 }
 
+/** Shared by the thumbnail delete button and "Remove current page". */
+export function deletePageConfirmation(pageNumber: number): string {
+  return `Delete page ${pageNumber}? You can undo this.`;
+}
+
 const PAGE_CAPABILITIES = [
   { id: 'split', icon: Scissors, label: 'Split pages', color: 'text-contrast', steps: 'Choose Download current page or Download each page to save separate PDFs.' },
   { id: 'merge', icon: Combine, label: 'Merge PDFs', color: 'text-contrast', steps: 'Choose Merge PDF to append pages from another document.' },
@@ -187,10 +192,10 @@ export function ThumbnailsSidebar({
             <FilePlus size={14} />
           </button>
         </IconTip>
-        <IconTip label="Rotate page 90° clockwise">
+        <IconTip label={`Rotate page ${rotatePageIndex + 1} 90° clockwise`}>
           <button
             type="button"
-            aria-label="Rotate page"
+            aria-label={`Rotate page ${rotatePageIndex + 1} 90° clockwise`}
             className="p-1 rounded text-app-muted hover:text-app hover:bg-panel-elevated transition-colors"
             onClick={() => onRotatePage?.(rotatePageIndex)}
           >
@@ -366,6 +371,14 @@ export function ThumbnailsSidebar({
             thumbnails.map((thumbDataUrl, i) => {
               const isDragging = dragIndex === i;
               const isDropTarget = dropTarget === i && dragIndex !== i;
+              // Touch has no hover: keep page actions visible there and on the
+              // current page; elsewhere reveal on hover or keyboard focus.
+              const pageActionVisibility = isMobile || currentPage === i
+                ? 'opacity-100'
+                : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus:opacity-100 pointer-coarse:opacity-100';
+              const pageActionTarget = isMobile
+                ? 'min-h-11 min-w-11 flex items-center justify-center'
+                : 'flex items-center justify-center pointer-coarse:min-h-11 pointer-coarse:min-w-11';
 
               return (
                 <React.Fragment key={i}>
@@ -436,10 +449,10 @@ export function ThumbnailsSidebar({
                         <button
                           type="button"
                           aria-label="Delete page"
-                          className="absolute top-2 right-2 bg-red-500/90 text-white p-1 rounded-md opacity-0 group-hover:opacity-100 focus:opacity-100 transition-all shadow-md hover:bg-red-500 hover:scale-110 z-[100]"
+                          className={`absolute top-2 right-2 bg-red-500/90 text-white p-1 rounded-md ${pageActionVisibility} ${pageActionTarget} transition-all shadow-md hover:bg-red-500 hover:scale-110 z-[100]`}
                           onClick={(e) => {
                             e.stopPropagation();
-                            if (window.confirm('Do you really want to delete this page?')) {
+                            if (window.confirm(deletePageConfirmation(i + 1))) {
                               onDeletePage?.(i);
                             }
                           }}
@@ -463,7 +476,7 @@ export function ThumbnailsSidebar({
                         <button
                           type="button"
                           aria-label={`Rotate page ${i + 1}`}
-                          className="p-0.5 rounded text-app-faint opacity-0 group-hover:opacity-100 focus:opacity-100 hover:text-app hover:bg-panel-elevated transition-all"
+                          className={`p-0.5 rounded text-app-faint ${pageActionVisibility} ${pageActionTarget} hover:text-app hover:bg-panel-elevated transition-all`}
                           onClick={(e) => {
                             e.stopPropagation();
                             onRotatePage?.(i);

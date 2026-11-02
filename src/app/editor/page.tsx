@@ -78,7 +78,7 @@ import { SignatureOverlay } from './components/signatures/SignatureOverlay';
 import { SignatureCreateDialog, type SignatureCreateResult } from './components/signatures/SignatureCreateDialog';
 import { CertificateImportDialog } from './components/signatures/CertificateImportDialog';
 import { WatermarkPreview } from './components/WatermarkPreview';
-import { ThumbnailsSidebar } from './components/ThumbnailsSidebar';
+import { ThumbnailsSidebar, deletePageConfirmation } from './components/ThumbnailsSidebar';
 import { generateThumbnails, ThumbnailCoordinator } from './thumbnail-generation';
 import { captureFormThumbnailSnapshot, changedFormThumbnailPages, type FormThumbnailSnapshot } from './form-thumbnail-pages';
 import { FieldRenameNotice } from './components/FieldRenameNotice';
@@ -5645,7 +5645,7 @@ export default function EditorPage() {
 
   const handleRemoveCurrentPage = useCallback(() => {
     if (!doc || doc.pages.length <= 1) return;
-    if (!window.confirm(`Remove page ${currentPage + 1}?`)) return;
+    if (!window.confirm(deletePageConfirmation(currentPage + 1))) return;
     handleDeletePage(currentPage);
   }, [doc, currentPage, handleDeletePage]);
 
