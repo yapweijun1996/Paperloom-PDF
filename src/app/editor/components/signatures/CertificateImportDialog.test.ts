@@ -123,3 +123,19 @@ it('returns focus to the opener after the dialog closes', async () => {
   await act(async () => { await new Promise(resolve => setTimeout(resolve, 10)); });
   expect(document.activeElement).toBe(opener);
 });
+
+it('follows the theme and keeps certificate secrets out of autofill and spellcheck', async () => {
+  await act(async () => root.render(createElement(CertificateImportDialog, { open: true, onOpenChange: vi.fn() })));
+  const dialog = document.querySelector<HTMLElement>('[role="dialog"]')!;
+  expect(dialog.getAttribute('aria-modal')).toBe('true');
+  expect(dialog.closest('[data-theme]')).toBeNull();
+  expect(dialog.className).not.toMatch(/zinc-/);
+  const password = dialog.querySelector<HTMLInputElement>('input[aria-label="P12/PFX password (optional)"]')!;
+  expect(password.type).toBe('password');
+  expect(password.getAttribute('autocomplete')).toBe('off');
+  const pem = dialog.querySelector('textarea')!;
+  expect(pem.getAttribute('spellcheck')).toBe('false');
+  expect(pem.getAttribute('autocomplete')).toBe('off');
+  expect(dialog.querySelector('label')!.textContent).toBe('Or paste PEM');
+  expect(dialog.querySelector('button[aria-label="Close certificates"]')).not.toBeNull();
+});

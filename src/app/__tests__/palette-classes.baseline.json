@@ -11,7 +11,6 @@
   "editor/components/ThumbnailsSidebar.tsx": 4,
   "editor/components/Toolbar.tsx": 5,
   "editor/components/UnassignedOverlays.tsx": 1,
-  "editor/components/signatures/CertificateImportDialog.tsx": 45,
   "editor/components/signatures/SignatureCreateDialog.tsx": 51,
   "editor/components/signatures/SignatureOverlay.tsx": 19,
   "editor/page.tsx": 75,
