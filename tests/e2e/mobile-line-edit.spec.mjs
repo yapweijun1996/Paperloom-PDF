@@ -5,6 +5,9 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+// CDP touch sessions are never detached: on Linux headless Chromium, detaching the
+// session that sent Input.dispatchTouchEvent turns off the context's touch emulation
+// (pointer: coarse stops matching), which unmounts the touch-only controls.
 async function makePdf(pages = 1, position = { x: 50, y: 300 }) {
   const pdf = await PDFDocument.create();
   const page = pdf.addPage([400, 400]);
@@ -103,7 +106,6 @@ for (const [width, height] of [[320, 568], [390, 844], [568, 320]]) {
       await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: box.x + box.width / 2, y: box.y + box.height / 2 }] });
       await expect(line).toBeFocused();
       await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
-      await cdp.detach();
       await expect(line).toHaveCount(0);
       await expect(page.getByTitle('Undo (Ctrl+Z)')).toBeEnabled();
       expect(await downloadedText(page)).toContain('CHANGED TEXT');
@@ -473,7 +475,6 @@ for (const phase of ['editing', 'submitting']) {
       await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [start] });
       await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: start.x + 40, y: start.y + 30 }] });
       await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
-      await cdp.detach();
       await page.waitForTimeout(300);
       const after = await signature.boundingBox();
       expect(hit).not.toBe('se');
@@ -490,7 +491,6 @@ for (const phase of ['editing', 'submitting']) {
         await cdpAfter.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [a] });
         await cdpAfter.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: a.x + 40, y: a.y + 30 }] });
         await cdpAfter.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
-        await cdpAfter.detach();
         await expect.poll(async () => (await signature.boundingBox()).width).toBeGreaterThan(before.width + 10);
       }
     } finally { release?.(); await context.close(); }

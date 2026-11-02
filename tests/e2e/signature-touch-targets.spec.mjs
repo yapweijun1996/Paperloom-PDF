@@ -2,6 +2,9 @@ import { test, expect } from '@playwright/test';
 import { PDFDocument, PDFName, PDFString } from 'pdf-lib';
 import { join } from 'node:path';
 
+// CDP touch sessions are never detached: on Linux headless Chromium, detaching the
+// session that sent Input.dispatchTouchEvent turns off the context's touch emulation
+// (pointer: coarse stops matching), which unmounts the touch-only controls.
 async function openSignedPage(page, { field = false, captureCollapsed = false } = {}) {
   const pdf = await PDFDocument.create(); const pdfPage = pdf.addPage([400, 400]);
   if (field) {
@@ -90,14 +93,12 @@ async function touchDrag(page, target, dx, dy, cancel = false) {
   // Exercise the enlarged target away from its center.
   const x = box.x + 8, y = box.y + 8;
   const cdp = await page.context().newCDPSession(page);
-  try {
-    const point = (px, py) => [{ x: px, y: py, id: 1 }];
-    await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: point(x, y) });
-    for (let i = 1; i <= 4; i++) {
-      await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: point(x + dx * i / 4, y + dy * i / 4) });
-    }
-    await cdp.send('Input.dispatchTouchEvent', { type: cancel ? 'touchCancel' : 'touchEnd', touchPoints: [] });
-  } finally { await cdp.detach(); }
+  const point = (px, py) => [{ x: px, y: py, id: 1 }];
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: point(x, y) });
+  for (let i = 1; i <= 4; i++) {
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: point(x + dx * i / 4, y + dy * i / 4) });
+  }
+  await cdp.send('Input.dispatchTouchEvent', { type: cancel ? 'touchCancel' : 'touchEnd', touchPoints: [] });
 }
 
 async function signaturePdf(page) {
@@ -243,17 +244,15 @@ for (const cancelPrimary of [false, true]) test(`a second touch and click withou
     const a = await east.boundingBox(), b = await del.boundingBox();
     const first = { x: a.x + 8, y: a.y + 8, id: 1 }, second = { x: b.x + 8, y: b.y + 8, id: 2 };
     const cdp = await context.newCDPSession(page);
-    try {
-      await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [first] });
-      await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [first, second] });
-      if (cancelPrimary) await cdp.send('Input.dispatchTouchEvent', { type: 'touchCancel', touchPoints: [] });
-      await del.evaluate(el => el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 })));
-      await expect(image).toHaveCount(1);
-      if (!cancelPrimary) {
-        await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [first] });
-        await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
-      }
-    } finally { await cdp.detach(); }
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [first] });
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [first, second] });
+    if (cancelPrimary) await cdp.send('Input.dispatchTouchEvent', { type: 'touchCancel', touchPoints: [] });
+    await del.evaluate(el => el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 })));
+    await expect(image).toHaveCount(1);
+    if (!cancelPrimary) {
+      await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [first] });
+      await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    }
     await expect(image).toHaveCount(1);
     await del.tap();
     await expect(image).toHaveCount(0);
@@ -270,15 +269,13 @@ for (const focus of ['control', 'toolbar']) test(`keyboard input at ${focus} dur
     else await page.getByTitle('Undo (Ctrl+Z)').focus();
     const cdp = await context.newCDPSession(page);
     const start = { x: box.x + 8, y: box.y + 8, id: 1 };
-    try {
-      await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [start] });
-      await expect(page.getByRole('group', { name: 'Signature touch controls' })).toHaveAttribute('aria-busy', 'true');
-      await page.keyboard.press('ArrowRight');
-      await page.keyboard.press('Enter');
-      await page.keyboard.press('Control+z');
-      await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ ...start, x: start.x + 10 }] });
-      await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
-    } finally { await cdp.detach(); }
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [start] });
+    await expect(page.getByRole('group', { name: 'Signature touch controls' })).toHaveAttribute('aria-busy', 'true');
+    await page.keyboard.press('ArrowRight');
+    await page.keyboard.press('Enter');
+    await page.keyboard.press('Control+z');
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ ...start, x: start.x + 10 }] });
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
     await expect(page.getByRole('group', { name: 'Signature touch controls' })).toHaveAttribute('aria-busy', 'false');
     await expect.poll(async () => (await image.boundingBox()).width).toBeCloseTo(original + 10, 0);
   } finally { await context.close(); }
@@ -406,12 +403,10 @@ for (const method of ['mouse', 'keyboard']) test(`a cancelled multi-touch gestur
     const page = await context.newPage(), { image } = await openSignedPage(page);
     const east = page.locator('[data-touch-handle="e"]'), del = page.getByRole('button', { name: 'Delete signature' });
     const a = await east.boundingBox(), b = await del.boundingBox(), cdp = await context.newCDPSession(page);
-    try {
-      const first = { x: a.x + 8, y: a.y + 8, id: 1 }, second = { x: b.x + 8, y: b.y + 8, id: 2 };
-      await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [first] });
-      await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [first, second] });
-      await cdp.send('Input.dispatchTouchEvent', { type: 'touchCancel', touchPoints: [] });
-    } finally { await cdp.detach(); }
+    const first = { x: a.x + 8, y: a.y + 8, id: 1 }, second = { x: b.x + 8, y: b.y + 8, id: 2 };
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [first] });
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [first, second] });
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchCancel', touchPoints: [] });
     await expect(image).toHaveCount(1);
     if (method === 'mouse') await page.mouse.click(b.x + b.width / 2, b.y + b.height / 2);
     else { await del.focus(); await page.keyboard.press('Enter'); }
@@ -427,22 +422,20 @@ for (const reason of ['lost capture', 'window blur', 'deselect']) test(`interrup
     const original = (await image.boundingBox()).width;
     const cdp = await context.newCDPSession(page);
     const start = { x: box.x + 8, y: box.y + 8, id: 1 };
-    try {
-      await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [start] });
-      await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ ...start, x: start.x + 20 }] });
-      await expect.poll(async () => (await image.boundingBox()).width).toBeCloseTo(original + 20, 0);
-      if (reason === 'lost capture') {
-        await east.evaluate(el => {
-          for (let id = 1; id < 20; id++) if (el.hasPointerCapture(id)) el.releasePointerCapture(id);
-        });
-        // Browsers dispatch lostpointercapture when processing the next pointer event.
-        await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ ...start, x: start.x + 21 }] });
-      }
-      if (reason === 'window blur') await page.evaluate(() => window.dispatchEvent(new Event('blur')));
-      if (reason === 'deselect') await page.getByTitle('Deselect', { exact: true }).first().evaluate(el => el.click());
-      await expect.poll(async () => (await image.boundingBox()).width).toBeCloseTo(original, 0);
-      await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
-    } finally { await cdp.detach(); }
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [start] });
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ ...start, x: start.x + 20 }] });
+    await expect.poll(async () => (await image.boundingBox()).width).toBeCloseTo(original + 20, 0);
+    if (reason === 'lost capture') {
+      await east.evaluate(el => {
+        for (let id = 1; id < 20; id++) if (el.hasPointerCapture(id)) el.releasePointerCapture(id);
+      });
+      // Browsers dispatch lostpointercapture when processing the next pointer event.
+      await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ ...start, x: start.x + 21 }] });
+    }
+    if (reason === 'window blur') await page.evaluate(() => window.dispatchEvent(new Event('blur')));
+    if (reason === 'deselect') await page.getByTitle('Deselect', { exact: true }).first().evaluate(el => el.click());
+    await expect.poll(async () => (await image.boundingBox()).width).toBeCloseTo(original, 0);
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
     if (reason === 'deselect') {
       await image.tap();
       if (await page.getByRole('button', { name: 'Show signature resize and rotation controls' }).isVisible())

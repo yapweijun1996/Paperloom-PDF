@@ -6,6 +6,9 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+// CDP touch sessions are never detached: on Linux headless Chromium, detaching the
+// session that sent Input.dispatchTouchEvent turns off the context's touch emulation
+// (pointer: coarse stops matching), which unmounts the touch-only controls.
 let directory;
 test.beforeEach(() => { directory = mkdtempSync(join(tmpdir(), 'paperloom-signature-widget-')); });
 test.afterEach(() => { rmSync(directory, { recursive: true, force: true }); });
@@ -247,7 +250,6 @@ test('cancelled simulated touch restores the field before a later drag', async (
     await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [start] });
     await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{x: start.x + 30, y: start.y + 10}] });
     await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
-    await cdp.detach();
     await expect.poll(async () => (await image.boundingBox()).x).toBeGreaterThan(initial.x + 20);
   } finally { await context.close(); }
 });
