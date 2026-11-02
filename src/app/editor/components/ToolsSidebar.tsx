@@ -172,7 +172,8 @@ export function ToolsSidebar({
         shadow-[4px_0_24px_rgba(0,0,0,0.08)] min-h-0 h-full overflow-hidden
       `}
     >
-      <Tooltip.Provider delayDuration={200} skipDelayDuration={100}>
+      {/* Content is pointer-events-none, so it closes as soon as the pointer leaves the tool. */}
+      <Tooltip.Provider delayDuration={200} skipDelayDuration={100} disableHoverableContent>
       <div className="flex-1 flex flex-col gap-2 w-full px-1.5 overflow-y-auto overflow-x-hidden min-h-0 py-1">
         {TOOLS.map((tool) => {
           const isActive = activeTool === tool.id;
