@@ -6058,6 +6058,7 @@ export default function EditorPage() {
       {/* ── Top toolbar ── */}
       <Toolbar
         fileName={fileName}
+        isDirty={isDirty}
         currentPage={currentPage}
         totalPages={totalPages}
         scale={scale}
@@ -6466,7 +6467,6 @@ export default function EditorPage() {
                 >
                   <Type size={14} /> Recognize text (OCR)
                 </button>
-                {isDirty && <span className="text-[10px] text-amber-400 font-medium border-l border-zinc-700/50 pl-2">Unsaved</span>}
               </div>
               <div className="pointer-events-auto">
                 <FindReplacePanel

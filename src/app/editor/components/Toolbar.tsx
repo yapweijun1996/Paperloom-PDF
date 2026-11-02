@@ -14,6 +14,8 @@ const TOUCH_TARGET = 'inline-flex items-center justify-center pointer-coarse:min
 
 interface ToolbarProps {
   fileName: string;
+  /** Shows the unsaved-changes badge beside the file name. */
+  isDirty?: boolean;
   currentPage: number;
   totalPages: number;
   scale: number;
@@ -50,6 +52,7 @@ interface ToolbarProps {
 
 export function Toolbar({
   fileName,
+  isDirty = false,
   currentPage,
   totalPages,
   scale,
@@ -107,6 +110,15 @@ export function Toolbar({
         </Link>
         <div className="w-[1px] h-4 bg-[var(--border)] hidden md:block" />
         <span className="hidden md:inline text-app font-medium text-xs sm:text-sm truncate max-w-[200px] opacity-90">{fileName}</span>
+        {isDirty && (
+          <span
+            role="status"
+            title="This document has changes that are not downloaded yet"
+            className="shrink-0 rounded-md border border-accent/40 bg-bloom-100 px-1.5 py-0.5 text-[10px] font-semibold text-accent"
+          >
+            Unsaved
+          </span>
+        )}
       </div>
 
       {/* ── Center: undo/redo, page nav, zoom ── */}

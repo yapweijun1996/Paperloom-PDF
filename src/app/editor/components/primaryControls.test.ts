@@ -48,6 +48,23 @@ it('gives toolbar buttons a 44px hit area on coarse pointers only', () => {
   act(() => root.unmount()); container.remove();
 });
 
+it.each([false, true])('shows the unsaved badge in the header only when dirty=%s', (isDirty) => {
+  const container = document.createElement('div'); document.body.appendChild(container);
+  const root = createRoot(container);
+  const noop = vi.fn();
+  act(() => root.render(createElement(Toolbar, {
+    fileName: 'test.pdf', isDirty, currentPage: 0, totalPages: 1, scale: 1,
+    drawnPaths: [], isSaving: false, canUndo: false, canRedo: false,
+    onClose: noop, onPrevPage: noop, onNextPage: noop, onZoomIn: noop, onZoomOut: noop,
+    onUndo: noop, onRedo: noop, onClearPaths: noop, onDownload: noop,
+  })));
+  const badge = [...container.querySelectorAll('header span')].find(span => span.textContent === 'Unsaved');
+  expect(!!badge).toBe(isDirty);
+  // Not hidden at small widths, unlike the file name.
+  if (badge) expect(badge.className).not.toMatch(/(^|\s)hidden(\s|$)/);
+  act(() => root.unmount()); container.remove();
+});
+
 it.each([false, true])('names tools and exposes selection on mobile=%s', (isMobile) => {
   const container = document.createElement('div'); document.body.appendChild(container);
   const root = createRoot(container); const select = vi.fn();
