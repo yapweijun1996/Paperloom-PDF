@@ -2,6 +2,7 @@
 
 import React, { useState } from 'react';
 import { ChevronLeft, ChevronRight, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
+import * as Tooltip from '@radix-ui/react-tooltip';
 import { TOOLS, type EditorTool } from '../types';
 
 interface ToolsSidebarProps {
@@ -147,6 +148,7 @@ export function ToolsSidebar({
         shadow-[4px_0_24px_rgba(0,0,0,0.08)] min-h-0 h-full overflow-hidden
       `}
     >
+      <Tooltip.Provider delayDuration={200} skipDelayDuration={100}>
       <div className="flex-1 flex flex-col gap-2 w-full px-1.5 overflow-y-auto overflow-x-hidden min-h-0 py-1">
         {TOOLS.map((tool) => {
           const isActive = activeTool === tool.id;
@@ -156,9 +158,11 @@ export function ToolsSidebar({
           const labelColor = tool.id === 'watermark' ? 'var(--accent)' : getAccessibleTextColor(rawAccentColor);
 
           return (
-            <div key={tool.id} className="relative group w-full overflow-visible">
+            <Tooltip.Root key={tool.id} delayDuration={200}>
+              <Tooltip.Trigger asChild>
               <button
                 aria-label={tool.label}
+                aria-keyshortcuts={tool.shortcut}
                 aria-pressed={isActive}
                 onClick={() => {
                   setActiveTool(tool.id);
@@ -168,7 +172,7 @@ export function ToolsSidebar({
                   }
                 }}
                 className={`
-                  w-full aspect-square flex flex-col items-center justify-center gap-1 rounded-2xl
+                  group w-full aspect-square flex flex-col items-center justify-center gap-1 rounded-2xl
                   transition-all duration-200 relative border
                   ${isActive 
                     ? 'border-app-strong shadow-md scale-[1.04]' 
@@ -190,41 +194,38 @@ export function ToolsSidebar({
                   />
                 )}
               </button>
+              </Tooltip.Trigger>
 
-              {/* Floating Tooltip styled with tool's own color */}
-              <div 
-                className="
-                  absolute left-full top-1/2 -translate-y-1/2 ml-3.5 px-3 py-1.5 
-                  rounded-xl bg-panel-elevated/98 backdrop-blur-xl border shadow-2xl z-[200]
-                  pointer-events-none opacity-0 invisible group-hover:opacity-100 group-hover:visible
-                  transition-all duration-200 flex items-center gap-2.5 whitespace-nowrap text-xs font-semibold
-                "
-                style={{
-                  borderColor: `${accentColor}70`,
-                  boxShadow: `0 10px 30px -4px ${accentColor}35`,
-                }}
-              >
-                <span style={{ color: labelColor }}>{tool.label}</span>
-                <span 
-                  className="px-1.5 py-0.5 rounded-md text-[10px] font-mono border font-bold"
+              {/* Portalled so the scrolling rail cannot clip it; Z_LAYERS.dropdown (200). */}
+              <Tooltip.Portal>
+                <Tooltip.Content
+                  side="right"
+                  sideOffset={10}
+                  className="z-[200] px-3 py-1.5 rounded-xl bg-panel-elevated/98 backdrop-blur-xl border shadow-2xl pointer-events-none flex items-center gap-2.5 whitespace-nowrap text-xs font-semibold"
                   style={{
-                    backgroundColor: `${accentColor}20`,
-                    borderColor: `${accentColor}50`,
-                    color: labelColor,
+                    borderColor: `${accentColor}70`,
+                    boxShadow: `0 10px 30px -4px ${accentColor}35`,
                   }}
                 >
-                  {tool.shortcut}
-                </span>
-                {/* Caret */}
-                <div 
-                  className="absolute right-full top-1/2 -translate-y-1/2 border-[5px] border-transparent"
-                  style={{ borderRightColor: `${accentColor}70` }}
-                />
-              </div>
-            </div>
+                  <span style={{ color: labelColor }}>{tool.label}</span>
+                  <kbd
+                    className="px-1.5 py-0.5 rounded-md text-[10px] font-mono border font-bold"
+                    style={{
+                      backgroundColor: `${accentColor}20`,
+                      borderColor: `${accentColor}50`,
+                      color: labelColor,
+                    }}
+                  >
+                    {tool.shortcut}
+                  </kbd>
+                  <Tooltip.Arrow width={10} height={5} style={{ fill: `${accentColor}70` }} />
+                </Tooltip.Content>
+              </Tooltip.Portal>
+            </Tooltip.Root>
           );
         })}
       </div>
+      </Tooltip.Provider>
 
       {/* Control Buttons (Hide/Show Panel & Shrink/Expand Tools) */}
       <div className="flex flex-col gap-1.5 items-center w-full px-1.5 mt-auto">
