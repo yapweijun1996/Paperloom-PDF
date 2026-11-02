@@ -6075,7 +6075,7 @@ export default function EditorPage() {
   if (error && !doc) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center font-sans bg-surface text-app">
-        <p className="text-red-500 text-sm max-w-[400px] text-center leading-relaxed">
+        <p role="alert" className="text-danger text-sm max-w-[400px] text-center leading-relaxed">
           {error}
         </p>
         <button
@@ -6496,13 +6496,14 @@ export default function EditorPage() {
           {(isSearchOpen || isRendering || pageRenderError) && (
             <div className="absolute top-4 left-4 right-4 md:left-auto z-40 flex flex-col items-end gap-3 pointer-events-none animate-in fade-in slide-in-from-top-4 duration-200">
               {isSearchOpen && (<>
-              <div className="pointer-events-auto flex items-center justify-between gap-2 bg-zinc-900/95 backdrop-blur-md px-3 py-2 rounded-xl border border-zinc-700/80 shadow-lg w-full md:w-72">
+              <div className="pointer-events-auto flex items-center justify-between gap-2 rounded-xl border border-app bg-panel/95 px-3 py-2 shadow-lg backdrop-blur-md w-full md:w-72">
                 <button
+                  type="button"
                   onClick={() => void handleRecognizeText()}
-                  className="flex items-center gap-2 text-xs font-semibold text-zinc-300 hover:text-white transition-colors"
+                  className="flex items-center gap-2 text-xs font-semibold text-app-muted transition-colors hover:text-app pointer-coarse:min-h-11"
                   title="OCR recognize text"
                 >
-                  <Type size={14} /> Recognize text (OCR)
+                  <Type size={14} aria-hidden="true" className="text-accent" /> Recognize text (OCR)
                 </button>
               </div>
               <div className="pointer-events-auto">
@@ -6524,25 +6525,25 @@ export default function EditorPage() {
                   status={replaceStatus}
                 />
                 {searchResults[activeMatchIndex]?.highlightVisible === false && (
-                  <p role="status" aria-live="polite" className="mt-1 max-w-72 rounded bg-zinc-800 px-2 py-1 text-xs text-zinc-200">
+                  <Notice tone="info" className="mt-1 max-w-72 text-xs">
                     The current match cannot be highlighted reliably because of its position or clipping.
-                  </p>
+                  </Notice>
                 )}
               </div>
               </>)}
               {isRendering && (
-                <div className="bg-zinc-900/90 backdrop-blur border border-zinc-800 shadow-lg rounded-full px-4 py-2 flex items-center gap-2 text-zinc-300 text-sm font-medium animate-in slide-in-from-top-4 fade-in">
-                  <Loader2 size={16} className="animate-spin text-accent" />
+                <div className="flex items-center gap-2 rounded-full border border-app bg-panel/90 px-4 py-2 text-sm font-medium text-app-muted shadow-lg backdrop-blur animate-in slide-in-from-top-4 fade-in">
+                  <Loader2 size={16} aria-hidden="true" className="animate-spin text-accent" />
                   Rendering...
                 </div>
               )}
               {!isRendering && pageRenderError && (
-                <div role="status" className="pointer-events-auto max-w-full rounded-lg border border-red-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-100">
+                <Notice tone="warning" className="pointer-events-auto max-w-full shadow-lg">
                   <span>Unable to display this page. Your edits are preserved.</span>{' '}
-                  <button type="button" className="underline" onClick={() => setRenderRetry(value => value + 1)}>
+                  <button type="button" className="font-semibold underline" onClick={() => setRenderRetry(value => value + 1)}>
                     Retry rendering
                   </button>
-                </div>
+                </Notice>
               )}
             </div>
           )}
@@ -7000,7 +7001,7 @@ export default function EditorPage() {
                         <X size={12} />
                       </button>
                       <button
-                        className="absolute -top-3 right-8 bg-bloom-500 text-white rounded-full p-1 shadow hover:bg-bloom-600 transition-colors z-30"
+                        className="absolute -top-3 right-8 bg-bloom-500 text-on-accent rounded-full p-1 shadow hover:bg-bloom-600 transition-colors z-30"
                         title="Replace Image"
                         data-control="replace-image"
                         onClick={(e) => {
@@ -7014,13 +7015,13 @@ export default function EditorPage() {
 
                       {/* Dimensions panel in cm */}
                       <div
-                        className="absolute top-0 -right-[110px] bg-zinc-900 text-white rounded p-2 shadow-xl border border-zinc-700 text-xs flex flex-col gap-2 z-30 w-24"
+                        className="absolute top-0 -right-[110px] bg-panel text-app rounded p-2 shadow-xl border border-app text-xs flex flex-col gap-2 z-30 w-24"
                         onClick={e => e.stopPropagation()}
                         onPointerDown={e => e.stopPropagation()}
                       >
-                        <div className="text-[9px] text-zinc-400 font-bold uppercase tracking-wider mb-0.5">Dimensions</div>
+                        <div className="text-[9px] text-app-muted font-bold uppercase tracking-wider mb-0.5">Dimensions</div>
                         <div className="flex items-center justify-between gap-1">
-                          <span className="text-zinc-500 w-3 text-center">W</span>
+                          <span className="text-app-faint w-3 text-center">W</span>
                           <input
                             type="number"
                             value={Math.round((fi.pdfWidth * 2.54 * 10) / 72) / 10}
@@ -7028,13 +7029,13 @@ export default function EditorPage() {
                               const newW = (parseFloat(e.target.value) * 72) / 2.54;
                               if (newW > 0) setFloatingImages(prev => prev.map(p => p.id === fi.id ? { ...p, pdfWidth: newW } : p));
                             }}
-                            className="w-10 bg-zinc-800 rounded px-1 py-0.5 text-right no-spinners outline-none focus:ring-1 focus:ring-accent"
+                            className="w-10 bg-panel-elevated rounded px-1 py-0.5 text-right no-spinners outline-none focus:ring-1 focus:ring-accent"
                             step="0.1"
                           />
-                          <span className="text-zinc-500 text-[10px]">cm</span>
+                          <span className="text-app-faint text-[10px]">cm</span>
                         </div>
                         <div className="flex items-center justify-between gap-1">
-                          <span className="text-zinc-500 w-3 text-center">H</span>
+                          <span className="text-app-faint w-3 text-center">H</span>
                           <input
                             type="number"
                             value={Math.round((fi.pdfHeight * 2.54 * 10) / 72) / 10}
@@ -7042,10 +7043,10 @@ export default function EditorPage() {
                               const newH = (parseFloat(e.target.value) * 72) / 2.54;
                               if (newH > 0) setFloatingImages(prev => prev.map(p => p.id === fi.id ? { ...p, pdfHeight: newH } : p));
                             }}
-                            className="w-10 bg-zinc-800 rounded px-1 py-0.5 text-right no-spinners outline-none focus:ring-1 focus:ring-accent"
+                            className="w-10 bg-panel-elevated rounded px-1 py-0.5 text-right no-spinners outline-none focus:ring-1 focus:ring-accent"
                             step="0.1"
                           />
-                          <span className="text-zinc-500 text-[10px]">cm</span>
+                          <span className="text-app-faint text-[10px]">cm</span>
                         </div>
                       </div>
                     </>
@@ -7445,7 +7446,7 @@ export default function EditorPage() {
               type="button"
               aria-label="Done editing text"
               disabled={isSaving || isLineComposing}
-              className="min-h-11 min-w-11 rounded-lg bg-bloom-500 px-3 text-sm font-semibold text-white disabled:opacity-50"
+              className="min-h-11 min-w-11 rounded-lg bg-bloom-500 px-3 text-sm font-semibold text-on-accent disabled:opacity-50"
               onClick={() => void handleEditSubmit()}
             >
               {isLineSubmitting ? <span role="status" aria-live="polite">Applying text…</span>
@@ -7527,12 +7528,12 @@ export default function EditorPage() {
 
       {/* Global notifications: Z_LAYERS.toast (700), above modal surfaces. */}
       {isLineSubmitting && !isMobile && (
-        <div role="status" aria-live="polite" className="fixed bottom-10 right-3 bg-zinc-900 border border-app text-white px-4 py-3 rounded-xl text-sm shadow-xl z-[700]">
+        <div role="status" aria-live="polite" className="fixed bottom-10 right-3 z-[700] rounded-xl border border-app bg-panel px-4 py-3 text-sm text-app shadow-xl">
           Applying text…
         </div>
       )}
       {loadingFont && !isLineSubmitting && (
-        <div role="status" aria-live="polite" className="fixed bottom-10 left-1/2 -translate-x-1/2 bg-zinc-900 border border-app text-app-muted px-4 py-3 rounded-xl text-sm shadow-xl z-[700]">
+        <div role="status" aria-live="polite" className="fixed bottom-10 left-1/2 z-[700] -translate-x-1/2 rounded-xl border border-app bg-panel px-4 py-3 text-sm text-app-muted shadow-xl">
           Loading font...
         </div>
       )}
@@ -7549,18 +7550,20 @@ export default function EditorPage() {
       )}
 
       {glyphWarning && (
-        <div role="status" aria-live="polite" className="fixed bottom-10 left-1/2 -translate-x-1/2 max-w-[90vw] bg-zinc-900 border border-amber-500/40 text-amber-200 px-4 py-3 rounded-xl text-sm flex items-center gap-4 shadow-xl z-[700]">
-          <span>{glyphWarning}</span>
-          <button onClick={() => setGlyphWarning(null)} aria-label="Dismiss font warning" className="shrink-0">
-            <X size={16} />
-          </button>
-        </div>
+        <Notice tone="warning" aria-live="polite" className="fixed bottom-10 left-1/2 z-[700] max-w-[90vw] -translate-x-1/2 shadow-xl">
+          <div className="flex items-center gap-4">
+            <span>{glyphWarning}</span>
+            <button type="button" onClick={() => setGlyphWarning(null)} aria-label="Dismiss font warning" className="shrink-0 rounded opacity-80 hover:opacity-100">
+              <X size={16} aria-hidden="true" />
+            </button>
+          </div>
+        </Notice>
       )}
 
       {fieldSignaturePreviewFailed && (
-        <div role="status" aria-live="polite" className="fixed bottom-10 left-1/2 -translate-x-1/2 max-w-[90vw] bg-zinc-900 border border-amber-500/40 text-amber-200 px-4 py-3 rounded-xl text-sm shadow-xl z-[700]">
+        <Notice tone="warning" aria-live="polite" className="fixed bottom-10 left-1/2 z-[700] max-w-[90vw] -translate-x-1/2 shadow-xl">
           Signature field preview unavailable. Try zooming out; the PDF appearance is unchanged.
-        </div>
+        </Notice>
       )}
 
       <FieldRenameNotice changes={renamedFields} onDismiss={() => setRenamedFields([])} />
@@ -7572,12 +7575,15 @@ export default function EditorPage() {
 
       {/* Error toast */}
       {error && (
-        <div className="fixed bottom-10 left-1/2 -translate-x-1/2 bg-red-500/10 backdrop-blur-md border border-red-500/30 text-red-400 px-4 py-3 rounded-xl text-sm font-medium flex items-center gap-4 shadow-xl z-[700] animate-in slide-in-from-bottom-5 fade-in">
-          {error}
-          <button onClick={() => setError(null)} className="text-red-400 hover:text-red-300 transition-colors">
-            <X size={16} />
-          </button>
-        </div>
+        <Notice tone="danger" className="fixed bottom-10 left-1/2 z-[700] max-w-[90vw] -translate-x-1/2 font-medium shadow-xl animate-in slide-in-from-bottom-5 fade-in">
+          {/* Message and dismiss share one element: e2e finds the button from the message text. */}
+          <div className="flex items-center gap-4">
+            {error}
+            <button type="button" onClick={() => setError(null)} aria-label="Dismiss error" className="shrink-0 rounded opacity-80 transition-opacity hover:opacity-100">
+              <X size={16} aria-hidden="true" />
+            </button>
+          </div>
+        </Notice>
       )}
       {confirmDialog}
 
