@@ -70,7 +70,12 @@ describe('raw Tailwind palette classes (ratchet)', () => {
   it('never exceeds the per-file baseline', () => {
     const counts = currentCounts();
     if (process.env.UPDATE_PALETTE_BASELINE) {
-      writeFileSync(BASELINE, `${JSON.stringify(counts, null, 2)}\n`);
+      // One-way: only lowers existing entries and drops files that reach zero.
+      const previous = JSON.parse(readFileSync(BASELINE, 'utf8')) as Record<string, number>;
+      const lowered = Object.fromEntries(Object.entries(previous)
+        .map(([file, allowed]) => [file, Math.min(allowed, counts[file] ?? 0)] as const)
+        .filter(([, allowed]) => allowed > 0));
+      writeFileSync(BASELINE, `${JSON.stringify(lowered, null, 2)}\n`);
     }
     const baseline = JSON.parse(readFileSync(BASELINE, 'utf8')) as Record<string, number>;
     const regressions = Object.entries(counts).flatMap(([file, count]) => {
