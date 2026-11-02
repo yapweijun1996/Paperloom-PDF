@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { act, createElement, Fragment } from 'react';
+import { act, createElement, Fragment, useEffect } from 'react';
 import { describe, expect, it } from 'vitest';
 import { buttonByText, mountHarness, press } from './__tests__/harness';
 import { useConfirm, type ConfirmOptions } from './useConfirm';
@@ -7,10 +7,11 @@ import { useConfirm, type ConfirmOptions } from './useConfirm';
 const harness = mountHarness();
 
 let confirmFn: (options: ConfirmOptions) => Promise<boolean>;
+const exposeConfirm = (confirm: typeof confirmFn) => { confirmFn = confirm; };
 
 function Host() {
   const { confirm, dialog } = useConfirm();
-  confirmFn = confirm;
+  useEffect(() => exposeConfirm(confirm), [confirm]);
   return createElement(Fragment, null, dialog);
 }
 
