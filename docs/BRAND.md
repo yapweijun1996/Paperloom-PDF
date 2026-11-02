@@ -41,12 +41,29 @@ Existing token names are retained; `bloom` is a compatibility name for the CSS p
 | `--text-muted` | #64748B | #8E95A5 | Existing secondary text |
 | `--text-faint` | #94A3B8 | #525866 | Existing faint text |
 | `--accent` | #176B65 | #68D5C5 | Brand text, outlines, focus |
-| `--canvas-bg` | #E6E8EC | #0D0E12 | Editor canvas |
-| `--checker-a` | #EEF0F4 | #161820 | Checker light cell |
-| `--checker-b` | #E1E4E9 | #0A0B0E | Checker dark cell |
+| `--canvas-bg` | #EAEFF5 | #0B0C10 | Editor canvas backdrop (`.checkerboard`) |
+| `--canvas-dot` | #CBD5E1 | #1E2330 | Editor canvas dot grid (`.checkerboard`) |
 | `--ring-offset` | #FFFFFF | #0A0B0E | Focus separation halo |
+| `--focus-ring` | #176B65 | #68D5C5 | Keyboard focus outline (`:focus-visible`) |
 | `--scrim` | rgba(15, 23, 42, 0.45) | rgba(0, 0, 0, 0.85) | Modal backdrop |
+| `--backdrop` | rgba(0, 0, 0, 0.5) | rgba(0, 0, 0, 0.7) | Drawer / mobile sheet backdrop (`.mobile-backdrop`) |
 | `--contrast` | #000000 | #FFFFFF | Maximum-contrast neutral |
+| `--on-accent` | #FFFFFF | #FFFFFF | Text on primary fills `--bloom-500/600/700` (not on mint `--accent`) |
+
+### Semantic status tokens
+
+Foregrounds meet 4.5:1 on `--panel`, `--surface`, `--panel-elevated` and their own soft fill in each theme. Success is green (hue about 142°), at least 25° away from the jade brand (about 171–176°), so it never reads as the brand colour.
+
+| Token | Light value | Dark value | Role |
+| --- | --- | --- | --- |
+| `--danger` | #B91C1C | #F87171 | Errors, destructive actions |
+| `--danger-soft` | #FEF2F2 | #450A0A | Error notice fill |
+| `--warning` | #B45309 | #FBBF24 | Warnings, irreversible-step notices |
+| `--warning-soft` | #FFFBEB | #451A03 | Warning notice fill |
+| `--success` | #15803D | #4ADE80 | Success / verified state |
+| `--success-soft` | #F0FDF4 | #052E16 | Success notice fill |
+| `--info` | #1D4ED8 | #60A5FA | Neutral information |
+| `--info-soft` | #EFF6FF | #172554 | Information notice fill |
 
 ### Tailwind aliases
 
@@ -64,18 +81,29 @@ These existing `@theme inline` aliases resolve the tokens above at the element's
 | `--color-bloom-700` | `--bloom-700` |
 | `--color-bloom-800` | `--bloom-800` |
 | `--color-bloom-900` | `--bloom-900` |
-| `--color-bloom-brand` | `--bloom-500`, primary brand |
 | `--color-canvas-bg` | `--canvas-bg` |
 | `--color-surface` | `--surface` |
 | `--color-panel` | `--panel` |
 | `--color-panel-elevated` | `--panel-elevated` |
 | `--color-border` | `--border` |
 | `--color-border-strong` | `--border-strong` |
-| `--color-app-text` | `--text` |
 | `--color-app-muted` | `--text-muted` |
 | `--color-app-faint` | `--text-faint` |
 | `--color-accent` | `--accent` |
 | `--color-contrast` | `--contrast` |
+| `--color-on-accent` | `--on-accent` |
+| `--color-focus-ring` | `--focus-ring` |
+| `--color-danger`, `--color-danger-soft` | `--danger`, `--danger-soft` |
+| `--color-warning`, `--color-warning-soft` | `--warning`, `--warning-soft` |
+| `--color-success`, `--color-success-soft` | `--success`, `--success-soft` |
+| `--color-info`, `--color-info-soft` | `--info`, `--info-soft` |
+
+## Rules
+
+- Components use theme tokens (`bg-panel`, `text-app-muted`, `border-app`, `text-danger`, `bg-success-soft`, ...), never raw Tailwind palette classes such as `bg-zinc-800`, `text-red-400`, `bg-white` or `bg-black/50`.
+- Define a new colour as a token in both the light and dark blocks of `src/app/globals.css` (or add it to the theme-invariant allowlist), map it in `@theme inline`, and add it to the tables above. Outside the token blocks, `globals.css` references tokens only.
+- `src/app/__tests__/design-tokens.test.ts` enforces token parity, `@theme` aliases and the contrast pairs. `src/app/__tests__/palette-classes.guard.test.ts` is a per-file ratchet on raw palette classes in `className` expressions: counts may only fall. After a migration, lower the baseline with `UPDATE_PALETTE_BASELINE=1 npx vitest run src/app/__tests__/palette-classes.guard.test.ts`.
+- Document and content colours (ink defaults, user swatches, canvas drawing, cursor and export SVG) are not theme chrome and stay out of the token system.
 
 ## Contrast and interaction rules
 

@@ -921,6 +921,10 @@ suggested order.
   split and remove actions; desktop and simulated-mobile browser checks passed.
   Pending edit/form extraction and other visual, theme and user-study criteria
   remain open. Protected extraction retains supported passwords or rejects.
+  Design-system Batch A (`docs/DESIGN_SYSTEM_BACKLOG.md` batches 0–2 and the
+  first ratchet): semantic danger/warning/success/info, focus-ring and on-accent
+  tokens, de-duplicated `globals.css`, unique tool-icon gradient ids, token and
+  raw-palette ratchet tests, and e2e data hooks; no visual change.
 - **Priority / effort:** P2 / medium to high. **Review points:** #31–#37.
   Related to TASK-07 and TASK-12.
 - **First step:** Expose the existing merge, split and remove-page handlers in
