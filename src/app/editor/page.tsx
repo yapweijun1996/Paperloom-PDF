@@ -7591,6 +7591,7 @@ export default function EditorPage() {
         fileName={fileName}
         totalPages={totalPages}
         currentPage={currentPage}
+        isMobile={isMobile}
       />
     </div>
   );

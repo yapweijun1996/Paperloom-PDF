@@ -36,12 +36,12 @@ it('rejects invalid custom ranges before export and permits a valid range', asyn
   const props = { isOpen: true, onClose: vi.fn(), doc, engine: {} as typeof import('@/engine/browser-core'), fileName: 'test.pdf', totalPages: 5, currentPage: 0 };
   await act(async () => root.render(createElement(ExportPanel, props)));
   const click = (text: string) => {
-    const button = [...container.querySelectorAll('button')].find(item => item.textContent?.trim() === text);
+    const button = [...document.querySelectorAll('button')].find(item => item.textContent?.trim() === text);
     if (!button) throw new Error(`Missing ${text}`);
     button.click();
   };
   const fill = (id: string, value: string) => {
-    const input = container.querySelector<HTMLInputElement>(id)!;
+    const input = document.querySelector<HTMLInputElement>(id)!;
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, value);
     input.dispatchEvent(new Event('input', { bubbles: true }));
   };
@@ -49,7 +49,7 @@ it('rejects invalid custom ranges before export and permits a valid range', asyn
   for (const [from, to] of [['4', '2'], ['', '2'], ['0', '2'], ['1', '6'], ['1.5', '2']]) {
     await act(async () => { fill('#export-page-from', from); fill('#export-page-to', to); });
     await act(async () => click('Export as PNG Image'));
-    expect(container.querySelector('[role="alert"]')?.textContent).toMatch(/valid page range/i);
+    expect(document.querySelector('[role="alert"]')?.textContent).toMatch(/valid page range/i);
     expect(exportDocument).not.toHaveBeenCalled();
     expect(URL.createObjectURL).not.toHaveBeenCalled();
   }
@@ -64,7 +64,7 @@ it('focuses the named close button and returns focus to the opener', async () =>
   document.body.appendChild(opener); opener.focus();
   const props = { isOpen: true, onClose: vi.fn(), doc: null, engine: null, fileName: 'test.pdf', totalPages: 1, currentPage: 0 };
   await act(async () => root.render(createElement(ExportPanel, props)));
-  const dialog = container.querySelector<HTMLElement>('[role="dialog"]')!;
+  const dialog = document.querySelector<HTMLElement>('[role="dialog"]')!;
   const close = dialog.querySelector<HTMLButtonElement>('button[aria-label="Close export panel"]')!;
   expect(document.activeElement).toBe(close);
   await act(async () => close.click());
@@ -77,9 +77,9 @@ it('focuses the named close button and returns focus to the opener', async () =>
 it('retains the range choice but resets its upper bound on reopening', () => {
   const props = { isOpen: true, onClose: vi.fn(), doc: null, engine: null, fileName: 'test.pdf', totalPages: 5, currentPage: 0 };
   act(() => root.render(createElement(ExportPanel, props)));
-  const range = [...container.querySelectorAll('button')].find(button => button.textContent === 'Range')!;
+  const range = [...document.querySelectorAll('button')].find(button => button.textContent === 'Range')!;
   act(() => range.click());
-  const upper = container.querySelectorAll<HTMLInputElement>('input[type="number"]')[1];
+  const upper = document.querySelectorAll<HTMLInputElement>('input[type="number"]')[1];
   act(() => {
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(upper, '2');
     upper.dispatchEvent(new Event('input', { bubbles: true }));
@@ -87,5 +87,28 @@ it('retains the range choice but resets its upper bound on reopening', () => {
   expect(upper.value).toBe('2');
   act(() => root.render(createElement(ExportPanel, { ...props, isOpen: false })));
   act(() => root.render(createElement(ExportPanel, props)));
-  expect(container.querySelectorAll<HTMLInputElement>('input[type="number"]')[1].value).toBe('5');
+  expect(document.querySelectorAll<HTMLInputElement>('input[type="number"]')[1].value).toBe('5');
+});
+
+it('follows the page theme, marks the selected format and closes on Escape', async () => {
+  const props = { isOpen: true, onClose: vi.fn(), doc: null, engine: null, fileName: 'test.pdf', totalPages: 1, currentPage: 0 };
+  await act(async () => root.render(createElement(ExportPanel, props)));
+  const dialog = document.querySelector<HTMLElement>('[role="dialog"]')!;
+  expect(dialog.getAttribute('aria-modal')).toBe('true');
+  expect(dialog.closest('[data-theme]')).toBeNull();
+  expect(dialog.querySelector('[data-theme]')).toBeNull();
+  const svg = [...dialog.querySelectorAll('button')].find(button => button.textContent?.includes('SVG Image'))!;
+  expect(svg.getAttribute('aria-pressed')).toBe('false');
+  await act(async () => svg.click());
+  expect(svg.getAttribute('aria-pressed')).toBe('true');
+  await act(async () => { dialog.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); });
+  expect(props.onClose).toHaveBeenCalledOnce();
+});
+
+it('uses a bottom sheet with a named close button on phones', async () => {
+  const props = { isOpen: true, onClose: vi.fn(), doc: null, engine: null, fileName: 'test.pdf', totalPages: 1, currentPage: 0, isMobile: true };
+  await act(async () => root.render(createElement(ExportPanel, props)));
+  expect(document.querySelector('[data-ui="sheet-body"]')).not.toBeNull();
+  await act(async () => document.querySelector<HTMLButtonElement>('button[aria-label="Close export panel"]')!.click());
+  expect(props.onClose).toHaveBeenCalledOnce();
 });

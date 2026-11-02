@@ -3,7 +3,6 @@
   "editor/components/DownloadDropdown.tsx": 13,
   "editor/components/EditableLineBox.tsx": 1,
   "editor/components/EmbeddedImageOverlay.tsx": 2,
-  "editor/components/ExportPanel.tsx": 70,
   "editor/components/FieldRenameNotice.tsx": 4,
   "editor/components/ImageBoxFields.tsx": 1,
   "editor/components/LinkPopover.tsx": 38,

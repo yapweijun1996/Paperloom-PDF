@@ -1,17 +1,18 @@
 'use client';
 
-import React, { useState, useCallback, useRef, useEffect } from 'react';
+import React, { useState, useCallback } from 'react';
 import {
   X,
   Image as ImageIcon,
   Camera,
-  Pencil,
+  FileCode,
   AlignLeft,
   Download,
   ChevronRight,
   Check,
   Loader2,
 } from 'lucide-react';
+import { Button, Dialog, Field, MobileSheet, Notice, NumberInput } from '../ui';
 import type { PDFDocumentData } from '@/engine/browser-core';
 import {
   EXPORT_FORMATS,
@@ -25,29 +26,8 @@ import {
 const FORMAT_ICONS: Record<ExportFormat, React.ReactNode> = {
   png: <ImageIcon size={22} />,
   jpeg: <Camera size={22} />,
-  svg: <Pencil size={22} />,
+  svg: <FileCode size={22} />,
   txt: <AlignLeft size={22} />,
-};
-
-const FORMAT_GRADIENTS: Record<ExportFormat, string> = {
-  png: 'from-sky-500/20 to-sky-600/5',
-  jpeg: 'from-amber-500/20 to-amber-600/5',
-  svg: 'from-cyan-500/20 to-cyan-600/5',
-  txt: 'from-zinc-400/20 to-zinc-500/5',
-};
-
-const FORMAT_ACCENT: Record<ExportFormat, string> = {
-  png: 'text-sky-400',
-  jpeg: 'text-amber-400',
-  svg: 'text-cyan-400',
-  txt: 'text-zinc-400',
-};
-
-const FORMAT_RING: Record<ExportFormat, string> = {
-  png: 'ring-sky-500/40',
-  jpeg: 'ring-amber-500/40',
-  svg: 'ring-cyan-500/40',
-  txt: 'ring-zinc-500/40',
 };
 
 // ─── Props ──────────────────────────────────────────────────────────────────────
@@ -60,6 +40,8 @@ interface ExportPanelProps {
   fileName: string;
   totalPages: number;
   currentPage: number;
+  /** Phones get a bottom sheet; larger screens a centred dialog. */
+  isMobile?: boolean;
 }
 
 // ─── Component ──────────────────────────────────────────────────────────────────
@@ -72,6 +54,7 @@ export function ExportPanel({
   fileName,
   totalPages,
   currentPage,
+  isMobile = false,
 }: ExportPanelProps) {
   const [selectedFormat, setSelectedFormat] = useState<ExportFormat>('png');
   const [pageRange, setPageRange] = useState<'all' | 'current' | 'custom'>('all');
@@ -95,32 +78,7 @@ export function ExportPanel({
       setCustomTo(String(totalPages));
     }
   }
-  const panelRef = useRef<HTMLDivElement>(null);
-  const onCloseRef = useRef(onClose);
-  useEffect(() => { onCloseRef.current = onClose; }, [onClose]);
-
   const formatInfo = EXPORT_FORMATS.find((f) => f.id === selectedFormat)!;
-
-  useEffect(() => {
-    if (!isOpen) return;
-    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    panelRef.current?.querySelector<HTMLButtonElement>('button')?.focus();
-    const handleKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') { onCloseRef.current(); return; }
-      if (e.key !== 'Tab') return;
-      const focusable = [...(panelRef.current?.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])') ?? [])];
-      if (!focusable.length) return;
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      if (e.shiftKey && (document.activeElement === first || !panelRef.current?.contains(document.activeElement))) {
-        e.preventDefault(); last.focus();
-      } else if (!e.shiftKey && (document.activeElement === last || !panelRef.current?.contains(document.activeElement))) {
-        e.preventDefault(); first.focus();
-      }
-    };
-    window.addEventListener('keydown', handleKey);
-    return () => { window.removeEventListener('keydown', handleKey); opener?.focus(); };
-  }, [isOpen]);
 
   const getPageIndices = useCallback((): number[] | null => {
     if (pageRange === 'all') return null;
@@ -190,300 +148,193 @@ export function ExportPanel({
     }
   }, [doc, engine, fileName, selectedFormat, getPageIndices, dpi, jpegQuality, triggerDownload]);
 
-  if (!isOpen) return null;
-
   const progressPct = exportTotal > 0 ? Math.round((exportProgress / exportTotal) * 100) : 0;
   const primaryDisabled = !doc || !engine || isExporting;
+  const title = 'Export Document';
+  const description = `${fileName} · ${totalPages} page${totalPages !== 1 ? 's' : ''}`;
+  const onOpenChange = (open: boolean) => { if (!open) onClose(); };
 
-  return (
+  const content = (
     <>
-      {/* Z_LAYERS.drawerBackdrop (300) / drawer (400). */}
-      <div
-        className="fixed inset-0 z-[300] bg-black/60 backdrop-blur-sm"
-        style={{ animation: 'fadeIn 0.2s ease-out' }}
-        onClick={onClose}
-      />
+      <div className="space-y-6 py-5">
+        <div>
+          <p className="mb-3 text-xs font-medium uppercase tracking-widest text-app-muted">Render format</p>
+          <div className="grid grid-cols-2 gap-2">
+            {EXPORT_FORMATS.map((fmt) => {
+              const selected = selectedFormat === fmt.id;
+              return (
+                <button
+                  key={fmt.id}
+                  type="button"
+                  aria-pressed={selected}
+                  onClick={() => setSelectedFormat(fmt.id)}
+                  className={`group relative flex items-center gap-3 rounded-xl border px-4 py-3.5 text-left transition-colors ${
+                    selected
+                      ? 'border-accent bg-panel-elevated ring-2 ring-accent'
+                      : 'border-app bg-panel-elevated hover:border-app-strong'
+                  }`}
+                >
+                  <span
+                    aria-hidden="true"
+                    className={`flex size-10 shrink-0 items-center justify-center rounded-lg bg-panel ${
+                      selected ? 'text-accent' : 'text-app-muted group-hover:text-app'
+                    }`}
+                  >
+                    {FORMAT_ICONS[fmt.id]}
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className={`block truncate text-sm font-medium ${selected ? 'text-app' : 'text-app-muted'}`}>{fmt.label}</span>
+                    <span className="mt-0.5 block truncate text-[10px] leading-snug text-app-faint">{fmt.extension}</span>
+                  </span>
+                  {selected && (
+                    <span aria-hidden="true" className="flex size-5 shrink-0 items-center justify-center rounded-full bg-bloom-100 text-accent">
+                      <Check size={12} strokeWidth={3} />
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+          <p className="mt-3 text-xs leading-relaxed text-app-muted">{formatInfo.description}</p>
+        </div>
 
-      <div
-        ref={panelRef}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="export-dialog-title"
-        data-theme="dark"
-        className="fixed right-0 top-0 bottom-0 z-[400] w-full max-w-[520px] flex flex-col"
-        style={{
-          animation: 'slideInRight 0.35s cubic-bezier(0.16, 1, 0.3, 1)',
-        }}
-      >
-        <div className="flex flex-col h-full bg-zinc-900/95 backdrop-blur-2xl border-l border-zinc-700/50 shadow-2xl">
-          <div className="flex items-center justify-between px-6 py-5 border-b border-zinc-800/80">
-            <div>
-              <h2 id="export-dialog-title" className="text-lg font-semibold text-white tracking-tight">Export Document</h2>
-              <p className="text-xs text-zinc-500 mt-0.5">
-                {fileName} · {totalPages} page{totalPages !== 1 ? 's' : ''}
-              </p>
-            </div>
-            <button
-              onClick={onClose}
-              aria-label="Close export panel"
-              className="p-2 rounded-xl text-zinc-500 hover:text-zinc-200 hover:bg-zinc-800 transition-all duration-200"
-            >
-              <X size={18} />
-            </button>
+        <div>
+          <p className="mb-3 text-xs font-medium uppercase tracking-widest text-app-muted">Pages</p>
+          <div className="flex gap-1.5 rounded-xl border border-app bg-panel-elevated p-1">
+            {[
+              { value: 'all' as const, label: 'All Pages' },
+              { value: 'current' as const, label: `Page ${currentPage + 1}` },
+              { value: 'custom' as const, label: 'Range' },
+            ].map((opt) => (
+              <button
+                key={opt.value}
+                type="button"
+                aria-pressed={pageRange === opt.value}
+                onClick={() => setPageRange(opt.value)}
+                className={`flex-1 rounded-lg px-3 py-2 text-xs font-medium transition-colors pointer-coarse:min-h-11 ${
+                  pageRange === opt.value ? 'bg-panel text-app shadow-sm' : 'text-app-muted hover:text-app'
+                }`}
+              >
+                {opt.label}
+              </button>
+            ))}
           </div>
 
-          <div
-            className="flex-1 overflow-y-auto px-6 py-5 space-y-6"
-            style={{ scrollbarWidth: 'thin', scrollbarColor: '#3f3f46 transparent' }}
-          >
-            <div>
-                <label className="text-xs font-medium text-zinc-400 uppercase tracking-widest mb-3 block">
-                  Render format
-                </label>
-                <div className="grid grid-cols-2 gap-2">
-                  {EXPORT_FORMATS.map((fmt) => (
+          {pageRange === 'custom' && (
+            <div className="mt-3 flex items-end gap-3">
+              <Field label="From" id="export-page-from" className="flex-1">
+                <NumberInput min={1} max={totalPages} inputMode="numeric" value={customFrom} onChange={(e) => setCustomFrom(e.target.value)} />
+              </Field>
+              <span className="pb-2.5 text-xs text-app-faint">to</span>
+              <Field label="To" id="export-page-to" className="flex-1">
+                <NumberInput min={1} max={totalPages} inputMode="numeric" value={customTo} onChange={(e) => setCustomTo(e.target.value)} />
+              </Field>
+            </div>
+          )}
+        </div>
+
+        {(formatInfo.supportsDpi || formatInfo.supportsQuality) && (
+          <div className="space-y-4">
+            <p className="text-xs font-medium uppercase tracking-widest text-app-muted">Quality Settings</p>
+
+            {formatInfo.supportsDpi && (
+              <div>
+                <div className="mb-2 flex items-center justify-between">
+                  <span className="text-xs text-app-muted">Resolution (DPI)</span>
+                  <span className="rounded bg-panel-elevated px-2 py-0.5 font-mono text-xs text-app">{dpi}</span>
+                </div>
+                <div className="flex gap-1.5 rounded-xl border border-app bg-panel-elevated p-1">
+                  {[
+                    { value: 72, label: 'Screen' },
+                    { value: 150, label: 'Standard' },
+                    { value: 300, label: 'Print' },
+                    { value: 600, label: 'High' },
+                  ].map((opt) => (
                     <button
-                      key={fmt.id}
-                      onClick={() => setSelectedFormat(fmt.id)}
-                      className={`
-                        group relative flex items-center gap-3 px-4 py-3.5 rounded-xl border text-left
-                        transition-all duration-200 ease-out
-                        ${
-                          selectedFormat === fmt.id
-                            ? `bg-gradient-to-br ${FORMAT_GRADIENTS[fmt.id]} border-zinc-600/80 ring-2 ${FORMAT_RING[fmt.id]} shadow-lg`
-                            : 'bg-zinc-800/40 border-zinc-800 hover:bg-zinc-800/80 hover:border-zinc-700'
-                        }
-                      `}
+                      key={opt.value}
+                      type="button"
+                      aria-pressed={dpi === opt.value}
+                      onClick={() => setDpi(opt.value)}
+                      className={`flex-1 rounded-lg px-2 py-2 text-xs font-medium transition-colors ${
+                        dpi === opt.value ? 'bg-panel text-app shadow-sm' : 'text-app-muted hover:text-app'
+                      }`}
                     >
-                      <div
-                        className={`
-                        flex-shrink-0 w-10 h-10 rounded-lg flex items-center justify-center
-                        transition-all duration-200
-                        ${
-                          selectedFormat === fmt.id
-                            ? `${FORMAT_ACCENT[fmt.id]} bg-white/5`
-                            : 'text-zinc-500 bg-zinc-800/60 group-hover:text-zinc-300'
-                        }
-                      `}
-                      >
-                        {FORMAT_ICONS[fmt.id]}
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <div
-                          className={`text-sm font-medium truncate ${selectedFormat === fmt.id ? 'text-white' : 'text-zinc-300'}`}
-                        >
-                          {fmt.label}
-                        </div>
-                        <div className="text-[10px] text-zinc-500 truncate leading-snug mt-0.5">
-                          {fmt.extension}
-                        </div>
-                      </div>
-                      {selectedFormat === fmt.id && (
-                        <div
-                          className={`flex-shrink-0 w-5 h-5 rounded-full flex items-center justify-center ${FORMAT_ACCENT[fmt.id]} bg-white/10`}
-                        >
-                          <Check size={12} strokeWidth={3} />
-                        </div>
-                      )}
+                      <span className="block">{opt.label}</span>
+                      <span className="mt-0.5 block text-[9px] opacity-60">{opt.value} DPI</span>
                     </button>
                   ))}
                 </div>
-                <p className="mt-3 text-xs text-zinc-500 leading-relaxed">{formatInfo.description}</p>
-            </div>
-
-            {/* Page Range */}
-            <div>
-              <label className="text-xs font-medium text-zinc-400 uppercase tracking-widest mb-3 block">
-                Pages
-              </label>
-              <div className="flex gap-1.5 p-1 bg-zinc-800/60 rounded-xl border border-zinc-800">
-                {[
-                  { value: 'all' as const, label: 'All Pages' },
-                  { value: 'current' as const, label: `Page ${currentPage + 1}` },
-                  { value: 'custom' as const, label: 'Range' },
-                ].map((opt) => (
-                  <button
-                    key={opt.value}
-                    onClick={() => setPageRange(opt.value)}
-                    className={`
-                      flex-1 px-3 py-2 text-xs font-medium rounded-lg transition-all duration-200
-                      ${
-                        pageRange === opt.value
-                          ? 'bg-zinc-700 text-white shadow-sm'
-                          : 'text-zinc-500 hover:text-zinc-300'
-                      }
-                    `}
-                  >
-                    {opt.label}
-                  </button>
-                ))}
               </div>
+            )}
 
-              {pageRange === 'custom' && (
-                <div className="flex items-center gap-3 mt-3">
-                  <div className="flex-1">
-                    <label htmlFor="export-page-from" className="text-[10px] text-zinc-600 mb-1 block">From</label>
-                    <input
-                      id="export-page-from"
-                      type="number"
-                      min={1}
-                      max={totalPages}
-                      value={customFrom}
-                      onChange={(e) => setCustomFrom(e.target.value)}
-                      className="w-full px-3 py-2 text-sm bg-zinc-800 border border-zinc-700 rounded-lg text-zinc-200 focus:ring-2 focus:ring-accent focus:border-accent outline-none transition-all"
-                    />
-                  </div>
-                  <span className="text-zinc-600 text-xs mt-4">to</span>
-                  <div className="flex-1">
-                    <label htmlFor="export-page-to" className="text-[10px] text-zinc-600 mb-1 block">To</label>
-                    <input
-                      id="export-page-to"
-                      type="number"
-                      min={1}
-                      max={totalPages}
-                      value={customTo}
-                      onChange={(e) => setCustomTo(e.target.value)}
-                      className="w-full px-3 py-2 text-sm bg-zinc-800 border border-zinc-700 rounded-lg text-zinc-200 focus:ring-2 focus:ring-accent focus:border-accent outline-none transition-all"
-                    />
-                  </div>
+            {formatInfo.supportsQuality && (
+              <div>
+                <div className="mb-2 flex items-center justify-between">
+                  <label htmlFor="export-jpeg-quality" className="text-xs text-app-muted">JPEG Quality</label>
+                  <span className="rounded bg-panel-elevated px-2 py-0.5 font-mono text-xs text-app">{jpegQuality}%</span>
                 </div>
-              )}
-            </div>
-
-            {(formatInfo.supportsDpi || formatInfo.supportsQuality) && (
-              <div className="space-y-4">
-                <label className="text-xs font-medium text-zinc-400 uppercase tracking-widest block">
-                  Quality Settings
-                </label>
-
-                {formatInfo.supportsDpi && (
-                  <div>
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-xs text-zinc-400">Resolution (DPI)</span>
-                      <span className="text-xs font-mono text-zinc-300 bg-zinc-800 px-2 py-0.5 rounded">
-                        {dpi}
-                      </span>
-                    </div>
-                    <div className="flex gap-1.5 p-1 bg-zinc-800/60 rounded-xl border border-zinc-800">
-                      {[
-                        { value: 72, label: 'Screen' },
-                        { value: 150, label: 'Standard' },
-                        { value: 300, label: 'Print' },
-                        { value: 600, label: 'High' },
-                      ].map((opt) => (
-                        <button
-                          key={opt.value}
-                          onClick={() => setDpi(opt.value)}
-                          className={`
-                            flex-1 px-2 py-2 text-xs font-medium rounded-lg transition-all duration-200
-                            ${
-                              dpi === opt.value
-                                ? 'bg-zinc-700 text-white shadow-sm'
-                                : 'text-zinc-500 hover:text-zinc-300'
-                            }
-                          `}
-                        >
-                          <div>{opt.label}</div>
-                          <div className="text-[9px] opacity-60 mt-0.5">{opt.value} DPI</div>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {formatInfo.supportsQuality && (
-                  <div>
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-xs text-zinc-400">JPEG Quality</span>
-                      <span className="text-xs font-mono text-zinc-300 bg-zinc-800 px-2 py-0.5 rounded">
-                        {jpegQuality}%
-                      </span>
-                    </div>
-                    <input
-                      type="range"
-                      min={10}
-                      max={100}
-                      value={jpegQuality}
-                      onChange={(e) => setJpegQuality(Number(e.target.value))}
-                      className="w-full accent-accent"
-                      style={{ height: '4px' }}
-                    />
-                    <div className="flex justify-between mt-1">
-                      <span className="text-[10px] text-zinc-600">Smaller file</span>
-                      <span className="text-[10px] text-zinc-600">Best quality</span>
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {exportError && (
-              <div role="alert" className="p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 text-xs">
-                {exportError}
-              </div>
-            )}
-
-            {exportDone && (
-              <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs flex items-center gap-2">
-                <Check size={14} />
-                Export complete — file downloaded!
+                <input
+                  id="export-jpeg-quality"
+                  type="range"
+                  min={10}
+                  max={100}
+                  value={jpegQuality}
+                  onChange={(e) => setJpegQuality(Number(e.target.value))}
+                  className="w-full accent-accent"
+                  style={{ height: '4px' }}
+                />
+                <div className="mt-1 flex justify-between">
+                  <span className="text-[10px] text-app-faint">Smaller file</span>
+                  <span className="text-[10px] text-app-faint">Best quality</span>
+                </div>
               </div>
             )}
           </div>
+        )}
 
-          <div className="px-6 py-4 border-t border-zinc-800/80 bg-zinc-900/90">
-            {isExporting ? (
-              <div className="space-y-3">
-                <div className="flex items-center justify-between text-xs">
-                  <span className="text-zinc-400 flex items-center gap-1.5">
-                    <Loader2 size={12} className="animate-spin" />
-                    Exporting…
-                  </span>
-                  <span className="text-zinc-300 font-mono">
-                    {exportProgress}/{exportTotal}
-                  </span>
-                </div>
-                <div className="h-1.5 bg-zinc-800 rounded-full overflow-hidden">
-                  <div
-                    className="h-full bg-gradient-to-r from-bloom-500 to-bloom-300 rounded-full transition-all duration-300 ease-out"
-                    style={{ width: `${progressPct}%` }}
-                  />
-                </div>
-              </div>
-            ) : (
-              <button
-                onClick={() => void handleRenderExport()}
-                disabled={primaryDisabled}
-                className="
-                  w-full flex items-center justify-center gap-2.5 px-4 py-3
-                  bg-gradient-to-b from-bloom-500 to-bloom-600
-                  hover:from-bloom-600 hover:to-bloom-700
-                  disabled:from-zinc-700 disabled:to-zinc-800 disabled:text-zinc-500
-                  text-white font-medium text-sm rounded-xl
-                  shadow-lg shadow-accent/30
-                  transition-all duration-200 ease-out
-                  active:scale-[0.98]
-                "
-              >
-                <Download size={16} />
-                {`Export as ${formatInfo.label}`}
-                <ChevronRight size={14} className="opacity-50" />
-              </button>
-            )}
-          </div>
-        </div>
+        {exportError && <Notice tone="danger" className="text-xs">{exportError}</Notice>}
+        {exportDone && <Notice tone="success" className="text-xs">Export complete — file downloaded!</Notice>}
       </div>
 
-      <style>{`
-        @keyframes fadeIn {
-          from { opacity: 0; }
-          to { opacity: 1; }
-        }
-        @keyframes slideInRight {
-          from { transform: translateX(100%); opacity: 0; }
-          to { transform: translateX(0); opacity: 1; }
-        }
-      `}</style>
+      <div className="border-t border-app pt-4">
+        {isExporting ? (
+          <div className="space-y-3" role="status">
+            <div className="flex items-center justify-between text-xs">
+              <span className="flex items-center gap-1.5 text-app-muted">
+                <Loader2 size={12} aria-hidden="true" className="animate-spin" />
+                Exporting…
+              </span>
+              <span className="font-mono text-app">{exportProgress}/{exportTotal}</span>
+            </div>
+            <div className="h-1.5 overflow-hidden rounded-full bg-panel-elevated">
+              <div className="h-full rounded-full bg-bloom-500 transition-all duration-300 ease-out" style={{ width: `${progressPct}%` }} />
+            </div>
+          </div>
+        ) : (
+          <Button variant="primary" className="h-11 w-full" onClick={() => void handleRenderExport()} disabled={primaryDisabled}>
+            <Download size={16} aria-hidden="true" />
+            {`Export as ${formatInfo.label}`}
+            <ChevronRight size={14} aria-hidden="true" className="opacity-60" />
+          </Button>
+        )}
+      </div>
     </>
+  );
+
+  if (isMobile) {
+    return (
+      <MobileSheet open={isOpen} onOpenChange={onOpenChange} title={title} description={description} closeLabel="Close export panel">
+        <div className="px-4 pb-4">{content}</div>
+      </MobileSheet>
+    );
+  }
+
+  return (
+    <Dialog open={isOpen} onOpenChange={onOpenChange} title={title} description={description} size="lg">
+      <Button variant="ghost" size="sm" aria-label="Close export panel" className="absolute right-3 top-3 w-8 px-0" onClick={onClose}>
+        <X size={18} aria-hidden="true" />
+      </Button>
+      {content}
+    </Dialog>
   );
 }
