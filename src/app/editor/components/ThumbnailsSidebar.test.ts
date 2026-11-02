@@ -36,7 +36,11 @@ describe('thumbnail page controls', () => {
     act(() => root.render(createElement(ThumbnailsSidebar, { ...props, currentPage: 1 })));
     expect(container.querySelector('button[aria-label="Insert blank page"]')).toBe(first);
     act(() => container.querySelectorAll<HTMLButtonElement>('button[aria-label="Insert blank page"]')[2].click());
-    act(() => container.querySelectorAll<HTMLButtonElement>('button[aria-label="Rotate page"]')[2].click());
+    const barRotate = container.querySelectorAll<HTMLButtonElement>('button[aria-label^="Rotate page "][aria-label$=" 90° clockwise"]');
+    expect([...barRotate].map(button => button.getAttribute('aria-label'))).toEqual([
+      'Rotate page 1 90° clockwise', 'Rotate page 1 90° clockwise', 'Rotate page 2 90° clockwise',
+    ]);
+    act(() => barRotate[2].click());
     expect(insert).toHaveBeenCalledWith(2);
     expect(rotate).toHaveBeenCalledWith(1);
   });
@@ -125,5 +129,39 @@ describe('thumbnail page controls', () => {
     act(() => earlier.click());
     expect(select).toHaveBeenCalledWith(1);
     expect(reorder).toHaveBeenCalledWith(1, 0);
+  });
+
+  it('keeps page actions visible on touch layouts and the current page, with shared delete wording', () => {
+    const remove = vi.fn();
+    const confirm = vi.fn(() => true);
+    vi.stubGlobal('confirm', confirm);
+    act(() => root.render(createElement(ThumbnailsSidebar, {
+      totalPages: 2, currentPage: 0, thumbnails: ['first', 'second'],
+      isGeneratingThumbnails: false, onPageSelect: vi.fn(), onDeletePage: remove, onRotatePage: vi.fn(),
+    })));
+    const deletes = container.querySelectorAll<HTMLButtonElement>('button[aria-label="Delete page"]');
+    const rotateFirst = container.querySelector<HTMLButtonElement>('button[aria-label="Rotate page 1"]')!;
+    const rotateSecond = container.querySelector<HTMLButtonElement>('button[aria-label="Rotate page 2"]')!;
+    // Current page: always visible. Other pages: hover, keyboard focus or coarse pointer.
+    expect(deletes[0].className).toContain('opacity-100');
+    expect(deletes[0].className).not.toContain('opacity-0');
+    expect(rotateFirst.className).not.toContain('opacity-0');
+    for (const token of ['opacity-0', 'group-hover:opacity-100', 'group-focus-within:opacity-100', 'pointer-coarse:opacity-100', 'pointer-coarse:min-h-11', 'pointer-coarse:min-w-11']) {
+      expect(deletes[1].className.split(/\s+/)).toContain(token);
+      expect(rotateSecond.className.split(/\s+/)).toContain(token);
+    }
+    act(() => deletes[1].click());
+    expect(confirm).toHaveBeenCalledWith('Delete page 2? You can undo this.');
+    expect(remove).toHaveBeenCalledWith(1);
+
+    act(() => root.render(createElement(ThumbnailsSidebar, {
+      totalPages: 2, currentPage: 0, thumbnails: ['first', 'second'], isMobile: true,
+      isGeneratingThumbnails: false, onPageSelect: vi.fn(), onDeletePage: remove, onRotatePage: vi.fn(),
+    })));
+    for (const button of container.querySelectorAll<HTMLButtonElement>('button[aria-label="Delete page"], button[aria-label="Rotate page 2"]')) {
+      const classes = button.className.split(/\s+/);
+      expect(classes).not.toContain('opacity-0');
+      expect(classes).toEqual(expect.arrayContaining(['opacity-100', 'min-h-11', 'min-w-11']));
+    }
   });
 });

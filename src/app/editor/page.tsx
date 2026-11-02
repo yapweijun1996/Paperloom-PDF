@@ -78,10 +78,11 @@ import { SignatureOverlay } from './components/signatures/SignatureOverlay';
 import { SignatureCreateDialog, type SignatureCreateResult } from './components/signatures/SignatureCreateDialog';
 import { CertificateImportDialog } from './components/signatures/CertificateImportDialog';
 import { WatermarkPreview } from './components/WatermarkPreview';
-import { ThumbnailsSidebar } from './components/ThumbnailsSidebar';
+import { ThumbnailsSidebar, deletePageConfirmation } from './components/ThumbnailsSidebar';
 import { generateThumbnails, ThumbnailCoordinator } from './thumbnail-generation';
 import { captureFormThumbnailSnapshot, changedFormThumbnailPages, type FormThumbnailSnapshot } from './form-thumbnail-pages';
 import { FieldRenameNotice } from './components/FieldRenameNotice';
+import { WatermarkAppliedNotice } from './components/WatermarkAppliedNotice';
 import { FindReplacePanel } from './components/FindReplacePanel';
 import { StatusBar } from './components/StatusBar';
 import { ExportPanel } from './components/ExportPanel';
@@ -410,7 +411,8 @@ export default function EditorPage() {
   const [watermarkPosition, setWatermarkPosition] = useState<WatermarkPosition>('center');
   const [watermarkMosaic, setWatermarkMosaic] = useState(false);
   const [watermarkLivePreview, setWatermarkLivePreview] = useState(true);
-  const [showApplySuccessModal, setShowApplySuccessModal] = useState(false);
+  const [showWatermarkAppliedNotice, setShowWatermarkAppliedNotice] = useState(false);
+  const dismissWatermarkAppliedNotice = useCallback(() => setShowWatermarkAppliedNotice(false), []);
   const [watermarkPageFrom, setWatermarkPageFrom] = useState(1);
   const [watermarkPageTo, setWatermarkPageTo] = useState(1);
   const [watermarkLayer, setWatermarkLayer] = useState<'above' | 'below'>('above');
@@ -5098,7 +5100,7 @@ export default function EditorPage() {
       setDoc({ ...doc });
       setRenderKey(k => k + 1);
       setWatermarkLivePreview(false);
-      setShowApplySuccessModal(true);
+      setShowWatermarkAppliedNotice(true);
     } catch (e) {
       console.error('[Editor] Apply watermark failed:', e);
       setError(`Failed to apply watermark: ${e instanceof Error ? e.message : String(e)}`);
@@ -5645,7 +5647,7 @@ export default function EditorPage() {
 
   const handleRemoveCurrentPage = useCallback(() => {
     if (!doc || doc.pages.length <= 1) return;
-    if (!window.confirm(`Remove page ${currentPage + 1}?`)) return;
+    if (!window.confirm(deletePageConfirmation(currentPage + 1))) return;
     handleDeletePage(currentPage);
   }, [doc, currentPage, handleDeletePage]);
 
@@ -6058,6 +6060,7 @@ export default function EditorPage() {
       {/* ── Top toolbar ── */}
       <Toolbar
         fileName={fileName}
+        isDirty={isDirty}
         currentPage={currentPage}
         totalPages={totalPages}
         scale={scale}
@@ -6466,7 +6469,6 @@ export default function EditorPage() {
                 >
                   <Type size={14} /> Recognize text (OCR)
                 </button>
-                {isDirty && <span className="text-[10px] text-amber-400 font-medium border-l border-zinc-700/50 pl-2">Unsaved</span>}
               </div>
               <div className="pointer-events-auto">
                 <FindReplacePanel
@@ -7515,6 +7517,11 @@ export default function EditorPage() {
       )}
 
       <FieldRenameNotice changes={renamedFields} onDismiss={() => setRenamedFields([])} />
+      <WatermarkAppliedNotice
+        open={showWatermarkAppliedNotice}
+        onDismiss={dismissWatermarkAppliedNotice}
+        onTurnOnPreview={() => setWatermarkLivePreview(true)}
+      />
 
       {/* Error toast */}
       {error && (
@@ -7547,23 +7554,6 @@ export default function EditorPage() {
                 Yes, Remove
               </button>
             </div>
-          </div>
-        </div>
-      )}
-
-      {showApplySuccessModal && (
-        <div className="fixed inset-0 z-[500] bg-black/80 flex items-center justify-center p-4 animate-in fade-in duration-200">
-          <div className="z-[600] bg-zinc-900 border border-zinc-700/50 rounded-xl p-6 shadow-2xl max-w-sm w-full text-center">
-            <h3 className="text-white font-medium text-lg mb-4">Watermark Applied</h3>
-            <p className="text-zinc-400 text-sm mb-6 leading-relaxed">
-              Watermark has been applied and live preview is off. To add more watermarks, turn on the live preview to preview it live.
-            </p>
-            <button
-              onClick={() => setShowApplySuccessModal(false)}
-              className="w-full px-4 py-2.5 rounded font-medium text-sm bg-bloom-500 hover:bg-bloom-700 text-white transition-colors"
-            >
-              Okay
-            </button>
           </div>
         </div>
       )}

@@ -45,8 +45,11 @@ sidebar tooltip portals render outside it. Sidebar portal tooltips at 200 are
 intentional: they beat other sidebars, but stay below drawer backdrops and
 modals. A nested popup cannot escape its parent's stacking context by increasing
 its own z-index; the toolbar is above the sidebars so its download menu can
-paint over them. The download menu uses 400 as a mobile sheet and 200 at `md`
-and larger, still contained by the toolbar context and below global drawers.
+paint over them. The download menu uses 200 at `md` and larger, still
+contained by the toolbar context and below global drawers. Below `md` it is a
+400 bottom sheet over a 300 backdrop, portalled to `document.body`: the
+toolbar's `backdrop-filter` would otherwise become the containing block of its
+`fixed` positioning and push the sheet off-screen.
 
 A backdrop must be below its own panel. Hand-made confirmation modals that
 remain in `page.tsx` use a combined fullscreen backdrop/container at 500, with
