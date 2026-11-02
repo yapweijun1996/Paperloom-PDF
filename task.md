@@ -929,6 +929,12 @@ suggested order.
   scheme, shared `src/app/editor/ui/` primitives (Dialog, ConfirmDialog,
   Button, IconButton, Field inputs, Notice, MobileSheet), and the password and
   unsaved-changes dialogs migrated onto them.
+  Batch C: find/replace, export (Dialog, MobileSheet on phones), link popover,
+  certificate and signature dialogs, the security panel, the field-rename and
+  conformance notices and the editor's toasts, error banner and search strip
+  follow the active theme on the shared primitives. `window.confirm`/`alert`
+  are replaced by a `useConfirm` ConfirmDialog and Notice (home and editor);
+  page and marks redaction ask first, and replace-all reports its count.
 - **Priority / effort:** P2 / medium to high. **Review points:** #31–#37.
   Related to TASK-07 and TASK-12.
 - **First step:** Expose the existing merge, split and remove-page handlers in

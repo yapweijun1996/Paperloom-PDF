@@ -55,6 +55,7 @@ Every batch is one or more commits to main. Before each push, run the full CI ch
 - **After the primitives land, add a guard that counts native `<button>`/`<input>`/`<select>` and `type=password` outside `ui/`. The count may only fall** (P2, S) — 9, 12, 22 (3)
 
 ## Batch 6 — Overlay migrations (one component per commit; write a characterization test first)
+Status (Batch C): done except the mobile-sheet item. PasswordDialog moved in Batch B. Added `TextArea` (secret mode), `useConfirm` and `Notice live`. `document-link.ts` keeps its injected `confirm` on purpose: it is a synchronous security gate before opening an external application link, with its own tests. SecurityPanel stays `w-72` (288px); the properties sidebar is `w-64`, so no 319px panel width exists to match.
 - **PasswordDialog: move to Dialog + SecretInput (`current-password`) + Notice** (P1, S) — it has no `role` or `aria-modal`. — `PasswordDialog.tsx:36-68` — 4, 12, 13, 15, 16 (5)
 - **FindReplacePanel: remove the in-component `data-theme="dark"` and use tokens** (P1, S) — `FindReplacePanel.tsx:51,78` — 1, 5, 13 (3)
 - **ExportPanel: move to Dialog and tokens; drop its own focus trap** (P1, M) — `ExportPanel.tsx:202-218,333,403-427` — 1, 5, 13, 16 (4)
