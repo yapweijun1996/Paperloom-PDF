@@ -1,4 +1,13 @@
-import React from 'react';
+import React, { useId } from 'react';
+
+/**
+ * Each icon renders in several places at once (e.g. the tool button and its
+ * tooltip), so SVG gradient ids must be unique per instance or `url(#id)`
+ * resolves to whichever copy appears first in the document.
+ */
+function useGradientId(name: string): string {
+  return `${name}${useId().replace(/[^A-Za-z0-9_-]/g, '')}`;
+}
 
 export interface CustomIconProps {
   size?: number;
@@ -9,10 +18,11 @@ export interface CustomIconProps {
  * 1. SELECT / CURSOR (Sky Blue Accent)
  */
 export function SelectToolIcon({ size = 20, className = '' }: CustomIconProps) {
+  const gradientId = useGradientId('select_grad');
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className={className}>
       <defs>
-        <linearGradient id="select_grad" x1="4" y1="3" x2="20" y2="19" gradientUnits="userSpaceOnUse">
+        <linearGradient id={gradientId} x1="4" y1="3" x2="20" y2="19" gradientUnits="userSpaceOnUse">
           <stop stopColor="#38BDF8" />
           <stop offset="1" stopColor="#0284C7" />
         </linearGradient>
@@ -20,9 +30,9 @@ export function SelectToolIcon({ size = 20, className = '' }: CustomIconProps) {
       {/* Pointer Body */}
       <path
         d="M4.5 3.5L10.8 20.2C11.0 20.7 11.7 20.7 11.9 20.2L14.7 14.1L20.8 11.3C21.3 11.1 21.3 10.4 20.8 10.2L4.5 3.5Z"
-        fill="url(#select_grad)"
+        fill={`url(#${gradientId})`}
         fillOpacity="0.25"
-        stroke="url(#select_grad)"
+        stroke={`url(#${gradientId})`}
         strokeWidth="1.8"
         strokeLinecap="round"
         strokeLinejoin="round"
@@ -30,7 +40,7 @@ export function SelectToolIcon({ size = 20, className = '' }: CustomIconProps) {
       {/* Arrow Shaft Accent */}
       <path
         d="M13.5 13.5L19 19"
-        stroke="url(#select_grad)"
+        stroke={`url(#${gradientId})`}
         strokeWidth="2"
         strokeLinecap="round"
       />
@@ -43,10 +53,11 @@ export function SelectToolIcon({ size = 20, className = '' }: CustomIconProps) {
  * 2. EDIT TEXT (Royal Blue Accent)
  */
 export function TextToolIcon({ size = 20, className = '' }: CustomIconProps) {
+  const gradientId = useGradientId('text_grad');
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className={className}>
       <defs>
-        <linearGradient id="text_grad" x1="4" y1="4" x2="20" y2="20" gradientUnits="userSpaceOnUse">
+        <linearGradient id={gradientId} x1="4" y1="4" x2="20" y2="20" gradientUnits="userSpaceOnUse">
           <stop stopColor="#60A5FA" />
           <stop offset="1" stopColor="#2563EB" />
         </linearGradient>
@@ -54,7 +65,7 @@ export function TextToolIcon({ size = 20, className = '' }: CustomIconProps) {
       {/* Top Crossbar */}
       <path
         d="M4.5 7V4.8C4.5 4.36 4.86 4 5.3 4H18.7C19.14 4 19.5 4.36 19.5 4.8V7"
-        stroke="url(#text_grad)"
+        stroke={`url(#${gradientId})`}
         strokeWidth="2"
         strokeLinecap="round"
         strokeLinejoin="round"
@@ -62,14 +73,14 @@ export function TextToolIcon({ size = 20, className = '' }: CustomIconProps) {
       {/* Vertical Stem */}
       <path
         d="M12 4V19.5"
-        stroke="url(#text_grad)"
+        stroke={`url(#${gradientId})`}
         strokeWidth="2"
         strokeLinecap="round"
       />
       {/* Serif Base */}
       <path
         d="M8.5 19.5H15.5"
-        stroke="url(#text_grad)"
+        stroke={`url(#${gradientId})`}
         strokeWidth="2"
         strokeLinecap="round"
       />
@@ -83,10 +94,11 @@ export function TextToolIcon({ size = 20, className = '' }: CustomIconProps) {
  * 3. HIGHLIGHT (Amber / Yellow Accent)
  */
 export function HighlightToolIcon({ size = 20, className = '' }: CustomIconProps) {
+  const gradientId = useGradientId('hl_grad');
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className={className}>
       <defs>
-        <linearGradient id="hl_grad" x1="8" y1="3" x2="20" y2="15" gradientUnits="userSpaceOnUse">
+        <linearGradient id={gradientId} x1="8" y1="3" x2="20" y2="15" gradientUnits="userSpaceOnUse">
           <stop stopColor="#FBBF24" />
           <stop offset="1" stopColor="#D97706" />
         </linearGradient>
@@ -94,9 +106,9 @@ export function HighlightToolIcon({ size = 20, className = '' }: CustomIconProps
       {/* Highlighter Cap / Body */}
       <path
         d="M15.2 3.8L20.2 8.8L14.2 14.8L9.2 9.8L15.2 3.8Z"
-        fill="url(#hl_grad)"
+        fill={`url(#${gradientId})`}
         fillOpacity="0.25"
-        stroke="url(#hl_grad)"
+        stroke={`url(#${gradientId})`}
         strokeWidth="1.8"
         strokeLinecap="round"
         strokeLinejoin="round"
@@ -104,9 +116,9 @@ export function HighlightToolIcon({ size = 20, className = '' }: CustomIconProps
       {/* Chisel Felt Tip */}
       <path
         d="M9.2 9.8L5.2 13.8V16.8H8.2L14.2 10.8"
-        fill="url(#hl_grad)"
+        fill={`url(#${gradientId})`}
         fillOpacity="0.5"
-        stroke="url(#hl_grad)"
+        stroke={`url(#${gradientId})`}
         strokeWidth="1.8"
         strokeLinecap="round"
         strokeLinejoin="round"
@@ -121,10 +133,11 @@ export function HighlightToolIcon({ size = 20, className = '' }: CustomIconProps
  * 4. DRAW / FREEHAND PENCIL (Purple / Violet Accent)
  */
 export function DrawToolIcon({ size = 20, className = '' }: CustomIconProps) {
+  const gradientId = useGradientId('draw_grad');
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className={className}>
       <defs>
-        <linearGradient id="draw_grad" x1="4" y1="4" x2="20" y2="20" gradientUnits="userSpaceOnUse">
+        <linearGradient id={gradientId} x1="4" y1="4" x2="20" y2="20" gradientUnits="userSpaceOnUse">
           <stop stopColor="#C084FC" />
           <stop offset="1" stopColor="#9333EA" />
         </linearGradient>
@@ -132,9 +145,9 @@ export function DrawToolIcon({ size = 20, className = '' }: CustomIconProps) {
       {/* Pencil Shaft & Tip */}
       <path
         d="M16.5 3.5L20.5 7.5L9 19H5V15L16.5 3.5Z"
-        fill="url(#draw_grad)"
+        fill={`url(#${gradientId})`}
         fillOpacity="0.25"
-        stroke="url(#draw_grad)"
+        stroke={`url(#${gradientId})`}
         strokeWidth="1.8"
         strokeLinecap="round"
         strokeLinejoin="round"
@@ -142,7 +155,7 @@ export function DrawToolIcon({ size = 20, className = '' }: CustomIconProps) {
       {/* Pencil Band Joint */}
       <path
         d="M14 6L18 10"
-        stroke="url(#draw_grad)"
+        stroke={`url(#${gradientId})`}
         strokeWidth="1.5"
         strokeLinecap="round"
       />
@@ -161,10 +174,11 @@ export function DrawToolIcon({ size = 20, className = '' }: CustomIconProps) {
  * 5. ERASER (Vibrant Eraser Pink Accent #FF66C4 / #EC4899)
  */
 export function EraseToolIcon({ size = 20, className = '' }: CustomIconProps) {
+  const gradientId = useGradientId('erase_grad');
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className={className}>
       <defs>
-        <linearGradient id="erase_grad" x1="4" y1="4" x2="20" y2="20" gradientUnits="userSpaceOnUse">
+        <linearGradient id={gradientId} x1="4" y1="4" x2="20" y2="20" gradientUnits="userSpaceOnUse">
           <stop stopColor="#FF66C4" />
           <stop offset="1" stopColor="#EC4899" />
         </linearGradient>
@@ -172,9 +186,9 @@ export function EraseToolIcon({ size = 20, className = '' }: CustomIconProps) {
       {/* Rubber Eraser Block Body */}
       <path
         d="M7 21L2.7 16.7C1.8 15.8 1.8 14.3 2.7 13.4L12.3 3.8C13.2 2.9 14.7 2.9 15.6 3.8L20.2 8.4C21.1 9.3 21.1 10.8 20.2 11.7L13 18.9L7 21Z"
-        fill="url(#erase_grad)"
+        fill={`url(#${gradientId})`}
         fillOpacity="0.25"
-        stroke="url(#erase_grad)"
+        stroke={`url(#${gradientId})`}
         strokeWidth="1.8"
         strokeLinecap="round"
         strokeLinejoin="round"
@@ -182,7 +196,7 @@ export function EraseToolIcon({ size = 20, className = '' }: CustomIconProps) {
       {/* Eraser Paper Sleeve / Grip Band Divider */}
       <path
         d="M7.5 8.5L15.5 16.5"
-        stroke="url(#erase_grad)"
+        stroke={`url(#${gradientId})`}
         strokeWidth="1.8"
         strokeLinecap="round"
       />
@@ -201,10 +215,11 @@ export function EraseToolIcon({ size = 20, className = '' }: CustomIconProps) {
  * 6. STAMP / WATERMARK (Bloom Coral / Crimson Accent)
  */
 export function WatermarkToolIcon({ size = 20, className = '' }: CustomIconProps) {
+  const gradientId = useGradientId('stamp_grad');
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className={className}>
       <defs>
-        <linearGradient id="stamp_grad" x1="4" y1="3" x2="20" y2="21" gradientUnits="userSpaceOnUse">
+        <linearGradient id={gradientId} x1="4" y1="3" x2="20" y2="21" gradientUnits="userSpaceOnUse">
           <stop stopColor="#68D5C5" />
           <stop offset="1" stopColor="#176B65" />
         </linearGradient>
@@ -212,9 +227,9 @@ export function WatermarkToolIcon({ size = 20, className = '' }: CustomIconProps
       {/* Wooden Handle & Mount */}
       <path
         d="M12 3C10.3 3 9 4.3 9 6C9 7.2 9.7 8.3 10.7 8.7L9.2 13H5C4.4 13 4 13.4 4 14V16.2H20V14C20 13.4 19.6 13 19 13H14.8L13.3 8.7C14.3 8.3 15 7.2 15 6C15 4.3 13.7 3 12 3Z"
-        fill="url(#stamp_grad)"
+        fill={`url(#${gradientId})`}
         fillOpacity="0.25"
-        stroke="url(#stamp_grad)"
+        stroke={`url(#${gradientId})`}
         strokeWidth="1.8"
         strokeLinecap="round"
         strokeLinejoin="round"
@@ -222,7 +237,7 @@ export function WatermarkToolIcon({ size = 20, className = '' }: CustomIconProps
       {/* Rubber Ink Plate */}
       <path
         d="M4 20H20"
-        stroke="url(#stamp_grad)"
+        stroke={`url(#${gradientId})`}
         strokeWidth="2.2"
         strokeLinecap="round"
       />
@@ -235,10 +250,11 @@ export function WatermarkToolIcon({ size = 20, className = '' }: CustomIconProps
  * 7. SIGNATURE (Blue Accent #60A5FA / #2563EB)
  */
 export function SignToolIcon({ size = 20, className = '' }: CustomIconProps) {
+  const gradientId = useGradientId('sign_grad');
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className={className}>
       <defs>
-        <linearGradient id="sign_grad" x1="4" y1="3" x2="20" y2="21" gradientUnits="userSpaceOnUse">
+        <linearGradient id={gradientId} x1="4" y1="3" x2="20" y2="21" gradientUnits="userSpaceOnUse">
           <stop stopColor="#60A5FA" />
           <stop offset="1" stopColor="#2563EB" />
         </linearGradient>
@@ -246,9 +262,9 @@ export function SignToolIcon({ size = 20, className = '' }: CustomIconProps) {
       {/* Pen Shaft */}
       <path
         d="M16.8 3.8L20.2 7.2L8.8 18.6H5.4V15.2L16.8 3.8Z"
-        fill="url(#sign_grad)"
+        fill={`url(#${gradientId})`}
         fillOpacity="0.25"
-        stroke="url(#sign_grad)"
+        stroke={`url(#${gradientId})`}
         strokeWidth="1.8"
         strokeLinecap="round"
         strokeLinejoin="round"
@@ -268,10 +284,11 @@ export function SignToolIcon({ size = 20, className = '' }: CustomIconProps) {
  * 8. SECURITY / PROTECT (Emerald Green Accent #34D399 / #059669)
  */
 export function SecurityToolIcon({ size = 20, className = '' }: CustomIconProps) {
+  const gradientId = useGradientId('sec_grad');
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className={className}>
       <defs>
-        <linearGradient id="sec_grad" x1="5" y1="3" x2="19" y2="21" gradientUnits="userSpaceOnUse">
+        <linearGradient id={gradientId} x1="5" y1="3" x2="19" y2="21" gradientUnits="userSpaceOnUse">
           <stop stopColor="#34D399" />
           <stop offset="1" stopColor="#059669" />
         </linearGradient>
@@ -279,9 +296,9 @@ export function SecurityToolIcon({ size = 20, className = '' }: CustomIconProps)
       {/* Security Shield Outline */}
       <path
         d="M12 3.5L19 6.5V12C19 16.5 16 20.5 12 21.5C8 20.5 5 16.5 5 12V6.5L12 3.5Z"
-        fill="url(#sec_grad)"
+        fill={`url(#${gradientId})`}
         fillOpacity="0.25"
-        stroke="url(#sec_grad)"
+        stroke={`url(#${gradientId})`}
         strokeWidth="1.8"
         strokeLinecap="round"
         strokeLinejoin="round"
