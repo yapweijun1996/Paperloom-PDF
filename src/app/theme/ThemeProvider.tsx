@@ -1,9 +1,9 @@
 'use client';
 
 import React, { createContext, useCallback, useContext, useEffect, useState, useSyncExternalStore } from 'react';
-import { resolveInitialTheme, STORAGE_KEY } from './initialTheme';
+import { DARK_SCHEME_QUERY, resolveTheme, STORAGE_KEY, type ThemeMode } from './initialTheme';
 
-export type ThemeMode = 'dark' | 'light';
+export type { ThemeMode };
 
 interface ThemeContextValue {
   theme: ThemeMode;
@@ -23,21 +23,44 @@ function applyTheme(mode: ThemeMode) {
   document.documentElement.style.colorScheme = mode;
 }
 
+function darkSchemeQuery(): MediaQueryList | null {
+  try {
+    return typeof window.matchMedia === 'function' ? window.matchMedia(DARK_SCHEME_QUERY) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** An explicit choice (this session or stored) wins; with none, the OS scheme is followed live. */
 function createThemeStore() {
   let selected: ThemeMode | null = null;
+  let query: MediaQueryList | null = null;
   const listeners = new Set<() => void>();
+  const notify = () => listeners.forEach(listener => listener());
   return {
     subscribe(listener: () => void) {
       listeners.add(listener);
-      return () => { listeners.delete(listener); };
+      if (listeners.size === 1) {
+        query = darkSchemeQuery();
+        query?.addEventListener('change', notify);
+      }
+      return () => {
+        listeners.delete(listener);
+        if (listeners.size === 0) {
+          query?.removeEventListener('change', notify);
+          query = null;
+        }
+      };
     },
     getSnapshot(): ThemeMode {
       if (selected) return selected;
+      let stored: string | null = null;
       try {
-        return resolveInitialTheme(localStorage.getItem(STORAGE_KEY));
+        stored = localStorage.getItem(STORAGE_KEY);
       } catch {
-        return 'light';
+        /* Storage unavailable: follow the system scheme. */
       }
+      return resolveTheme(stored, darkSchemeQuery()?.matches ?? false);
     },
     select(mode: ThemeMode) {
       selected = mode;
@@ -46,7 +69,7 @@ function createThemeStore() {
       } catch {
         /* Keep the selected theme for this session. */
       }
-      listeners.forEach(listener => listener());
+      notify();
     },
   };
 }
@@ -58,7 +81,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const theme = useSyncExternalStore(store.subscribe, store.getSnapshot, serverTheme);
 
   useEffect(() => {
-    // During hydration, use the stored value rather than the server snapshot.
+    // During hydration, use the resolved value rather than the server snapshot.
     applyTheme(store.getSnapshot());
   }, [store, theme]);
 

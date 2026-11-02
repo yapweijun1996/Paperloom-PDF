@@ -1,8 +1,8 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import { ThemeProvider } from "./theme/ThemeProvider";
 import { ServiceWorkerRegistration } from "./ServiceWorkerRegistration";
-import { STORAGE_KEY } from "./theme/initialTheme";
+import { DARK_SCHEME_QUERY, THEME_BOOT_SCRIPT, THEME_COLORS } from "./theme/initialTheme";
 import { BRAND_BASE_PATH, BRAND_NAME } from "@/lib/brand";
 
 export const metadata: Metadata = {
@@ -19,6 +19,13 @@ export const metadata: Metadata = {
   },
 };
 
+export const viewport: Viewport = {
+  themeColor: [
+    { media: "(prefers-color-scheme: light)", color: THEME_COLORS.light },
+    { media: DARK_SCHEME_QUERY, color: THEME_COLORS.dark },
+  ],
+};
+
 export default function RootLayout({
   children,
 }: Readonly<{
@@ -27,11 +34,7 @@ export default function RootLayout({
   return (
     <html lang="en" data-theme="light" style={{ colorScheme: "light" }} suppressHydrationWarning>
       <head>
-        <script
-          dangerouslySetInnerHTML={{
-            __html: `try{var theme=localStorage.getItem(${JSON.stringify(STORAGE_KEY)});theme=theme==="dark"?"dark":"light";document.documentElement.setAttribute("data-theme",theme);document.documentElement.style.colorScheme=theme}catch{}`,
-          }}
-        />
+        <script dangerouslySetInnerHTML={{ __html: THEME_BOOT_SCRIPT }} />
       </head>
       <body>
         <ServiceWorkerRegistration />
