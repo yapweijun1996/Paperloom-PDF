@@ -13,7 +13,7 @@ import { getPageContentBytes } from '../parser/parser';
 import { parseContentStream, type CSInstruction } from '../content/operator-lexer';
 import { compileInstructions } from './text-editor';
 import { updatePageContent } from './stream-compiler';
-import { IDENTITY, mulMatrix, invertMatrix, ctmAtEnd } from './matrix';
+import { IDENTITY, mulMatrix, invertMatrix, ctmAtEnd, ctmBefore, deltaThroughInverse } from './matrix';
 import type { EditableObject } from '../editing/scene-graph';
 import type { ImageItem, PathItem } from '../content/interpreter';
 
@@ -190,6 +190,44 @@ async function applyImageTransform(
 
   const next = compileInstructions(instructions);
   await updatePageContent(page.contentRefs, next, doc.objects);
+}
+
+/**
+ * Duplicate an image or drawing, offset by (dx, dy) in page space.
+ * Drawings are copied in place inside q…Q so they keep the colour, alpha and
+ * line state of the original. Images are appended unclipped (like a move)
+ * because browser-printed PDFs clip each image to its own frame.
+ */
+export async function duplicateObject(
+  doc: PDFDocumentData,
+  pageIndex: number,
+  obj: EditableObject,
+  dx: number,
+  dy: number,
+): Promise<void> {
+  if (obj.kind !== 'image' && obj.kind !== 'path') throw new Error('Only images and drawings can be duplicated');
+  const page = doc.pages[pageIndex];
+  const instructions = parseContentStream(getPageContentBytes(page, doc.objects));
+  const targetIndex = findObjectInstructionIndex(instructions, obj);
+  if (targetIndex < 0) throw new Error('Could not locate object in content stream — refuse to duplicate');
+  const copy = (inst: CSInstruction): CSInstruction => op(inst.operator, [...inst.operands]);
+
+  if (obj.kind === 'image') {
+    const img = obj.source as ImageItem | undefined;
+    const name = doOperandName(instructions[targetIndex]) || (img?.name || '').replace(/^\//, '');
+    if (!name || !img) throw new Error('Could not identify the image to duplicate');
+    const placed = [img.ctm.a, img.ctm.b, img.ctm.c, img.ctm.d, img.ctm.e + dx, img.ctm.f + dy];
+    const local = mulMatrix(placed, invertMatrix(ctmAtEnd(instructions)) ?? IDENTITY);
+    instructions.push(op('q'), op('cm', local.map(n => new PDFNumber(n))), op('Do', [new PDFName(name)]), op('Q'));
+  } else {
+    let start = targetIndex;
+    while (start > 0 && ['m', 'l', 'c', 'v', 'y', 'h', 're'].includes(instructions[start - 1].operator)) start--;
+    const offset = deltaThroughInverse(ctmBefore(instructions, start), dx, dy);
+    const block = instructions.slice(start, targetIndex + 1).map(copy);
+    instructions.splice(targetIndex + 1, 0,
+      op('q'), op('cm', [1, 0, 0, 1, offset.dx, offset.dy].map(n => new PDFNumber(n))), ...block, op('Q'));
+  }
+  await updatePageContent(page.contentRefs, compileInstructions(instructions), doc.objects);
 }
 
 /** Delete an object from the page content stream. */

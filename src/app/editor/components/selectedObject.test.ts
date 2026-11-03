@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { interpretPage, type ImageItem, type PathItem } from '@/engine/content/interpreter';
 import { captureHistoryEntry, restoreDocumentStructure } from '@/engine/editing/editor-history';
-import { applyObjectTransform, deleteObject } from '@/engine/editor/object-editor';
+import { applyObjectTransform, deleteObject, duplicateObject } from '@/engine/editor/object-editor';
 import { transformObject } from '@/engine/editing/transform-editor';
 import { updatePageContent } from '@/engine/editor/stream-compiler';
 import { getPageContentBytes, parsePDF } from '@/engine/parser/parser';
@@ -179,6 +179,45 @@ describe('queued object selection', () => {
     expect(matchingObjects(remaining, selected)).toHaveLength(0);
     expect(remaining).toHaveLength(1);
     expect(remaining[0].fillColor).toEqual([0.9, 0.8, 0.7]);
+  });
+
+  it('duplicates a drawing under a scaling transform with its paint state', async () => {
+    const content = 'q 0.75 0 0 0.75 0 0 cm 0.2 0.5 0.3 rg 0.4 w 40 40 80 80 re f 0.9 0.1 0.1 rg 200 200 20 20 re f Q';
+    const doc = await parsePDF(rawPDF([
+      '<< /Type /Catalog /Pages 2 0 R >>',
+      '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+      '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 240 240] /Contents 4 0 R >>',
+      `<< /Length ${content.length} >>\nstream\n${content}\nendstream`,
+    ]));
+    const page = doc.pages[0];
+    const paths = () => interpretPage(getPageContentBytes(page, doc.objects), page, doc.objects).displayList
+      .filter((item): item is PathItem => item.type === 'path');
+    const original = paths()[0];
+    await duplicateObject(doc, 0, { id: 'card', kind: 'path', bbox: original, ctm: [1, 0, 0, 1, 0, 0], source: original }, 12, -12);
+    const after = paths();
+    expect(after).toHaveLength(3);
+    const copy = after[1];
+    expect(copy.x).toBeCloseTo(original.x + 12, 3);
+    expect(copy.y).toBeCloseTo(original.y - 12, 3);
+    expect(copy.width).toBeCloseTo(original.width, 3);
+    expect(copy.fillColor).toEqual([0.2, 0.5, 0.3]);
+    expect(after[0].x).toBeCloseTo(original.x, 3);
+    expect(after[2].fillColor).toEqual([0.9, 0.1, 0.1]);
+  });
+
+  it('duplicates an image placement as a new unclipped copy', async () => {
+    const doc = await documentWithObjects();
+    const page = doc.pages[0];
+    const images = () => interpretPage(getPageContentBytes(page, doc.objects), page, doc.objects).displayList
+      .filter((item): item is ImageItem => item.type === 'image');
+    const original = images()[1];
+    await duplicateObject(doc, 0, {
+      id: 'image', kind: 'image', bbox: original,
+      ctm: [original.ctm.a, original.ctm.b, original.ctm.c, original.ctm.d, original.ctm.e, original.ctm.f], source: original,
+    }, 12, -12);
+    const after = images();
+    expect(after.map(item => [item.x, item.y])).toEqual([[10, 20], [100, 20], [112, 8]]);
+    expect(after[2].clipPaths).toHaveLength(0);
   });
 });
 

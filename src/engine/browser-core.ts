@@ -55,7 +55,7 @@ export type { BloomBlock, BloomPage } from './bloom';
 
 export { applyRunPositionShifts, applyTextEdits, applyVerifiedCrossRunEdits, findAndReplace, findTextOccurrences, insertTextRun, assertTextEncodable, prepareTextForExport, loadFontForName } from './editor/text-editor';
 export { insertImageRun, replaceImageXObject, createRGBAImageObjects } from './editor/image-editor';
-export { applyObjectTransform, deleteObject } from './editor/object-editor';
+export { applyObjectTransform, deleteObject, duplicateObject } from './editor/object-editor';
 export { addHighlightFromLineSelection } from './editor/highlight';
 export { updatePageContent, serializeObject } from './editor/stream-compiler';
 export { MultiStreamBoundaryError } from './editor/multistream-edit-safety';

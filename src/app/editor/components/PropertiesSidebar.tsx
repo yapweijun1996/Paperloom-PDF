@@ -100,6 +100,8 @@ interface PropertiesSidebarProps {
   selectedDisplayItem: ImageItem | PathItem | null;
   setSelectedDisplayItem: (item: ImageItem | PathItem | null) => void;
   onDeleteSelectedDisplayItem?: () => void;
+  /** Copy the selected image or drawing next to the original (Ctrl/Cmd+D). */
+  onDuplicateSelectedDisplayItem?: () => void;
   onReplaceSelectedImage?: () => void;
   onCommitSelectedImageBox?: (box: ImageBox) => Promise<void> | void;
   onPreviewSelectedImageBox?: (box: ImageBox | null) => void;
@@ -226,7 +228,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
     onAddLink, onScanLinks, linksHighlighted = false, pageLinkCount = 0,
     selectedLinkUrl = '', onSelectedLinkUrlChange, onSaveSelectedLink, onRemoveSelectedLink,
     hasSelectedLink = false, linkCreatePending = false,
-    selectedDisplayItem, setSelectedDisplayItem, onDeleteSelectedDisplayItem, onReplaceSelectedImage, onClearImageReplaceMode, displayItems,
+    selectedDisplayItem, setSelectedDisplayItem, onDeleteSelectedDisplayItem, onDuplicateSelectedDisplayItem, onReplaceSelectedImage, onClearImageReplaceMode, displayItems,
     onCommitSelectedImageBox, onPreviewSelectedImageBox, selectedImagePageBox,
     formFields = [], selectedFormField, mobileFormReveal, formFieldDraft = '',
     onFormFieldSelect, onFormFieldChange, onFormFieldDraftChange, onFormFieldCommit, onFormFieldCompositionChange, onFlattenForms,
@@ -959,6 +961,13 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                 <Image size={12} /> Replace Image
               </button>
             )}
+            <button
+              onClick={() => onDuplicateSelectedDisplayItem?.()}
+              title="Duplicate (Ctrl/Cmd+D)"
+              className="w-full flex items-center justify-center gap-2 py-2 rounded-lg text-xs font-medium bg-panel-elevated text-app border border-app hover:bg-panel-elevated/80 transition-colors"
+            >
+              <Copy size={12} /> Duplicate
+            </button>
             <button
               onClick={() => setSelectedDisplayItem(null)}
               className="w-full flex items-center justify-center gap-2 py-2 rounded-lg text-xs font-medium bg-panel-elevated text-app border border-app hover:bg-panel-elevated/80 transition-colors"

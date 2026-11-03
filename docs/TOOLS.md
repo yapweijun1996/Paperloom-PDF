@@ -70,15 +70,23 @@ With nothing selected the panel shows **Select Tool** and how many images and
 drawings were detected on the page.
 
 - **Image Properties** (an embedded image): X, Y, W, H in points, Lock aspect ratio,
-  Replace Image, Deselect, Delete. Deleting an image that covers most of the page
+  Replace Image, Duplicate, Deselect, Delete. Deleting an image that covers most of the page
   asks for confirmation first.
 - **Drawing / Signature** (a vector shape such as a card, box or drawn mark):
-  read-only Type, Position and Size; **Deselect** and **Delete**.
+  read-only Type, Position and Size; **Duplicate**, **Deselect** and **Delete**.
   - If the PDF paints the same shape several times on top of itself (common in
     PDFs printed from a browser), Delete removes all the copies in one undoable
     step, so the shape actually disappears.
   - Full-width background bands and page backgrounds are not selectable, so
     clicking empty page space selects nothing.
+- **Duplicate** (or Ctrl/Cmd+D) places a copy 12pt to the right and below
+  (mirrored near the page edge) and selects it, so pressing it again makes a
+  row of copies. A drawing copy keeps the original's colour and layer; an
+  image copy is placed on top of the page. Undo removes the copy.
+- A text box or floating image you added has a **Duplicate** button (copy icon)
+  next to its delete button.
+- To copy a line of existing PDF text, use **Duplicate Line Below** or Shift+Enter
+  while editing the line.
 
 ### Text Properties (Edit Text)
 
@@ -181,6 +189,7 @@ Shortcuts are ignored while typing in a field, editing text, or while a dialog i
 | Ctrl/Cmd+F | Find & Replace |
 | Ctrl/Cmd+= / Ctrl/Cmd+− | Zoom in / out |
 | Arrow keys | Move the selected image, text box or signature by 1pt (Shift: 10pt); otherwise change page |
+| Ctrl/Cmd+D | Duplicate the selected image, drawing, text box or floating image |
 | Delete / Backspace | Delete the selected signature, image or text box |
 | Escape | Leave the text box; close menus |
 | Hold Space | Temporary hand tool for panning |

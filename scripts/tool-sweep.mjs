@@ -59,6 +59,19 @@ await step('Select: click card drawing + Delete + Undo', async () => {
   if (await page.getByText('Drawing / Signature').count()) throw new Error('still selected after delete');
   await page.getByTitle('Undo (Ctrl+Z)').click();
 });
+await step('Select: duplicate photo, then undo', async () => {
+  await click(0.5, 0.6); await page.getByText('Image Properties').waitFor({ timeout: 3000 });
+  await opt('Duplicate').click(); await page.waitForTimeout(800);
+  await page.screenshot({ path: `${SP}/duplicate-photo.png` });
+  await page.getByText('Image Properties').waitFor({ timeout: 3000 });
+  await page.getByTitle('Undo (Ctrl+Z)').click(); await page.waitForTimeout(500); await opt('Deselect').click().catch(() => {});
+});
+await step('Select: duplicate card with Ctrl/Cmd+D, then undo', async () => {
+  await click(0.12, 0.30); await page.getByText('Drawing / Signature').first().waitFor({ timeout: 3000 });
+  await page.keyboard.press(process.platform === 'darwin' ? 'Meta+d' : 'Control+d'); await page.waitForTimeout(800);
+  await page.screenshot({ path: `${SP}/duplicate-card.png` });
+  await page.getByTitle('Undo (Ctrl+Z)').click(); await page.waitForTimeout(500); await opt('Deselect').click().catch(() => {});
+});
 await step('Edit Text: click title, type, Enter', async () => { await rail('Edit Text').click(); await click(0.2, 0.235); await page.locator('[contenteditable=true], textarea').first().waitFor({ timeout: 3000 }); await page.keyboard.press('End'); await page.keyboard.type(' 2026'); await page.keyboard.press('Enter'); await page.waitForTimeout(800); });
 await step('Undo/Redo text edit', async () => { await page.getByTitle('Undo (Ctrl+Z)').click(); await page.waitForTimeout(500); await page.getByTitle('Redo (Ctrl+Shift+Z)').click(); });
 await step('Edit Text: Add Text Box', async () => { await rail('Edit Text').click(); await opt('Add Text Box').click(); await click(0.3, 0.9); await page.keyboard.type('Hello box'); await page.keyboard.press('Escape'); });

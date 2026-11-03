@@ -54,3 +54,43 @@ test('deletes a stacked drawing from a browser-printed PDF and ignores backgroun
     return g - r;
   }).toBeGreaterThan(40);
 });
+
+test('duplicates a drawing with the button and Ctrl/Cmd+D, and duplicates a text box', async ({ page }) => {
+  const mod = process.platform === 'darwin' ? 'Meta' : 'Control';
+  await page.goto('./');
+  await expect(page.getByRole('button', { name: 'Open a PDF file' })).toHaveAttribute('aria-disabled', 'false');
+  await page.locator('input[type=file]').setInputFiles({ name: 'printed.pdf', mimeType: 'application/pdf', buffer: await fixture() });
+  const surface = page.locator('[data-page-render-surface] canvas.pdf-canvas');
+  await expect(surface).toBeVisible();
+  const box = await surface.boundingBox();
+  const clickAt = (px, py) => page.mouse.click(box.x + box.width * px / 200, box.y + box.height * (1 - py / 200));
+  const greenAt = async (px, py) => {
+    const [r, g] = await pixelAt(surface, px / 200, 1 - py / 200);
+    return g - r > 40;
+  };
+
+  // Only the copies (offset 12pt right, then mirrored up near the page bottom) cover these points.
+  expect(await greenAt(126, 15)).toBe(false);
+  expect(await greenAt(138, 110)).toBe(false);
+
+  await clickAt(70, 70);
+  await page.getByRole('button', { name: 'Duplicate', exact: true }).click();
+  await expect(page.getByText(/Duplicate failed/)).toHaveCount(0);
+  await expect.poll(() => greenAt(126, 15)).toBe(true);
+  // The copy is selected, so the shortcut copies it again.
+  await expect(page.getByRole('button', { name: 'Duplicate', exact: true })).toBeVisible();
+  await page.keyboard.press(`${mod}+d`);
+  await expect.poll(() => greenAt(138, 110)).toBe(true);
+
+  await page.keyboard.press(`${mod}+z`);
+  await expect.poll(() => greenAt(138, 110)).toBe(false);
+  await page.keyboard.press(`${mod}+z`);
+  await expect.poll(() => greenAt(126, 15)).toBe(false);
+  expect(await greenAt(70, 70)).toBe(true);
+
+  await page.getByRole('button', { name: 'Edit Text', exact: true }).click();
+  await page.getByRole('button', { name: 'Add Text Box' }).click();
+  await clickAt(160, 40);
+  await page.getByRole('button', { name: 'Duplicate text box' }).click();
+  await expect.poll(() => page.locator('textarea').evaluateAll(els => els.filter(el => el.value === 'New Text').length)).toBe(2);
+});

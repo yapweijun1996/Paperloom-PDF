@@ -27,7 +27,7 @@ Legend: ✅ comparable · 🟡 partial · ❌ missing · ⚙️ engine exists, n
 | Crop, flip, rotate an image | ❌ | |
 | Select and delete vector drawings | ✅ | Fixed for browser-printed PDFs on 2026-11-03 |
 | Move / resize drawings | 🟡 | Engine transform exists; no handles in UI |
-| Duplicate objects | 🟡 | Text lines only; images and drawings in progress |
+| Duplicate objects | ✅ | Images, drawings, text boxes, text lines (Ctrl/Cmd+D) |
 | Find and replace | ✅ | Match case, Replace All |
 | Spell check | ❌ | |
 | Links (add, edit, remove) | ✅ | |
@@ -134,7 +134,7 @@ Size: S = days, M = 1–3 weeks, L = a month or more.
 5. Automate the manual checklist in E2E.md (M).
 
 **Phase 2: everyday features users expect.**
-1. Duplicate, move and resize for every object; crop images (S–M).
+1. Move and resize handles for drawings; crop images (S–M).
 2. Comments: sticky notes, underline, strikeout, comment list (M).
 3. Bookmarks panel: view, add, rename, reorder (M).
 4. Crop pages, headers and footers, page numbers, Bates (M).

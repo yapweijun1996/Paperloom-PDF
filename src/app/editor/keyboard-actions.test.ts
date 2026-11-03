@@ -27,6 +27,16 @@ describe('editor keyboard actions', () => {
   });
 });
 
+describe('duplicate shortcut', () => {
+  it('duplicates the selection with Ctrl/Cmd+D and leaves the browser shortcut otherwise', () => {
+    expect(editorKeyboardAction({ key: 'd', metaKey: true }, { ...base, selectedDisplayItem: 'path' })).toEqual({ type: 'duplicate', target: 'display-item' });
+    expect(editorKeyboardAction({ key: 'D', ctrlKey: true }, { ...base, selectedDisplayItem: 'image' })).toEqual({ type: 'duplicate', target: 'display-item' });
+    expect(editorKeyboardAction({ key: 'd', ctrlKey: true }, { ...base, activeFloatingImage: true })).toEqual({ type: 'duplicate', target: 'floating-image' });
+    expect(editorKeyboardAction({ key: 'd', metaKey: true }, { ...base, activeFloatingText: true })).toEqual({ type: 'duplicate', target: 'floating-text' });
+    expect(editorKeyboardAction({ key: 'd', metaKey: true, shiftKey: true }, { ...base, selectedDisplayItem: 'path' })).toBeNull();
+  });
+});
+
 describe('IME composition keys', () => {
   it('keeps composing Enter, Shift+Enter, Escape and navigation in the input method', () => {
     for (const key of ['Enter', 'Escape', 'ArrowLeft', 'ArrowRight']) {

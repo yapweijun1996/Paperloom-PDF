@@ -14,7 +14,7 @@ import {
   type RecoveredFormDraft,
 } from '@/lib/pdfStorage';
 import { encryptRecoveryOverlay, decryptRecoveryOverlay } from '@/lib/recoveryEncryption';
-import { X, Loader2, ChevronLeft, Image, Type } from 'lucide-react';
+import { X, Loader2, ChevronLeft, Image, Type, Copy } from 'lucide-react';
 import { BRAND_NAME } from '@/lib/brand';
 
 // We import types only — the engine modules are loaded dynamically
@@ -29,7 +29,7 @@ import {
   hitTestTextLine, findNearestTextLine, caretIndexFromLineX,
   getLineBounds, getOverlayFontFamily, getOverlayFontStyle, getDisplayFontFamily,
 } from './utils';
-import { buildDisplayListIndex, hitTestDisplayList, isSelectableDisplayItem, captureHistoryEntry, restoreAnnotSnapshot, restoreDocumentStructure, parseOverlaySnapshot, deleteObject, visualFontSize, resolveRunStyleFlags, transformObject, applyObjectTransform, distributeTextChangeToSegments, segmentAtIndex, createVisualSignature, hitTestSignature, moveSignature, rotateSignature, setSignatureOpacity, deleteSignature, updateSignature, getSignatureLibrary, DEFAULT_SIGNATURE_SIZE, detectSignatureFieldsOnPage, hitTestSignatureField, applySignatureFieldAppearanceAsync, getCertificateManager, validateDocumentSignatures, enableLongTermValidation, getLtvStatus, listManagedSignatures, buildRevisionViewer, lockSignaturesAfterSigning, pushRecentSignatureId, SIGNATURE_SHORTCUTS } from '@/engine/browser-core';
+import { buildDisplayListIndex, hitTestDisplayList, isSelectableDisplayItem, captureHistoryEntry, restoreAnnotSnapshot, restoreDocumentStructure, parseOverlaySnapshot, deleteObject, duplicateObject, visualFontSize, resolveRunStyleFlags, transformObject, applyObjectTransform, distributeTextChangeToSegments, segmentAtIndex, createVisualSignature, hitTestSignature, moveSignature, rotateSignature, setSignatureOpacity, deleteSignature, updateSignature, getSignatureLibrary, DEFAULT_SIGNATURE_SIZE, detectSignatureFieldsOnPage, hitTestSignatureField, applySignatureFieldAppearanceAsync, getCertificateManager, validateDocumentSignatures, enableLongTermValidation, getLtvStatus, listManagedSignatures, buildRevisionViewer, lockSignaturesAfterSigning, pushRecentSignatureId, SIGNATURE_SHORTCUTS } from '@/engine/browser-core';
 import type { Annotation, QuadTree, SelectableItem, EditableObject, EditorHistoryEntry, PDFRef } from '@/engine/browser-core';
 import { UnsupportedGlyphsError, SessionDocumentEditor } from '@/engine/browser-core';
 import { SessionEditorHistory } from '@/engine/session/editor-history';
@@ -101,7 +101,7 @@ import { floatingTextPdfDelta, shouldStartFloatingTextDrag } from './components/
 import { initialFloatingTextSelection } from './components/floatingTextSelection';
 import { resizeBox } from './components/resizeGeometry';
 import { findImagePlacement, sameImagePlacement } from './components/imageSelection';
-import { matchingObjects, resolveSelectedObject } from './components/selectedObject';
+import { findOffsetCopy, matchingObjects, resolveSelectedObject } from './components/selectedObject';
 import type { ImageBox } from './components/imageBoxEdit';
 import { DocumentSearchIndex, SearchChangedError, SearchPageError, assertCurrentReplaceSupported, replaceSearchMatches, searchLatestDocument, type SearchMatch } from './search-index';
 import { searchHighlightBounds } from './search-highlight';
@@ -135,6 +135,29 @@ async function restoreHistoryGraph(
 
 
 // ─── Component ──────────────────────────────────────────────────────────────
+
+/** Offset (pt) for a duplicated object, mirrored when it would leave the page. */
+const DUPLICATE_OFFSET = 12;
+
+function duplicateOffset(box: { x: number; y: number; width: number }, page: { x: number; y: number; width: number }) {
+  return {
+    dx: box.x + box.width + DUPLICATE_OFFSET > page.x + page.width ? -DUPLICATE_OFFSET : DUPLICATE_OFFSET,
+    dy: box.y - DUPLICATE_OFFSET < page.y ? DUPLICATE_OFFSET : -DUPLICATE_OFFSET,
+  };
+}
+
+/** Engine edit target for a selected embedded image or drawing. */
+function editableFor(source: ImageItem | PathItem): EditableObject {
+  return {
+    id: `sel-${source.type}`,
+    kind: source.type,
+    bbox: { x: source.x, y: source.y, width: source.width, height: source.height },
+    ctm: source.type === 'image'
+      ? [source.ctm.a, source.ctm.b, source.ctm.c, source.ctm.d, source.ctm.e, source.ctm.f]
+      : [1, 0, 0, 1, 0, 0],
+    source,
+  };
+}
 
 export default function EditorPage() {
   const router = useRouter();
@@ -5716,15 +5739,6 @@ export default function EditorPage() {
           const display = engine.interpretPage(content, stagedPage, staged.objects, new engine.OptionalContentVisibility(staged.catalog, staged.objects)).displayList;
           const target = resolveSelectedObject(display, item);
           if (!target) throw new Error('The selected object changed or is ambiguous. Select it again.');
-          const editableFor = (source: ImageItem | PathItem): EditableObject => ({
-            id: `sel-${source.type}`,
-            kind: source.type,
-            bbox: { x: source.x, y: source.y, width: source.width, height: source.height },
-            ctm: source.type === 'image'
-              ? [source.ctm.a, source.ctm.b, source.ctm.c, source.ctm.d, source.ctm.e, source.ctm.f]
-              : [1, 0, 0, 1, 0, 0],
-            source,
-          });
           if (target.type === 'image') {
             await deleteObject(staged, currentPage, editableFor(target));
           } else {
@@ -5759,6 +5773,71 @@ export default function EditorPage() {
       setError(`Delete failed: ${e instanceof Error ? e.message : String(e)}`);
     }
   }, [doc, currentPage, selectedDisplayItem, pushEditorHistory, queueNativeEdit, setThumbnailKey, requestConfirm]);
+
+  const handleDuplicateSelectedDisplayItem = useCallback(async () => {
+    if (!doc || !engineRef.current || !selectedDisplayItem) return;
+    try {
+      const engine = engineRef.current;
+      const page = doc.pages[currentPage];
+      const item = selectedDisplayItem;
+      const pageKey = page.ref.toKey();
+      const lease = documentOwnerRef.current.lease(doc);
+      const { dx, dy } = duplicateOffset(item, page.mediaBox);
+      let copy: ImageItem | PathItem | null = null;
+      await queueNativeEdit(doc, async isCurrent => {
+        const editor = new SessionDocumentEditor();
+        await editor.edit(doc, `duplicate-${item.type}`, async staged => {
+          const stagedPage = staged.pages[currentPage];
+          if (!stagedPage || stagedPage.ref.toKey() !== pageKey) {
+            throw new Error('The selected page changed before the object could be duplicated.');
+          }
+          const display = () => engine.interpretPage(engine.getPageContentBytes(stagedPage, staged.objects), stagedPage, staged.objects,
+            new engine.OptionalContentVisibility(staged.catalog, staged.objects)).displayList;
+          const target = resolveSelectedObject(display(), item);
+          if (!target) throw new Error('The selected object changed or is ambiguous. Select it again.');
+          await duplicateObject(staged, currentPage, editableFor(target), dx, dy);
+          copy = findOffsetCopy(display(), target, dx, dy);
+          if (!copy) throw new Error('The copy could not be verified.');
+        }, { isCurrent });
+        if (!isCurrent()) throw new Error('The document was replaced before the edit completed.');
+        pushEditorHistory(`duplicate-${item.type}`, undefined, currentPage, false, editor);
+      });
+      if (!lease.isCurrent()) return;
+      setSelectedDisplayItem(copy);
+      setIsDirty(true);
+      setRenderKey(k => k + 1);
+      setThumbnailKey(k => k + 1);
+    } catch (e) {
+      console.error('[Editor] Duplicate object failed:', e);
+      setError(`Duplicate failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }, [doc, currentPage, selectedDisplayItem, pushEditorHistory, queueNativeEdit, setThumbnailKey, setIsDirty]);
+
+  const handleDuplicateFloatingImage = useCallback((id: string) => {
+    const source = floatingImagesRef.current.find(item => item.id === id);
+    const page = doc?.pages[currentPage];
+    if (!source || !page) return;
+    const { dx, dy } = duplicateOffset({ x: source.pdfX, y: source.pdfY, width: source.pdfWidth }, page.mediaBox);
+    const clone: FloatingImage = { ...source, id: Math.random().toString(36).substr(2, 9), pdfX: source.pdfX + dx, pdfY: source.pdfY + dy };
+    const next = [...floatingImagesRef.current, clone];
+    setFloatingImages(next);
+    floatingImagesRef.current = next;
+    pushEditorHistory('duplicate-image', { floatingImages: next });
+    setActiveFloatingImageId(clone.id);
+  }, [doc, currentPage, pushEditorHistory]);
+
+  const handleDuplicateFloatingText = useCallback((id: string) => {
+    const source = floatingTextsRef.current.find(item => item.id === id);
+    const page = doc?.pages[currentPage];
+    if (!source || !page) return;
+    const { dx, dy } = duplicateOffset({ x: source.pdfX, y: source.pdfY, width: source.pdfWidth ?? 0 }, page.mediaBox);
+    const clone: FloatingText = { ...source, id: Math.random().toString(36).substr(2, 9), pdfX: source.pdfX + dx, pdfY: source.pdfY + dy };
+    const next = [...floatingTextsRef.current, clone];
+    setFloatingTexts(next);
+    floatingTextsRef.current = next;
+    pushEditorHistory('duplicate-text-box', { floatingTexts: next });
+    setActiveFloatingTextId(clone.id);
+  }, [doc, currentPage, pushEditorHistory]);
 
   const handleInsertBlankPage = useCallback(async (index: number) => {
     if (!doc || !engineRef.current) return;
@@ -5876,7 +5955,7 @@ export default function EditorPage() {
       if (!action) return;
       // Keep navigation and search usable, but do not act on selections from
       // a page whose latest render failed or is still pending.
-      if (!renderReadyRef.current && (action.type === 'nudge' || action.type === 'delete')) return;
+      if (!renderReadyRef.current && (action.type === 'nudge' || action.type === 'delete' || action.type === 'duplicate')) return;
       if (action.type === 'search') { e.preventDefault(); setIsSearchOpen(v => !v);
       } else if (action.type === 'navigate-prev') { e.preventDefault(); goToPrev();
       } else if (action.type === 'navigate-next') { e.preventDefault(); goToNext();
@@ -5903,6 +5982,11 @@ export default function EditorPage() {
         pushEditorHistory('delete-image', { floatingImages: nextImages }); setActiveFloatingImageId(null);
       } else if (action.type === 'delete' && action.target === 'embedded-image') {
         e.preventDefault(); void handleDeleteSelectedDisplayItem();
+      } else if (action.type === 'duplicate') {
+        e.preventDefault();
+        if (action.target === 'floating-image') handleDuplicateFloatingImage(activeFloatingImageId!);
+        else if (action.target === 'floating-text') handleDuplicateFloatingText(activeFloatingTextId!);
+        else void handleDuplicateSelectedDisplayItem();
       } else if (action.type === 'escape-floating-text') {
         e.preventDefault();
         setActiveFloatingTextId(null);
@@ -5911,7 +5995,7 @@ export default function EditorPage() {
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [goToPrev, goToNext, zoomIn, zoomOut, editingLine, selectedDisplayItem, activeFloatingImageId, activeFloatingTextId, selectedSignatureId, handleSignatureDelete, activeTool, handleValidateSignatures, handleEmbeddedImageMove, handleFloatingImageNudge, handleFloatingTextNudge, handleDeleteSelectedDisplayItem, pushEditorHistory, closeDialogOpen]);
+  }, [goToPrev, goToNext, zoomIn, zoomOut, editingLine, selectedDisplayItem, activeFloatingImageId, activeFloatingTextId, selectedSignatureId, handleSignatureDelete, activeTool, handleValidateSignatures, handleEmbeddedImageMove, handleFloatingImageNudge, handleFloatingTextNudge, handleDeleteSelectedDisplayItem, handleDuplicateSelectedDisplayItem, handleDuplicateFloatingImage, handleDuplicateFloatingText, pushEditorHistory, closeDialogOpen]);
 
   // Clean, Minimalist 3D Tilted Pink Square Rubber Block Eraser Cursor
   const eraser3dSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32"><defs><filter id="er-pinksq-shadow" x="-30%" y="-30%" width="160%" height="160%"><feDropShadow dx="1" dy="1.4" stdDeviation="1.2" flood-color="#000000" flood-opacity="0.45"/></filter><linearGradient id="er-pink-top" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#FFA8E0"/><stop offset="60%" stop-color="#FF65C8"/><stop offset="100%" stop-color="#E840A8"/></linearGradient><linearGradient id="er-pink-left" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#FF52B7"/><stop offset="100%" stop-color="#D6208A"/></linearGradient><linearGradient id="er-pink-right" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#BF157A"/><stop offset="100%" stop-color="#80094F"/></linearGradient></defs><g filter="url(#er-pinksq-shadow)"><path d="M 4 16 L 16 4 L 28 16 L 28 19 L 16 31 L 4 19 Z" fill="none" stroke="#FFFFFF" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round"/><path d="M 4 16 L 16 4 L 28 16 L 16 28 Z" fill="url(#er-pink-top)" stroke="#80094F" stroke-width="0.6"/><path d="M 4 16 L 16 28 L 16 31 L 4 19 Z" fill="url(#er-pink-left)" stroke="#80094F" stroke-width="0.6"/><path d="M 16 28 L 28 16 L 28 19 L 16 31 Z" fill="url(#er-pink-right)" stroke="#80094F" stroke-width="0.6"/><path d="M 4 16 L 16 4 L 22 10 L 10 22 Z" fill="#FFFFFF" fill-opacity="0.45"/><circle cx="4" cy="28" r="0.8" fill="#FFFFFF" stroke="#80094F" stroke-width="0.4"/></g></svg>`;
@@ -6366,6 +6450,7 @@ export default function EditorPage() {
           selectedDisplayItem={selectedDisplayItem}
           setSelectedDisplayItem={setSelectedDisplayItem}
           onDeleteSelectedDisplayItem={handleDeleteSelectedDisplayItem}
+          onDuplicateSelectedDisplayItem={handleDuplicateSelectedDisplayItem}
           onReplaceSelectedImage={handleReplaceEmbeddedImage}
           onCommitSelectedImageBox={handleEmbeddedImageResize}
           onPreviewSelectedImageBox={handleImageBoxPreview}
@@ -6903,6 +6988,19 @@ export default function EditorPage() {
                       <X size={12} />
                     </button>
                   )}
+                  {isActive && (
+                    <button
+                      className="absolute -top-3 right-6 bg-panel-elevated text-app border border-app rounded-full p-1 shadow hover:bg-panel-elevated/80 transition-colors z-30"
+                      title="Duplicate text box"
+                      aria-label="Duplicate text box"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleDuplicateFloatingText(ft.id);
+                      }}
+                    >
+                      <Copy size={12} />
+                    </button>
+                  )}
                   <textarea
                     value={ft.text}
                     autoFocus={isActive && activeFloatingTextId === ft.id}
@@ -7020,6 +7118,17 @@ export default function EditorPage() {
                         }}
                       >
                         <Image size={12} />
+                      </button>
+                      <button
+                        className="absolute -top-3 right-16 bg-panel-elevated text-app border border-app rounded-full p-1 shadow hover:bg-panel-elevated/80 transition-colors z-30"
+                        title="Duplicate Image"
+                        aria-label="Duplicate image"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDuplicateFloatingImage(fi.id);
+                        }}
+                      >
+                        <Copy size={12} />
                       </button>
 
                       {/* Dimensions panel in cm */}

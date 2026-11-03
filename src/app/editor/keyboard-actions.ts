@@ -4,6 +4,7 @@ export type EditorKeyboardAction =
   | { type: 'nudge'; target: 'embedded-image' | 'floating-image' | 'floating-text'; dx: number; dy: number }
   | { type: 'delete'; target: 'embedded-image' | 'floating-image' | 'floating-text' | 'signature' }
   | { type: 'escape-floating-text' }
+  | { type: 'duplicate'; target: 'display-item' | 'floating-image' | 'floating-text' }
   | null;
 
 export interface EditorKeyboardContext {
@@ -36,6 +37,11 @@ export function editorKeyboardAction(
     if (key === 'f') return { type: 'search' };
     if ((key === '+' || key === '=') && !event.shiftKey) return { type: 'zoom-in' };
     if (key === '-') return { type: 'zoom-out' };
+    if (key === 'd' && !event.shiftKey) {
+      if (context.activeFloatingImage) return { type: 'duplicate', target: 'floating-image' };
+      if (context.activeFloatingText) return { type: 'duplicate', target: 'floating-text' };
+      if (context.selectedDisplayItem) return { type: 'duplicate', target: 'display-item' };
+    }
     return null;
   }
 

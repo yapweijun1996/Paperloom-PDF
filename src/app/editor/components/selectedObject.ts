@@ -37,3 +37,22 @@ export function resolveSelectedObject(
     item.type === 'path' && item.sourceInstructionIndex === selected.sourceInstructionIndex);
   return exact.length === 1 ? exact[0] : null;
 }
+
+/** Find the copy of `source` that a duplicate placed at (dx, dy); null unless exactly one fits. */
+export function findOffsetCopy(
+  items: readonly DisplayItem[],
+  source: ImageItem | PathItem,
+  dx: number,
+  dy: number,
+): ImageItem | PathItem | null {
+  // Rewriting the stream rounds coordinates, so compare with a small tolerance.
+  const near = (a: number, b: number) => Math.abs(a - b) < 0.05;
+  const copies = items.filter((item): item is ImageItem | PathItem =>
+    item.type === source.type &&
+    near(item.x, source.x + dx) && near(item.y, source.y + dy) &&
+    near(item.width, source.width) && near(item.height, source.height) &&
+    (item.type === 'image'
+      ? item.name === (source as ImageItem).name
+      : item.paintType === (source as PathItem).paintType));
+  return copies.length === 1 ? copies[0] : null;
+}

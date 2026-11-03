@@ -37,6 +37,8 @@ layout. Screenshots and the downloaded PDF land in `test-results/tool-sweep/`.
 | Select | Select an image, Replace Image | ✅ `svg-transparency` 🔁 |
 | Select | Select and delete a drawing (stacked copies, scaled `cm`), undo | ✅ `drawing-delete` 🔁 |
 | Select | Click empty page / background band selects nothing | ✅ `drawing-delete` 🔁 |
+| Select | Duplicate a drawing (button, Ctrl/Cmd+D) and an image, undo | ✅ `drawing-delete` 🔁 |
+| Edit Text | Duplicate text box | ✅ `drawing-delete` |
 | Edit Text | Edit a line, Enter to commit, undo / redo | ✅ `mobile-line-edit` 🔁 |
 | Edit Text | Add Text Box | ✅ `secure-redaction` 🔁 |
 | Edit Text | Font, Size, Bold / Italic / Underline, Color, Alignment | ✋ |
@@ -89,6 +91,7 @@ with a real PDF, on desktop and on a phone. Tick each item; note the browser.
 - [ ] Clicking empty page space with Select selects nothing
 - [ ] Select an image: the box fields change it; Replace Image keeps its size; Delete removes it; Undo brings it back
 - [ ] Select a drawing (card, box, line): Delete makes it disappear; Undo brings it back
+- [ ] Duplicate an image, a drawing, a text box and a floating image with the button and Ctrl/Cmd+D; the copy is selected and Undo removes it
 - [ ] Edit Text: change font, size, bold, italic, underline, colour and alignment; the page shows the change
 - [ ] Edit Text: Chinese / CJK text stays aligned after editing
 - [ ] Add a link to selected text, hover it, edit it, remove it
@@ -125,6 +128,7 @@ with a real PDF, on desktop and on a phone. Tick each item; note the browser.
 | Date | Build | PDF | Result |
 |---|---|---|---|
 | 2026-11-03 | local static export | AI Preschool portfolio, 5 pages (browser-printed) | 30 PASS, 0 WARN, 0 FAIL, 0 console errors |
+| 2026-11-03 | local static export, with Duplicate | same PDF | 32 PASS, 0 WARN, 0 FAIL, 0 console errors |
 
 Found by the sweep on 2026-11-03 and fixed: deleting a drawing in a
 browser-printed PDF failed with "The selected object changed or is ambiguous".
