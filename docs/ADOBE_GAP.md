@@ -2,7 +2,7 @@
 
 Where Paperloom stands against Adobe Acrobat Pro, and what it takes to reach
 Acrobat production level. Status is taken from the code and e2e suite as of
-2026-11-03 (`main` at 463d35a); percentages are judgement, not measurement.
+2026-11-03 (`main` at bc38808); percentages are judgement, not measurement.
 
 Legend: ✅ comparable · 🟡 partial · ❌ missing · ⚙️ engine exists, no UI
 
@@ -155,3 +155,58 @@ workflows and cloud shared review.
 After Phase 1 Paperloom is production-grade for everyday editing. After
 Phase 2 it covers about 85% of what most users do in Acrobat. Phase 3 is
 needed only to compete on Pro-level breadth.
+
+## Options to close each gap
+
+Each gap lists the realistic options; **★** marks the recommendation. Options
+that send documents to a server conflict with the local-only promise and are
+listed only for completeness.
+
+### Phase 1: robustness
+
+| Gap | Options | Recommendation |
+|---|---|---|
+| Real-world PDF corpus | A. Generate PDFs from many producers in CI: Chrome print (Playwright `page.pdf`), LibreOffice headless, pdf-lib, scans. B. Public test corpora (pdf.js, PDFBox, veraPDF), run nightly; licences checked per file. C. Owner's own PDFs locally with `scripts/tool-sweep.mjs`, never committed. | ★ A in CI plus C before each release; add B nightly later |
+| Render correctness | A. Pixel-diff our canvas against `pdftoppm` (already used in e2e) with a tolerance. B. Snapshot our own renders only. | ★ A, because B cannot catch a wrong baseline |
+| Browser coverage | A. Add Playwright WebKit and Firefox projects. B. Paid real-device cloud for iOS Safari. | ★ A now; B only if iOS bugs are reported |
+| Large documents | A. Benchmark script on a generated 500-page / 100 MB PDF with budgets for open, page switch, search and save (extends the existing `docs/PERFORMANCE_*.md`). B. Ad-hoc profiling. | ★ A |
+| `page.tsx` size | A. Extract one feature at a time into hooks (selection, pages, signatures, security), behaviour unchanged, e2e green after each step. B. Rewrite as a state machine. | ★ A; B is too risky |
+| Crash reporting | A. "Copy diagnostic report" button that the user pastes into an issue. B. Opt-in hosted error reporting with PII scrubbing. | ★ A keeps everything local |
+| Manual-only checks | Turn each unticked row of [E2E.md](E2E.md) into a spec, starting with the ✋ rows users touch most (Encrypt PDF, Merge PDF, Replace All) | ★ |
+
+### Phase 2: everyday features
+
+| Gap | Options | Recommendation |
+|---|---|---|
+| Headers, footers, page numbers, Bates | A. Reuse the watermark engine's text placement with tokens such as `{page}`, `{total}`, `{date}` and a Bates prefix. B. Separate engine. | ★ A; small, because placement, fonts and page ranges already exist |
+| Crop pages | A. A crop rectangle tool (reuse the redaction region selector) that writes `/CropBox`, plus a "same for all pages" option. B. Numeric margins only. | ★ A with numeric fields in the panel |
+| Bookmarks | A. Read `/Outlines` into a panel for navigation first, then add, rename, reorder and write them on save. B. Read-only. | ★ A in two steps |
+| Comments | A. Build the UI on the existing annotation engine: sticky notes (`/Text`), underline and strikeout (same path as highlight), and a comment list panel. B. Overlay-only comments that are not saved as annotations. | ★ A, so comments open in Acrobat |
+| Drawing move and resize | A. Reuse the image handles and the path branch of `applyObjectTransform`, located by `sourceInstructionIndex`. B. Delete and redraw. | ★ A |
+| Image crop | A. Wrap the placement in a clip rectangle. B. Re-encode the cropped pixels. | ★ A (lossless, undoable) |
+| Search-and-redact | A. Pattern presets (email, phone, NRIC, card numbers, custom regex) on the existing search index, producing redaction marks to review. B. Auto-apply. | ★ A; the user reviews before applying |
+| Print | A. Open the saved PDF blob in a new tab and let the browser's PDF viewer print it. B. Print rendered canvases through an iframe. | ★ A (vector quality) |
+| Interface languages | A. A small typed dictionary per language with a language switch, starting with Simplified Chinese. B. A full i18n framework. | ★ A; fits the static export |
+| Spell check | A. Turn on the browser's built-in spellcheck in text boxes and line editing (currently `spellCheck={false}` in `EditableLineBox`). B. Bundle a dictionary. | ★ A; check first that it does not disturb the caret overlay |
+
+### Phase 3: Pro features
+
+| Gap | Options | Recommendation |
+|---|---|---|
+| Form authoring | A. Create widget annotations and AcroForm fields, reusing the existing appearance generators in `engine/forms`. B. Auto-detect boxes and lines on flat PDFs (the table detector can help) and propose fields. | ★ A first, then B |
+| Compare two PDFs | A. Text diff from `engine/ai/compare.ts` in a side-by-side panel. B. Visual pixel diff per page. | ★ A, then B as an overlay |
+| PDF/A | A. "Save as PDF/A-2b": embed fonts, add an sRGB OutputIntent and XMP identification; validate with veraPDF in CI only. B. Full PDF/A-1b, which also needs transparency flattening. | ★ A |
+| Accessibility | A. Checker from the structure walker: title, language, tags present, image alt text, reading order. B. Auto-tagging from the flow and layout engine. | ★ A first; B is large |
+| Export to Word / Excel | A. In the browser: build DOCX from the flow layout (text, fonts, images) with an MIT-licensed DOCX writer, and XLSX from detected tables. B. LibreOffice compiled to WebAssembly (very large download, slow). C. Server conversion. | ★ A, labelled "editable approximation"; C conflicts with local-only |
+| OCR to editable text | A. Replace the invisible OCR text layer with real text runs in a matching font over a cleaned background. B. Keep searchable-only. | A is large; keep B until Phase 2 is done |
+| Certificate encryption, stamps, measure | A. UI over the existing `security/public-key` module; a stamp library built on signature appearances; a measure tool with scale calibration. | ★ A, each medium-sized |
+
+### Suggested order
+
+1. **Quick wins (days):** Print, headers / footers / page numbers, search-and-redact
+   presets, spell check, drawing move and resize, diagnostic report button.
+2. **Robustness (weeks, in parallel):** producer corpus and render diff in CI,
+   WebKit and Firefox projects, performance budgets, `page.tsx` extraction.
+3. **User-visible features:** comments, bookmarks, crop pages, Chinese interface.
+4. **Pro features:** form authoring, compare, PDF/A-2b, accessibility checker,
+   Word / Excel export.
