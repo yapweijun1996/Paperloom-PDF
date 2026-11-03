@@ -29,7 +29,7 @@ Choosing a tool reopens the Options panel unless Focus mode is on.
 | Tool | Key | Click or drag on the page | Options panel |
 |---|---|---|---|
 | **Select** | V | Click text to edit it, an image or drawing to select it, a signature to select it, or a form field to fill it | Selection details, Form Fields |
-| **Edit Text** | T or L | Click a text line to edit it in place; Enter commits, Shift+Enter adds a line below, Esc cancels | Text Properties, Form Fields |
+| **Edit Text** | T or L | Click a text line to edit it in place; drag the **Drag** tab to move it; Enter commits, Shift+Enter adds a line below, Esc cancels | Text Properties, Form Fields |
 | **Highlight** | H | Click a text line to highlight it, or drag to draw a freehand highlight | Highlight colour, Thickness |
 | **Draw** | D | Drag to draw: Freehand, Line, Arrow, Rectangle or Ellipse | Shape, Draw colour, Brush Size |
 | **Erase** | E | Drag over drawings and markup to remove them | Eraser Size |
@@ -89,6 +89,10 @@ drawings were detected on the page.
   while editing the line.
 
 ### Text Properties (Edit Text)
+
+Text that the PDF stores as shaped text (`/ActualText`, which browsers use for
+Chinese and other complex scripts when printing) cannot be edited or moved in
+place; the editor shows a message and you can add a text box instead.
 
 - **Font**, **Size** (− / + and presets 8–72), **Style** (Bold, Italic, Underline),
   **Color** (hex value and swatches), **Alignment**, **Opacity**.

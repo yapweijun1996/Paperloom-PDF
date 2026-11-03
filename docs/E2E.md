@@ -40,6 +40,7 @@ layout. Screenshots and the downloaded PDF land in `test-results/tool-sweep/`.
 | Select | Duplicate a drawing (button, Ctrl/Cmd+D) and an image, undo | ✅ `drawing-delete` 🔁 |
 | Edit Text | Duplicate text box | ✅ `drawing-delete` |
 | Edit Text | Edit a line, Enter to commit, undo / redo | ✅ `mobile-line-edit` 🔁 |
+| Edit Text | Drag a line in a browser-printed PDF (one glyph per Tj, kerned runs, list markers in their own block) | ✅ `text-drag-printed` |
 | Edit Text | Add Text Box | ✅ `secure-redaction` 🔁 |
 | Edit Text | Font, Size, Bold / Italic / Underline, Color, Alignment | ✋ |
 | Edit Text | Scan for links | ✅ `mobile-line-edit` |
@@ -129,6 +130,12 @@ with a real PDF, on desktop and on a phone. Tick each item; note the browser.
 |---|---|---|---|
 | 2026-11-03 | local static export | AI Preschool portfolio, 5 pages (browser-printed) | 30 PASS, 0 WARN, 0 FAIL, 0 console errors |
 | 2026-11-03 | local static export, with Duplicate | same PDF | 32 PASS, 0 WARN, 0 FAIL, 0 console errors |
+
+Found by a human-style drag harness on 2026-11-03 (every line of Chrome-printed
+dummy PDFs with lists, mixed styles, a table and CJK, dragged into empty space
+and checked with `pdftotext`) and fixed: dragging a line moved only its first
+character or its list number. Text that the PDF marks as shaped (`/ActualText`,
+used by Chrome for CJK) cannot be edited or dragged in place; the editor says so.
 
 Found by the sweep on 2026-11-03 and fixed: deleting a drawing in a
 browser-printed PDF failed with "The selected object changed or is ambiguous".

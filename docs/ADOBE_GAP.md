@@ -21,7 +21,7 @@ Legend: ✅ comparable · 🟡 partial · ❌ missing · ⚙️ engine exists, n
 
 | Acrobat Pro | Paperloom | Notes |
 |---|---|---|
-| Edit text in place | ✅ | Line editing with font, size, style, colour, alignment; CJK fixes |
+| Edit text in place | ✅ | Line editing with font, size, style, colour, alignment; CJK fixes. Shaped `/ActualText` text (browser-printed CJK) is not editable yet |
 | Paragraph reflow across lines | 🟡 | Flow engine exists; editing is line-by-line |
 | Add / replace / move / resize images | ✅ | |
 | Crop, flip, rotate an image | ❌ | |
