@@ -1,12 +1,12 @@
 import type { DisplayItem, ImageItem, PathItem } from '@/engine/browser-core';
 import { sameImagePlacement } from './imageSelection';
 
-/** Reidentify a selected object after queued edits without guessing between duplicates. */
-export function resolveSelectedObject(
+/** Every object that looks identical to the selection (position, geometry and paint). */
+export function matchingObjects(
   items: readonly DisplayItem[],
   selected: ImageItem | PathItem,
-): ImageItem | PathItem | null {
-  const matches = items.filter((item): item is ImageItem | PathItem => {
+): Array<ImageItem | PathItem> {
+  return items.filter((item): item is ImageItem | PathItem => {
     if (selected.type === 'image') {
       return item.type === 'image' && sameImagePlacement(item, selected);
     }
@@ -20,5 +20,20 @@ export function resolveSelectedObject(
       JSON.stringify(item.fillColor) === JSON.stringify(selected.fillColor) &&
       JSON.stringify(item.strokeColor) === JSON.stringify(selected.strokeColor);
   });
-  return matches.length === 1 ? matches[0] : null;
+}
+
+/**
+ * Reidentify a selected object after queued edits without guessing between duplicates.
+ * Identical stacked drawings are told apart by their content-stream position.
+ */
+export function resolveSelectedObject(
+  items: readonly DisplayItem[],
+  selected: ImageItem | PathItem,
+): ImageItem | PathItem | null {
+  const matches = matchingObjects(items, selected);
+  if (matches.length === 1) return matches[0];
+  if (selected.type !== 'path' || selected.sourceInstructionIndex == null) return null;
+  const exact = matches.filter(item =>
+    item.type === 'path' && item.sourceInstructionIndex === selected.sourceInstructionIndex);
+  return exact.length === 1 ? exact[0] : null;
 }

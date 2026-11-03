@@ -37,6 +37,15 @@ describe('selection: page background filter', () => {
     expect(isSelectableDisplayItem(bg, page)).toBe(false);
   });
 
+  it('rejects a full-width fill panel covering most of the page', () => {
+    const panel = path({ x: 0, y: 120, width: 612, height: 600, paintType: 'fill' });
+    expect(isPageBackgroundPath(panel, page)).toBe(true);
+    const banner = path({ x: 0, y: 600, width: 612, height: 120, paintType: 'fill' });
+    expect(isPageBackgroundPath(banner, page)).toBe(false);
+    const card = path({ x: 50, y: 120, width: 500, height: 600, paintType: 'fill' });
+    expect(isPageBackgroundPath(card, page)).toBe(false);
+  });
+
   it('keeps normal-sized drawings', () => {
     const sig = path({ x: 100, y: 100, width: 120, height: 40, paintType: 'stroke' });
     expect(isPageBackgroundPath(sig, page)).toBe(false);

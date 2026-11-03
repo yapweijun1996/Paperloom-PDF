@@ -8,7 +8,7 @@ import { getPageContentBytes, parsePDF } from '@/engine/parser/parser';
 import { SessionDocumentEditor } from '@/engine/session/document-edit';
 import { SessionEditorHistory } from '@/engine/session/editor-history';
 import { rawPDF } from '@/engine/__tests__/audit-p1-fixtures';
-import { resolveSelectedObject } from './selectedObject';
+import { matchingObjects, resolveSelectedObject } from './selectedObject';
 import { findImagePlacement } from './imageSelection';
 
 async function documentWithObjects() {
@@ -151,4 +151,34 @@ describe('queued object selection', () => {
     await move('undo'); expect(positions()).toEqual([[10, 20, 40, 40], [100, 20, 40, 40]]);
     await move('redo'); expect(positions()).toEqual([[10, 20, 40, 40], [110, 30, 60, 70]]);
   });
+
+  it('deletes identical stacked drawings under a scaling transform and keeps later colours', async () => {
+    // Browser-printed layout: re operands are in scaled user space (0.75 per unit).
+    const content = 'q 0.75 0 0 0.75 0 0 cm 0.9 0.8 0.7 rg 0 40 320 200 re f 0 40 320 200 re f 0 40 320 200 re f 10 10 20 20 re f Q';
+    const doc = await parsePDF(rawPDF([
+      '<< /Type /Catalog /Pages 2 0 R >>',
+      '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+      '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 240 240] /Contents 4 0 R >>',
+      `<< /Length ${content.length} >>\nstream\n${content}\nendstream`,
+    ]));
+    const page = doc.pages[0];
+    const display = () => interpretPage(getPageContentBytes(page, doc.objects), page, doc.objects).displayList;
+    const paths = display().filter((item): item is PathItem => item.type === 'path');
+    expect(paths).toHaveLength(4);
+    const selected = paths[1];
+    expect(selected.width).toBeCloseTo(240);
+    expect(resolveSelectedObject(display(), selected)).toEqual(selected);
+
+    const copies = matchingObjects(display(), selected) as PathItem[];
+    expect(copies).toHaveLength(3);
+    copies.sort((a, b) => (b.sourceInstructionIndex ?? 0) - (a.sourceInstructionIndex ?? 0));
+    for (const copy of copies) {
+      await deleteObject(doc, 0, { id: 'panel', kind: 'path', bbox: copy, ctm: [1, 0, 0, 1, 0, 0], source: copy });
+    }
+    const remaining = display().filter((item): item is PathItem => item.type === 'path');
+    expect(matchingObjects(remaining, selected)).toHaveLength(0);
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0].fillColor).toEqual([0.9, 0.8, 0.7]);
+  });
 });
+

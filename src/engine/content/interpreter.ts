@@ -245,6 +245,8 @@ export interface PathItem {
   blendMode: string;
   softMask: PDFDict | null;
   clipPaths: ClipPathNode[];
+  /** Index of the painting operator in the content stream (for precise delete). */
+  sourceInstructionIndex?: number;
 }
 
 export interface ImageItem {
@@ -563,7 +565,9 @@ export function interpretPage(
     return obj instanceof PDFName ? obj.name : '';
   }
 
+  let instructionIndex = -1;
   for (let i = 0; i < instructions.length; i++) {
+    instructionIndex = i;
     const inst = instructions[i];
     const ops = inst.operands;
     const hidden = contentVisibility.length > 0 && !contentVisibility[contentVisibility.length - 1];
@@ -1184,6 +1188,7 @@ export function interpretPage(
         blendMode: gs.blendMode,
         softMask: gs.softMask,
         clipPaths: [...gs.clipPaths],
+        sourceInstructionIndex: instructionIndex,
         ...bounds,
       });
     }

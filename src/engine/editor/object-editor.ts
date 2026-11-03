@@ -15,7 +15,7 @@ import { compileInstructions } from './text-editor';
 import { updatePageContent } from './stream-compiler';
 import { IDENTITY, mulMatrix, invertMatrix, ctmAtEnd } from './matrix';
 import type { EditableObject } from '../editing/scene-graph';
-import type { ImageItem } from '../content/interpreter';
+import type { ImageItem, PathItem } from '../content/interpreter';
 
 function op(operator: string, operands: PDFObject[] = []): CSInstruction {
   return { operator, operands, offset: 0 };
@@ -236,9 +236,11 @@ export async function deleteObject(
     }
     // else: just the Do at targetIndex
   } else if (obj.kind === 'path') {
+    // Only peel path construction: colour and line state set before the path
+    // may still be used by later paths.
     while (start > 0) {
       const prev = instructions[start - 1].operator;
-      if (['m', 'l', 'c', 'v', 'y', 'h', 're', 'w', 'J', 'j', 'RG', 'rg', 'G', 'g', 'K', 'k'].includes(prev)) {
+      if (['m', 'l', 'c', 'v', 'y', 'h', 're'].includes(prev)) {
         start--;
       } else break;
     }
@@ -326,6 +328,14 @@ export function findObjectInstructionIndex(
 
   if (obj.kind === 'path') {
     const paintOps = new Set(['S', 's', 'f', 'F', 'f*', 'B', 'B*', 'b', 'b*', 'n']);
+    // Prefer the exact painting instruction captured during interpretation:
+    // re operands are in user space, which differs from the page-space bbox
+    // under a scaling cm (common in browser-printed PDFs).
+    const sourceIdx = (obj.source as PathItem | undefined)?.sourceInstructionIndex;
+    if (sourceIdx != null && sourceIdx >= 0 && sourceIdx < instructions.length &&
+        paintOps.has(instructions[sourceIdx].operator)) {
+      return sourceIdx;
+    }
     let bestIdx = -1;
     let bestScore = Infinity;
     for (let i = 0; i < instructions.length; i++) {

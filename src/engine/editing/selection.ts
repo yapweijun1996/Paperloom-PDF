@@ -16,6 +16,13 @@ export function isPageBackgroundPath(
 
   const pageArea = Math.max(1, pageBounds.width * pageBounds.height);
   const pathArea = Math.max(0, path.width) * Math.max(0, path.height);
+  // A plain fill-only band spanning the page width and most of its height is a
+  // background panel (browser-printed section backgrounds); it would otherwise
+  // be selected by every click on empty page space.
+  if (path.paintType === 'fill' && path.width >= pageBounds.width * 0.95 &&
+      path.height >= pageBounds.height * 0.5) {
+    return true;
+  }
   if (pathArea / pageArea < 0.9) return false;
 
   // Near-full coverage of the media box (allows slight inset margins)

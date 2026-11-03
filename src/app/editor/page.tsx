@@ -101,7 +101,7 @@ import { floatingTextPdfDelta, shouldStartFloatingTextDrag } from './components/
 import { initialFloatingTextSelection } from './components/floatingTextSelection';
 import { resizeBox } from './components/resizeGeometry';
 import { findImagePlacement, sameImagePlacement } from './components/imageSelection';
-import { resolveSelectedObject } from './components/selectedObject';
+import { matchingObjects, resolveSelectedObject } from './components/selectedObject';
 import type { ImageBox } from './components/imageBoxEdit';
 import { DocumentSearchIndex, SearchChangedError, SearchPageError, assertCurrentReplaceSupported, replaceSearchMatches, searchLatestDocument, type SearchMatch } from './search-index';
 import { searchHighlightBounds } from './search-highlight';
@@ -5716,20 +5716,29 @@ export default function EditorPage() {
           const display = engine.interpretPage(content, stagedPage, staged.objects, new engine.OptionalContentVisibility(staged.catalog, staged.objects)).displayList;
           const target = resolveSelectedObject(display, item);
           if (!target) throw new Error('The selected object changed or is ambiguous. Select it again.');
-          const editable: EditableObject = {
-            id: `sel-${target.type}`,
-            kind: target.type,
-            bbox: { x: target.x, y: target.y, width: target.width, height: target.height },
-            ctm: target.type === 'image'
-              ? [target.ctm.a, target.ctm.b, target.ctm.c, target.ctm.d, target.ctm.e, target.ctm.f]
+          const editableFor = (source: ImageItem | PathItem): EditableObject => ({
+            id: `sel-${source.type}`,
+            kind: source.type,
+            bbox: { x: source.x, y: source.y, width: source.width, height: source.height },
+            ctm: source.type === 'image'
+              ? [source.ctm.a, source.ctm.b, source.ctm.c, source.ctm.d, source.ctm.e, source.ctm.f]
               : [1, 0, 0, 1, 0, 0],
-            source: target,
-          };
-          await deleteObject(staged, currentPage, editable);
-          if (target.type === 'path') {
+            source,
+          });
+          if (target.type === 'image') {
+            await deleteObject(staged, currentPage, editableFor(target));
+          } else {
+            // Browser-printed PDFs often paint the same shape several times on top of
+            // itself; removing one copy would change nothing visible. Delete from the
+            // end of the stream so earlier instruction indexes stay valid.
+            const copies = matchingObjects(display, target)
+              .sort((a, b) => ((b as PathItem).sourceInstructionIndex ?? 0) - ((a as PathItem).sourceInstructionIndex ?? 0));
+            for (const copy of copies) await deleteObject(staged, currentPage, editableFor(copy));
             const updated = engine.getPageContentBytes(stagedPage, staged.objects);
             const remaining = engine.interpretPage(updated, stagedPage, staged.objects, new engine.OptionalContentVisibility(staged.catalog, staged.objects)).displayList;
-            if (resolveSelectedObject(remaining, target)) {
+            // Rewriting the stream rounds coordinates, so compare path counts rather than geometry.
+            const pathCount = (items: readonly DisplayItem[]) => items.filter(entry => entry.type === 'path').length;
+            if (pathCount(remaining) !== pathCount(display) - copies.length) {
               throw new Error('The selected drawing could not be safely removed.');
             }
           }
