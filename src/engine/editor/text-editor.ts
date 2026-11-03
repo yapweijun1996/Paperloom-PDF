@@ -376,11 +376,26 @@ export function applyRunPositionShifts(
 
   type ShiftItem = { textIndex: number; dx: number; dy: number; run: TextRun };
   const items: ShiftItem[] = [];
+  // Index of the BT that opens the text block holding `index` (-1 if none).
+  const btOf = (index: number): number => {
+    for (let i = index; i >= 0; i--) {
+      if (instructions[i].operator === 'ET' && i !== index) return -1;
+      if (instructions[i].operator === 'BT') return i;
+    }
+    return -1;
+  };
   merged.forEach((delta, run) => {
     const indices = run.sourceInstructionIndices;
     if (!indices || indices.length === 0) return;
     if (Math.abs(delta.dx) < 0.01 && Math.abs(delta.dy) < 0.01) return;
-    items.push({ textIndex: Math.min(...indices), dx: delta.dx, dy: delta.dy, run });
+    // A run can continue across text blocks (browsers emit list markers in their
+    // own BT); each block has its own Tm, so shift each block separately.
+    const firstByBt = new Map<number, number>();
+    for (const index of indices) {
+      const bt = btOf(index);
+      firstByBt.set(bt, Math.min(firstByBt.get(bt) ?? index, index));
+    }
+    firstByBt.forEach(textIndex => items.push({ textIndex, dx: delta.dx, dy: delta.dy, run }));
   });
   items.sort((a, b) => a.textIndex - b.textIndex);
 
@@ -398,6 +413,23 @@ export function applyRunPositionShifts(
     if (!seen.has(run)) { seen.add(run); trackedRuns.push(run); }
   }
 
+  // One local Td advances the text matrix for later showing ops in the same BT.
+  const localTdByBt = new Map<number, { dx: number; dy: number }>();
+  // Last shifted show-op index per BT (kept in sync with inserts below).
+  const lastShiftedShow = new Map<number, number>();
+  // A run may span many show ops (one Tj per glyph); the chain is cancelled after its last one.
+  const markShifted = (bt: number, run: TextRun) => {
+    const inBlock = (run.sourceInstructionIndices ?? []).filter(index => btOf(index) === bt);
+    if (inBlock.length === 0) return;
+    lastShiftedShow.set(bt, Math.max(lastShiftedShow.get(bt) ?? -1, ...inBlock));
+  };
+  // A run already carried by an earlier shift in its BT still extends the moved
+  // span, or the cancelling Td would land between it and the earlier run.
+  const markCarried = (item: { textIndex: number; run: TextRun }) => {
+    const bt = findBtIndex(item.textIndex);
+    if (bt >= 0 && localTdByBt.has(bt)) markShifted(bt, item.run);
+  };
+
   const bumpIndicesFrom = (at: number, by: number) => {
     for (let r = 0; r < trackedRuns.length; r++) {
       const idxs = trackedRuns[r].sourceInstructionIndices;
@@ -409,6 +441,7 @@ export function applyRunPositionShifts(
     for (let j = 0; j < items.length; j++) {
       if (items[j].textIndex >= at) items[j].textIndex += by;
     }
+    lastShiftedShow.forEach((v, bt) => { if (v >= at) lastShiftedShow.set(bt, v + by); });
     // Position-op map keys shift when we insert before them
     const nextMap = new Map<number, { dx: number; dy: number }>();
     appliedToOp.forEach((v, key) => {
@@ -476,10 +509,6 @@ export function applyRunPositionShifts(
     bumpIndicesFrom(textIndex, 1);
   };
 
-  // One local Td advances the text matrix for later showing ops in the same BT.
-  const localTdByBt = new Map<number, { dx: number; dy: number }>();
-  // Last shifted show-op index per BT (kept in sync with inserts below).
-  const lastShiftedShow = new Map<number, number>();
   // Pen-only shifts (number-only TJ) per BT. They survive later show ops but a
   // Td/TD/Tm/T* restarts the pen at the line matrix and drops them.
   const penShiftByBt = new Map<number, { dx: number; at: number }>();
@@ -602,6 +631,7 @@ export function applyRunPositionShifts(
     const remainDx = item.dx - already.dx;
     const remainDy = item.dy - already.dy;
     if (Math.abs(remainDx) < 0.01 && Math.abs(remainDy) < 0.01) {
+      markCarried(item);
       continue;
     }
 
@@ -611,6 +641,7 @@ export function applyRunPositionShifts(
       const needDx = item.dx - prevLocal.dx;
       const needDy = item.dy - prevLocal.dy;
       if (Math.abs(needDx) < 0.01 && Math.abs(needDy) < 0.01) {
+        markCarried(item);
         continue;
       }
       injectLocalTd(item.textIndex, needDx, needDy);
@@ -634,7 +665,8 @@ export function applyRunPositionShifts(
         const bt = findBtIndex(item.textIndex);
         if (bt >= 0) {
           localTdByBt.set(bt, { dx: item.dx, dy: item.dy });
-          lastShiftedShow.set(bt, item.textIndex);
+          lastShiftedShow.delete(bt);
+          markShifted(bt, item.run);
         }
       }
     } else if (pos.kind === 'Td' || inst.operator === 'Td' || inst.operator === 'TD') {
@@ -646,6 +678,7 @@ export function applyRunPositionShifts(
       const needDx = item.dx - prevLocal.dx;
       const needDy = item.dy - prevLocal.dy;
       if (Math.abs(needDx) < 0.01 && Math.abs(needDy) < 0.01) {
+        markCarried(item);
         continue;
       }
       if (inst.operands.length >= 2) {
@@ -655,7 +688,7 @@ export function applyRunPositionShifts(
       }
       if (bt >= 0) {
         localTdByBt.set(bt, { dx: prevLocal.dx + needDx, dy: prevLocal.dy + needDy });
-        lastShiftedShow.set(bt, item.textIndex);
+        markShifted(bt, item.run);
       }
       appliedToOp.set(pos.index, {
         dx: already.dx + needDx,

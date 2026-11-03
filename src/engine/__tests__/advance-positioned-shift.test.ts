@@ -119,4 +119,57 @@ describe('shifting advance-positioned runs', () => {
     expect(after.get('CD')).toBeCloseTo(before.get('CD')! + 15, 3);
     expect(after.get('EF')).toBeCloseTo(before.get('EF')!, 3);
   });
+
+  it('moves every glyph of a run drawn one Tj per glyph and keeps the next line in place', () => {
+    // Browser-printed PDFs draw each glyph with its own Tj and step with relative Td.
+    const { page, objects, bytes } = makePage(
+      'BT\n/F1 12 Tf\n1 0 0 1 50 700 Tm\n(A) Tj\n8.004 0 Td\n(B) Tj\n8.004 0 Td\n(C) Tj\n-16.008 -20 Td\n(DEF) Tj\nET\n',
+    );
+    const runs = interpretPage(bytes, page, objects).textRuns;
+    const line = runs.find(run => run.text === 'ABC')!;
+    expect(line.sourceInstructionIndices!.length).toBeGreaterThan(1);
+    const glyphY = (content: Uint8Array) => interpretPage(content, page, objects).textRuns
+      .flatMap(run => run.glyphs.map(glyph => [glyph.unicode, glyph.tRm.f] as const));
+
+    const shifted = applyRunPositionShifts(bytes, [{ run: line, dx: 0, dy: -30 }]);
+    const before = new Map(glyphY(bytes));
+    const after = new Map(glyphY(shifted));
+    for (const ch of 'ABC') expect(after.get(ch)).toBeCloseTo(before.get(ch)! - 30, 3);
+    for (const ch of 'DEF') expect(after.get(ch)).toBeCloseTo(before.get(ch)!, 3);
+  });
+
+  it('moves a list number and its text together when both runs are shifted', () => {
+    const { page, objects, bytes } = makePage(
+      'BT\n/F1 12 Tf\n1 0 0 1 50 700 Tm\n(1.) Tj\n30 0 Td\n(Item) Tj\n-30 -20 Td\n(Next) Tj\nET\n',
+    );
+    const runs = interpretPage(bytes, page, objects).textRuns;
+    const number = runs.find(run => run.text === '1.')!;
+    const item = runs.find(run => run.text === 'Item')!;
+    const startY = (content: Uint8Array) => new Map(interpretPage(content, page, objects).textRuns
+      .map(run => [run.text, run.glyphs[0].tRm.f] as const));
+
+    const before = startY(bytes);
+    const after = startY(applyRunPositionShifts(bytes, [number, item].map(run => ({ run, dx: 0, dy: -40 }))));
+    expect(after.get('1.')).toBeCloseTo(before.get('1.')! - 40, 3);
+    expect(after.get('Item')).toBeCloseTo(before.get('Item')! - 40, 3);
+    expect(after.get('Next')).toBeCloseTo(before.get('Next')!, 3);
+  });
+
+  it('moves a run that continues into a second text block', () => {
+    // Browsers print a list marker in its own BT and the item text in the next.
+    const { page, objects, bytes } = makePage(
+      'BT\n/F1 12 Tf\n1 0 0 1 50 700 Tm\n(1.) Tj\nET\nBT\n/F1 12 Tf\n1 0 0 1 60.008 700 Tm\n(ABC) Tj\nET\nBT\n/F1 12 Tf\n1 0 0 1 50 680 Tm\n(XYZ) Tj\nET\n',
+    );
+    const runs = interpretPage(bytes, page, objects).textRuns;
+    const line = runs.filter(run => run.y > 690);
+    expect(line.map(run => run.text)).toEqual(['1.ABC']);
+    const glyphY = (content: Uint8Array) => new Map(interpretPage(content, page, objects).textRuns
+      .flatMap(run => run.glyphs.map(glyph => [glyph.unicode, glyph.tRm.f] as const)));
+
+    const before = glyphY(bytes);
+    const after = glyphY(applyRunPositionShifts(bytes, line.map(run => ({ run, dx: 0, dy: -40 }))));
+    for (const ch of '1.ABC') expect(after.get(ch)).toBeCloseTo(before.get(ch)! - 40, 3);
+    for (const ch of 'XYZ') expect(after.get(ch)).toBeCloseTo(before.get(ch)!, 3);
+  });
 });
+
