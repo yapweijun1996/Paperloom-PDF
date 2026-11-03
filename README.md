@@ -121,7 +121,7 @@ CI also requires `openssl`, `qpdf`, and `pdfsig` for interoperability tests;
 
 See [GitHub Pages notes](docs/DEPLOY_PAGES.md) for static hosting and deployment status.
 
-Every editor tool is described in [docs/TOOLS.md](docs/TOOLS.md); the test checklist and coverage map are in [docs/E2E.md](docs/E2E.md).
+Every editor tool is described in [docs/TOOLS.md](docs/TOOLS.md); the test checklist and coverage map are in [docs/E2E.md](docs/E2E.md); the gap analysis against Adobe Acrobat Pro is in [docs/ADOBE_GAP.md](docs/ADOBE_GAP.md).
 
 ## 📁 Project Structure
 
