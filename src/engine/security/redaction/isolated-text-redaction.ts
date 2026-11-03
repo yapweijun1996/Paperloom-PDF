@@ -189,7 +189,7 @@ function join(values: Uint8Array[]): Uint8Array {
 
 /** Search both the writer's numeric spelling and its equivalent decimal form.
  * JavaScript may serialize very small or large finite numbers with an exponent. */
-function numericSpellings(value: PDFNumber): string[] {
+export function numericSpellings(value: PDFNumber): string[] {
   if (!Number.isFinite(value.value)) refuse('a retained number cannot be inspected');
   const serialized = serializeToString(value);
   const canonical = value.toString();

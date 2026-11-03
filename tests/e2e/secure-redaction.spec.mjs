@@ -88,8 +88,20 @@ test('maps a zoomed rotated CropBox selection to the displayed text', async ({ p
   expect(text).not.toContain('SECRET'); expect(text).toContain('VISIBLE');
 });
 
-test('rejects unsupported partial selections and retains the original content', async ({ page }) => {
+test('a partial selection removes only the glyphs it covers', async ({ page }) => {
   await openPdf(page, await fixture());
+  // Courier 10pt: S, E and C (x 80 to 98) touch the selection; R, E and T stay in place.
+  await dragRegion(page, [80 / 500, 395 / 500], [95 / 500, 405 / 500]);
+  await page.getByRole('button', { name: 'Apply selected region' }).click();
+  await expect(page.getByText(/Redacted 1 page\(s\)/)).toBeVisible();
+  const text = extracted(await download(page));
+  expect(text).not.toContain('SEC');
+  expect(text).toContain('RET');
+  expect(text).toContain('VISIBLE');
+});
+
+test('rejects a selection on a signed PDF and retains the original content', async ({ page }) => {
+  await openPdf(page, await fixture({ signed: true }));
   await dragRegion(page, [80 / 500, 395 / 500], [95 / 500, 405 / 500]);
   await page.getByRole('button', { name: 'Apply selected region' }).click();
   await expect(page.getByText(/unavailable|unsupported/i).last()).toBeVisible();
@@ -226,7 +238,8 @@ test.describe('mobile redaction', () => {
   });
 
   test('keeps an unsupported touch selection visible until canceled', async ({ page }) => {
-    await openPdf(page, await fixture());
+    // Signed files are refused, so the selection must stay until it is canceled.
+    await openPdf(page, await fixture({ signed: true }));
     await page.getByRole('button', { name: 'Select redaction region' }).click();
     const surface = page.locator('[data-redaction-surface="true"]');
     await surface.scrollIntoViewIfNeeded();

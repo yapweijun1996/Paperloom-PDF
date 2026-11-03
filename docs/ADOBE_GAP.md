@@ -91,7 +91,7 @@ Legend: ✅ comparable · 🟡 partial · ❌ missing · ⚙️ engine exists, n
 | Password encryption and permissions | ✅ | AES-256, AES-128, RC4 |
 | Certificate (public-key) encryption | ⚙️ | Engine module; no UI |
 | Redact region, page, marks | ✅ | Removes content from the file |
-| Search-and-redact by pattern (phone, email) | ❌ | Blocked: secure redaction only removes whole text objects, so a match inside a sentence is refused |
+| Search-and-redact by pattern (phone, email) | ✅ | Email, phone, NRIC/FIN, card (Luhn) and custom regex presets mark matches for review (2026-11-03). Glyph-level removal works on browser and Word-style PDFs; see refusals in [TOOLS.md](TOOLS.md) |
 | Sanitize, remove JavaScript / attachments / metadata | ✅ | |
 
 ### Accessibility and productivity
@@ -184,7 +184,7 @@ listed only for completeness.
 | Comments | A. Build the UI on the existing annotation engine: sticky notes (`/Text`), underline and strikeout (same path as highlight), and a comment list panel. B. Overlay-only comments that are not saved as annotations. | ★ A, so comments open in Acrobat |
 | Drawing move and resize | A. Reuse the image handles and the path branch of `applyObjectTransform`, located by `sourceInstructionIndex`. B. Delete and redraw. | ★ A |
 | Image crop | A. Wrap the placement in a clip rectangle. B. Re-encode the cropped pixels. | ★ A (lossless, undoable) |
-| Search-and-redact | A. Pattern presets (email, phone, NRIC, card numbers, custom regex) on the existing search index, producing redaction marks to review. B. Auto-apply. | ★ A; the user reviews before applying. **Blocked first by glyph-level secure redaction:** `isolated-text-redaction` refuses a mark that covers part of a text object, and accepts only standard fonts, ASCII and identity text matrices, so most real matches cannot be applied. Build partial-run removal (split the show operator, drop the covered glyphs, keep the advance) before the presets |
+| Search-and-redact | A. Pattern presets (email, phone, NRIC, card numbers, custom regex) on the existing search index, producing redaction marks to review. B. Auto-apply. | ★ A — **done 2026-11-03** with a new glyph-level strategy (`glyph-redaction.ts`). Still refused: text under ActualText (Chrome CJK), Type3 and vertical fonts, images or Form XObjects under a mark, signed or form PDFs. Next: redact image pixels, rewrite ActualText, support AcroForm files |
 | Print | A. Open the saved PDF blob in a new tab and let the browser's PDF viewer print it. B. Print rendered canvases through an iframe. | ★ A (vector quality) |
 | Interface languages | A. A small typed dictionary per language with a language switch, starting with Simplified Chinese. B. A full i18n framework. | ★ A; fits the static export |
 | Spell check | A. Turn on the browser's built-in spellcheck in text boxes and line editing (currently `spellCheck={false}` in `EditableLineBox`). B. Bundle a dictionary. | ★ A; check first that it does not disturb the caret overlay |
@@ -203,9 +203,9 @@ listed only for completeness.
 
 ### Suggested order
 
-1. **Quick wins (days):** ~~Print~~, ~~headers / footers / page numbers~~, ~~spell check
-   in text boxes~~, ~~drawing move and resize~~, ~~diagnostic report button~~ (done
-   2026-11-03). Search-and-redact presets moved behind glyph-level secure redaction (M).
+1. **Quick wins (days):** all done 2026-11-03: print, headers / footers / page
+   numbers, spell check in text boxes, drawing move and resize, diagnostic report
+   button, and search-and-redact presets on a new glyph-level secure redaction.
 2. **Robustness (weeks, in parallel):** producer corpus and render diff in CI,
    WebKit and Firefox projects, performance budgets, `page.tsx` extraction.
 3. **User-visible features:** comments, bookmarks, crop pages, Chinese interface.

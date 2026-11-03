@@ -59,6 +59,7 @@ layout. Screenshots and the downloaded PDF land in `test-results/tool-sweep/`.
 | Sign | Certificates, Digitally sign document | ✅ `push-button-field`, `static-export`, `signature-widget-appearance` |
 | Sign | Draw / Upload tabs, Validate, LTV, TSA, Import PEM | ✋ |
 | Security | Region, page and mark redaction | ✅ `secure-redaction`, `redaction-recovery` |
+| Security | Find and mark (email, phone) in a Chrome-printed PDF, apply, check the saved file with `pdftotext` and `qpdf` | ✅ `redaction-presets` |
 | Security | Sanitize document | ✅ `security-clean` |
 | Security | Open Inspect / Protect / Clean / Policy, Rescan | 🔁 |
 | Security | Encrypt PDF, Remove encryption, Apply policy, other Clean buttons | ✋ |

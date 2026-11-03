@@ -107,7 +107,9 @@ import { resizeBox } from './components/resizeGeometry';
 import { findImagePlacement, sameImagePlacement } from './components/imageSelection';
 import { drawingBoxMatrix, drawingBoxResult, findOffsetCopy, matchingObjects, resolveSelectedObject, sameBox } from './components/selectedObject';
 import type { ImageBox } from './components/imageBoxEdit';
-import { DocumentSearchIndex, SearchChangedError, SearchPageError, assertCurrentReplaceSupported, replaceSearchMatches, searchLatestDocument, type SearchMatch } from './search-index';
+import { DocumentSearchIndex, SearchChangedError, SearchPageError, assertCurrentReplaceSupported, replaceSearchMatches, searchDocument, searchLatestDocument, type SearchMatch } from './search-index';
+import type { RedactionPreset } from './redaction-patterns';
+import { redactionMarkRects } from './redaction-marks';
 import { searchHighlightBounds } from './search-highlight';
 import { redactionRegionFromDrag } from './redaction-selection';
 import { hasDocumentSignature } from '@/engine/writer/save-pipeline';
@@ -6025,6 +6027,53 @@ export default function EditorPage() {
   }, [doc, currentPage, scale, renderKey, redactionRegion, isSaving, cryptoSignBusy, searchBusy, queueNativeEdit, pushEditorHistory, setThumbnailKey, setIsDirty, isMobile]);
 
 
+  // Search the whole document for a preset and place a redaction mark on each
+  // reliable match, as one undoable edit. Applying the marks is a separate step.
+  const markPatternRedactions = useCallback(async (preset: RedactionPreset): Promise<string> => {
+    const engine = engineRef.current;
+    if (!doc || !engine) throw new Error('Open a document first.');
+    if (isSaving || cryptoSignBusy || searchBusy || historyBusyRef.current || closeOperationRef.current || downloadOperationRef.current) {
+      throw new Error('Wait for the current operation to finish before marking.');
+    }
+    const lease = documentOwnerRef.current.lease(doc);
+    const matches = await searchDocument(doc, preset.pattern, false, `${editRevisionRef.current}:${renderKey}`,
+      new DocumentSearchIndex(), engine, lease.isCurrent);
+    if (!matches || !lease.isCurrent()) throw new Error('The document changed during the search. Try again.');
+    const found = matches.filter(match => !preset.accept || preset.accept(match.matchedText));
+    // A clip only hides the on-screen highlight; the glyph geometry is still exact.
+    const usable = found.filter(match => match.source !== 'form' && (match.highlightVisible !== false || match.highlightClipped) && match.pdfWidth > 0);
+    const skipped = found.length - usable.length;
+    if (!usable.length) {
+      return skipped ? `Found ${skipped} match(es), but none can be marked (form fields or rotated text). Use Select redaction region.` : 'No matches found.';
+    }
+    const pages = new Set(usable.map(match => match.pageIndex));
+    await queueNativeEdit(doc, async isCurrent => {
+      const editor = new SessionDocumentEditor();
+      await editor.edit(doc, 'mark-redactions', async staged => {
+        for (const match of usable) {
+          const pageIndex = staged.pages.findIndex(page => page.ref.toKey() === match.pageKey);
+          if (pageIndex < 0) throw new Error('A matched page is no longer available.');
+          const rects = match.highlightRects ?? [{ x: match.pdfX, y: match.pdfY, width: match.pdfWidth, height: match.pdfHeight }];
+          // From just below the baseline to x-height and above: covers the line's glyphs
+          // but stays clear of the lines above and below at 1.15 line spacing.
+          for (const rect of rects) {
+            engine.securityEngine.redaction.markRegion(staged, pageIndex, {
+              x: rect.x + 0.05, y: rect.y - rect.height * 0.1, width: Math.max(rect.width - 0.1, 0.5), height: rect.height * 0.9,
+            });
+          }
+        }
+      }, { isCurrent });
+      if (!isCurrent()) throw new Error('The document changed while marking.');
+      pushEditorHistory('mark-redactions', undefined, currentPage, false, editor);
+      setRenderKey(value => value + 1);
+      setThumbnailKey(value => value + 1);
+      setIsDirty(true);
+    });
+    return `Marked ${usable.length} match(es) on ${pages.size} page(s)` +
+      (skipped ? `; ${skipped} could not be marked (form fields or rotated text)` : '') +
+      '. Review the marks, then use Apply existing redaction marks. Undo removes the marks.';
+  }, [doc, renderKey, currentPage, isSaving, cryptoSignBusy, searchBusy, queueNativeEdit, pushEditorHistory, setThumbnailKey, setIsDirty]);
+
   // ── Keyboard shortcuts (global — NOT during editing) ──
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -6405,6 +6454,7 @@ export default function EditorPage() {
               markDirty={() => setIsDirty(true)}
               onBusyChange={(busy) => { securityBusyRef.current = busy; setSecurityBusy(busy); }}
               onRedact={applyRedaction}
+              onMarkPattern={markPatternRedactions}
               documentRevision={renderKey}
               documentEditRevision={editRevision}
               documentPageKey={doc?.pages[currentPage]?.ref.toKey()}
@@ -6851,6 +6901,15 @@ export default function EditorPage() {
                 })()}
               </div>
             )}
+
+            {/* Pending redaction marks, outlined for review before they are applied */}
+            {activeTool === 'security' && doc && renderResult && redactionMarkRects(doc.pages[currentPage], doc.objects).map((rect, index) => {
+              const bounds = searchHighlightBounds(rect, doc.pages[currentPage], scale, false);
+              if (!bounds) return null;
+              return <div key={`redaction-mark-${index}`} data-redaction-mark="true"
+                className="absolute pointer-events-none border border-danger bg-danger/25 z-20"
+                style={{ left: bounds.left, top: bounds.top, width: Math.max(bounds.width, 2), height: Math.max(bounds.height, 2) }} />;
+            })}
 
             {/* Search matches highlights overlay */}
             {isSearchOpen && searchResults.length > 0 && searchResults

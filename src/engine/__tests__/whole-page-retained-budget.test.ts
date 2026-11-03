@@ -94,5 +94,18 @@ it('refuses retained-content inspection that exceeds the cumulative byte budget'
     bytes.set(stream.rawBytes, 60_000);
     doc.objects.set(page.contentRefs[0].toKey(), new PDFStream(new PDFDict([['Length', new PDFNumber(bytes.length)]]), bytes, bytes));
   }
-  await expectRefusedWithoutChange(doc);
+  const before = await serializeDocument(doc);
+  expect(() => prepareWholePageRedaction(doc)).toThrow();
+  expect(await serializeDocument(doc)).toEqual(before);
+  // The glyph strategy reads every retained page within its own 64 MB budget, finds no copy and removes the text.
+  await redactionEngine.applySecureRedactions(doc);
+  const output = await saveQuick(doc);
+  const directory = mkdtempSync(join(tmpdir(), 'retained-budget-'));
+  try {
+    const path = join(directory, 'out.pdf');
+    writeFileSync(path, output);
+    const text = execFileSync('pdftotext', [path, '-'], { encoding: 'utf8' });
+    expect(text).toContain('VISIBLE');
+    expect(text).not.toContain('PRIVATE_NOTE');
+  } finally { rmSync(directory, { recursive: true, force: true }); }
 });

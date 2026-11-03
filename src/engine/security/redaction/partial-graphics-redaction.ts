@@ -183,7 +183,7 @@ function validatePageFeatures(page: PDFPageInfo, doc: PDFDocumentData): void {
   if (tabs !== undefined && !['R', 'C', 'S'].includes(page.dict.getName('Tabs') ?? '')) refuse('page /Tabs is invalid');
 }
 
-function hasSignatureDictionary(objects: Map<string, PDFObject>): boolean {
+export function hasSignatureDictionary(objects: Map<string, PDFObject>): boolean {
   const seen = new Set<PDFObject>();
   const pending = [...objects.values()];
   while (pending.length) {

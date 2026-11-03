@@ -451,8 +451,21 @@ function* matchText(text: string, regex: RegExp, queryLength: number): Generator
 }
 
 /** Match each contiguous chain once, preserving non-overlap and UTF-16 offsets. */
-function* findRunMatches(runs: SearchRun[], query: string, caseSensitive: boolean): Generator<RunMatch | null | typeof SEARCH_TICK> {
-  const regex = new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), caseSensitive ? 'gu' : 'giu');
+/** A regular expression search; `maxLength` bounds a match for chunking and cross-run limits. */
+export interface SearchPattern { regex: RegExp; maxLength: number }
+export type SearchQuery = string | SearchPattern;
+
+const queryLength = (query: SearchQuery) => typeof query === 'string' ? query.length : query.maxLength;
+
+function compileQuery(query: SearchQuery, caseSensitive: boolean): RegExp {
+  if (typeof query === 'string') return new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), caseSensitive ? 'gu' : 'giu');
+  return new RegExp(query.regex.source, query.regex.flags.includes('i') || !caseSensitive ? 'giu' : 'gu');
+}
+
+function* findRunMatches(runs: SearchRun[], search: SearchQuery, caseSensitive: boolean): Generator<RunMatch | null | typeof SEARCH_TICK> {
+  const regex = compileQuery(search, caseSensitive);
+  // Only the length is used below; empty pattern matches are skipped.
+  const query = { length: queryLength(search) };
   let inspectedRuns = 0, inspectedText = 0, inspectedWork = 0;
   for (let start = 0; start < runs.length;) {
     let end = start + 1;
@@ -478,6 +491,7 @@ function* findRunMatches(runs: SearchRun[], query: string, caseSensitive: boolea
       let first = 0, last = 0;
       for (const match of matchText(text, regex, query.length)) {
         if (match === SEARCH_TICK) { yield SEARCH_TICK; continue; }
+        if (!match[0]) continue;
         const from = match.index!, to = from + match[0].length;
         while (first + 1 < offsets.length && offsets[first + 1] <= from) first++;
         if (last < first) last = first;
@@ -488,6 +502,7 @@ function* findRunMatches(runs: SearchRun[], query: string, caseSensitive: boolea
     } else {
       for (const match of matchText(runs[start].text, regex, query.length)) {
         if (match === SEARCH_TICK) { yield SEARCH_TICK; continue; }
+        if (!match[0]) continue;
         yield { first: start, last: start, start: match.index!,
           end: match.index! + match[0].length, text: match[0] };
       }
@@ -500,7 +515,7 @@ function* findRunMatches(runs: SearchRun[], query: string, caseSensitive: boolea
 /** Yield between pages to let input, painting and cancellation run. */
 async function searchDocumentInternal(
   doc: PDFDocumentData,
-  query: string,
+  query: SearchQuery,
   caseSensitive: boolean,
   revision: string,
   index: DocumentSearchIndex,
@@ -513,7 +528,7 @@ async function searchDocumentInternal(
 ): Promise<SearchMatch[] | null> {
   if (!isCurrent()) return null;
   if (!query) { onPublish?.([]); return []; }
-  if (query.length > CROSS_QUERY_LIMIT) throw new Error('Search query exceeds the supported length.');
+  if (queryLength(query) > CROSS_QUERY_LIMIT) throw new Error('Search query exceeds the supported length.');
   try { if (!assertUnsharedStreams(doc, isCurrent)) return null; }
   catch (error) { if (!(error instanceof SearchScanCancelled)) index.clear(); throw error; }
   const snapshot = forceSynchronous ? null : index.begin(doc, revision, isCurrent);
@@ -629,7 +644,7 @@ async function searchDocumentInternal(
 }
 
 export function searchDocument(
-  doc: PDFDocumentData, query: string, caseSensitive: boolean, revision: string,
+  doc: PDFDocumentData, query: SearchQuery, caseSensitive: boolean, revision: string,
   index: DocumentSearchIndex, engine: SearchEngine, isCurrent: () => boolean,
   yieldControl: () => Promise<void> = () => new Promise(resolve => setTimeout(resolve, 0)),
   sliceMs = 8, onPublish?: (matches: SearchMatch[]) => void,

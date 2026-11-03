@@ -218,6 +218,21 @@ export interface GlyphPosition {
   textSpaceWidth: number;
   /** Text Rendering Matrix (T_rm) which exactly places and scales the glyph in User Space */
   tRm: { a: number; b: number; c: number; d: number; e: number; f: number };
+  /** Where the glyph's code sits in the content stream, for glyph-level rewrites. */
+  source?: GlyphSource;
+}
+
+export interface GlyphSource {
+  /** Index of the showing instruction (Tj, TJ, ' or "). */
+  instruction: number;
+  /** Index of the string inside a TJ array; -1 for the single string operand. */
+  item: number;
+  byteStart: number;
+  byteLength: number;
+  /** Horizontal advance in unscaled text space: w0·Tfs + Tc (+ Tw for code 32). */
+  advance: number;
+  /** Tfs when the glyph was shown. */
+  textFontSize: number;
 }
 
 export interface PathSegment {
@@ -841,7 +856,7 @@ export function interpretPage(
                 f: textMatrix.f + displacement * textMatrix.b,
               };
             } else {
-              const result = showTextString(item, gs, textMatrix, fonts, objects, page, i);
+              const result = showTextString(item, gs, textMatrix, fonts, objects, page, i, j);
               if (result) {
                 if (!firstRun) firstRun = result.run;
                 lastRun = result.run;
@@ -1400,6 +1415,7 @@ function showTextString(
   objects: Map<string, PDFObject>,
   page: PDFPageInfo,
   sourceInstructionIndex?: number,
+  sourceItem = -1,
 ): ShowTextResult | null {
   const font = fonts.get(gs.textFont);
 
@@ -1427,6 +1443,7 @@ function showTextString(
   while (idx < rawBytes.length) {
     const codeLength = isComposite ? getCharCodeLength(rawBytes, idx, font?.codeSpaceRanges) : 1;
     const charCode = readCharCode(rawBytes, idx, codeLength);
+    const byteStart = idx;
     idx += codeLength;
 
     // Map to Unicode.
@@ -1553,6 +1570,11 @@ function showTextString(
     let advance = (glyphWidth1000 / 1000) * fontSize + gs.charSpacing;
     // Word spacing applies to one-byte code 32, including composite encodings.
     if (charCode === 32 && codeLength === 1) advance += gs.wordSpacing;
+    if (sourceInstructionIndex !== undefined) {
+      glyphs[glyphs.length - 1].source = {
+        instruction: sourceInstructionIndex, item: sourceItem, byteStart, byteLength: codeLength, advance, textFontSize: fontSize,
+      };
+    }
     advance *= hScale;
 
     totalWidth += advance;

@@ -24,6 +24,7 @@ import { verifyRedaction } from './verify-redaction';
 import { prepareWholePageRedaction, WholePageRedactionUnsupportedError } from './whole-page-redaction';
 import { preparePartialGraphicsRedaction, PartialGraphicsRedactionUnsupportedError } from './partial-graphics-redaction';
 import { prepareIsolatedTextRedaction, IsolatedTextRedactionUnsupportedError } from './isolated-text-redaction';
+import { GlyphRedactionUnsupportedError, prepareGlyphRedaction } from './glyph-redaction';
 import { assertCompletePageTree } from '../validate-page-tree';
 import type {
   IRedactionEngine,
@@ -157,8 +158,17 @@ export class RedactionEngine implements IRedactionEngine {
           try {
             return preparePartialGraphicsRedaction(doc, options).commit();
           } catch (partialError) {
-            if (partialError instanceof PartialGraphicsRedactionUnsupportedError) throw new UnsupportedSecureRedactionError(partialError.message);
-            throw partialError;
+            if (!(partialError instanceof PartialGraphicsRedactionUnsupportedError)) throw partialError;
+            // General PDFs: remove only the glyphs and drawings under each mark.
+            try {
+              return prepareGlyphRedaction(doc, options).commit();
+            } catch (glyphError) {
+              // Out of scope here: the partial graphics reason is the more specific one.
+              if (glyphError instanceof GlyphRedactionUnsupportedError) {
+                throw new UnsupportedSecureRedactionError(glyphError.applicable ? glyphError.message : partialError.message);
+              }
+              throw glyphError;
+            }
           }
         }
       }

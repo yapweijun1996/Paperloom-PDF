@@ -157,11 +157,32 @@ The panel shows a score out of 100 and four tabs:
 |---|---|
 | Inspect | Encryption, Revision, Metadata, Attachments, JavaScript, Integrity, Redact marks, Recommendations, **Rescan** |
 | Protect | User and Owner passwords, Algorithm (AES-256, AES-128, RC4-128), Allow print / copy / modify, **Encrypt PDF**, **Remove encryption** |
-| Clean | **Select redaction region**, **Apply selected region**, **Redact entire current page**, **Apply existing redaction marks**, **Sanitize document**, **Remove JavaScript**, **Remove attachments**, **Strip metadata**, **Optimize (keep security)** |
+| Clean | **Select redaction region**, **Apply selected region**, **Redact entire current page**, **Find and mark** (Email addresses, Phone numbers, NRIC / FIN, Card numbers, Custom pattern; **Mark matches**), **Apply existing redaction marks**, **Sanitize document**, **Remove JavaScript**, **Remove attachments**, **Strip metadata**, **Optimize (keep security)** |
 | Policy | Policy preset, passwords, **Apply policy** |
 
 Redaction removes the content from the saved file; page and mark redaction ask
 for confirmation first.
+
+**Find and mark** searches every page and places a red-outlined redaction mark
+on each match; nothing is removed yet. Review the marks (Undo removes them),
+then **Apply existing redaction marks**. Matches in form fields or rotated text
+are counted but not marked; use **Select redaction region** for those.
+
+When marks are applied, every glyph touching a mark is removed from the file and
+the rest of the line stays in place; a drawing fully inside a mark is removed.
+The whole redaction is refused, and nothing changes, when:
+
+- the same text (4 or more characters) also appears elsewhere: on another page,
+  in the metadata, a link or a bookmark. Mark that copy too, or strip metadata;
+- an image, shading, form XObject, other annotation, or a drawing only partly
+  under the mark would be affected;
+- the text uses ActualText (Chrome-printed Chinese, Japanese, Korean), a Type3 or
+  vertical font, or a clipping text mode;
+- the file is encrypted, signed, has form fields or optional-content layers, or
+  has a stream that cannot be fully decoded.
+
+The saved file is always fully rewritten, so the old text is not kept in an
+earlier revision.
 
 ## Pages panel
 

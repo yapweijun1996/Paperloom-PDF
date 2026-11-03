@@ -13,7 +13,8 @@ import {
   PanelLeftClose,
 } from 'lucide-react';
 import type { PDFDocumentData, FullSecurityReport } from '@/engine/browser-core';
-import { Button, Notice, SecretInput, Select, useConfirm } from '../ui';
+import { Button, Field, Notice, SecretInput, Select, TextInput, useConfirm } from '../ui';
+import { REDACTION_PRESETS, customPreset, type RedactionPreset, type RedactionPresetId } from '../redaction-patterns';
 
 interface SecurityPanelProps {
   doc: PDFDocumentData | null;
@@ -31,13 +32,15 @@ interface SecurityPanelProps {
   onCancelRedactionRegion?: () => void;
   selectingRedactionRegion?: boolean;
   hasRedactionRegion?: boolean;
+  /** Places redaction marks on every match for review; resolves to a status message. */
+  onMarkPattern?: (preset: RedactionPreset) => Promise<string>;
 }
 
 type Tab = 'inspect' | 'protect' | 'sanitize' | 'policies';
 
 export function SecurityPanel({ doc, engine, onDocChange, markDirty, onBusyChange, onClose, isMobile = false,
   onRedact, onSelectRedactionRegion, onCancelRedactionRegion, selectingRedactionRegion = false,
-  hasRedactionRegion = false, documentRevision = 0, documentEditRevision = 0, documentPageKey = '' }: SecurityPanelProps) {
+  hasRedactionRegion = false, documentRevision = 0, documentEditRevision = 0, documentPageKey = '', onMarkPattern }: SecurityPanelProps) {
   const [tab, setTab] = useState<Tab>('inspect');
   const [report, setReport] = useState<FullSecurityReport | null>(null);
   const [busy, setBusy] = useState(false);
@@ -53,6 +56,9 @@ export function SecurityPanel({ doc, engine, onDocChange, markDirty, onBusyChang
   }, [redactionStatus, redactionStatusVisible]);
   const [error, setError] = useState<string | null>(null);
   const [redactionActionActive, setRedactionActionActive] = useState(false);
+  const [presetId, setPresetId] = useState<RedactionPresetId>('email');
+  const [customPattern, setCustomPattern] = useState('');
+  const [findStatus, setFindStatus] = useState<{ tone: 'success' | 'danger'; text: string } | null>(null);
   const { confirm: requestConfirm, dialog: confirmDialog } = useConfirm();
 
   const [userPassword, setUserPassword] = useState('');
@@ -357,7 +363,7 @@ export function SecurityPanel({ doc, engine, onDocChange, markDirty, onBusyChang
               <div className="space-y-2 border-b border-app pb-3">
                 <p className="font-semibold text-app">Secure redaction</p>
                 <p className="text-app-faint leading-relaxed">
-                  Select an area or the entire page. Unsupported content is refused; independent copies elsewhere may remain.
+                  Select an area, the entire page, or find text to mark. Text under a mark is removed from the file; content that cannot be removed safely is refused and nothing changes.
                 </p>
                 <Button className="w-full" disabled={busy} onClick={() => { setRedactionStatus(null); setError(null); (selectingRedactionRegion ? onCancelRedactionRegion : onSelectRedactionRegion)?.(); }}>
                   {selectingRedactionRegion ? 'Cancel region selection' : 'Select redaction region'}
@@ -379,6 +385,39 @@ export function SecurityPanel({ doc, engine, onDocChange, markDirty, onBusyChang
                 )}
                 {redactionActionActive && error && (
                   <Notice tone="danger" className="text-xs font-medium">{error}</Notice>
+                )}
+                {onMarkPattern && (
+                  <div className="space-y-2 rounded-md border border-app p-2">
+                    <p className="font-semibold text-app">Find and mark</p>
+                    <Field label="Find">
+                      <Select value={presetId} onChange={event => { setPresetId(event.target.value as RedactionPresetId); setFindStatus(null); }}>
+                        {REDACTION_PRESETS.map(item => <option key={item.id} value={item.id}>{item.label}</option>)}
+                        <option value="custom">Custom pattern</option>
+                      </Select>
+                    </Field>
+                    {presetId === 'custom' && (
+                      <Field label="Pattern (regular expression)">
+                        <TextInput value={customPattern} placeholder="INV-\d+" onChange={event => setCustomPattern(event.target.value)} />
+                      </Field>
+                    )}
+                    <Button className="w-full" disabled={busy} onClick={async () => {
+                      const preset = presetId === 'custom' ? customPreset(customPattern) : REDACTION_PRESETS.find(item => item.id === presetId)!;
+                      if (typeof preset === 'string') { setFindStatus({ tone: 'danger', text: preset }); return; }
+                      setBusy(true);
+                      onBusyChange?.(true);
+                      try {
+                        setFindStatus({ tone: 'success', text: await onMarkPattern(preset) });
+                      } catch (e) {
+                        setFindStatus({ tone: 'danger', text: e instanceof Error ? e.message : String(e) });
+                      } finally {
+                        setBusy(false);
+                        onBusyChange?.(false);
+                      }
+                    }}>
+                      Mark matches
+                    </Button>
+                    {findStatus && <Notice tone={findStatus.tone} className="text-xs font-medium">{findStatus.text}</Notice>}
+                  </div>
                 )}
               </div>
             )}
