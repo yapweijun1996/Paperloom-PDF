@@ -72,6 +72,10 @@ export interface TextWatermark extends WatermarkBase {
   position: WatermarkPosition | [number, number];
   /** Spacing between tiles when tiling (in points) */
   tileSpacing?: number;
+  /** Measured text width in points; defaults to an estimate of half the font size per character */
+  textWidth?: number;
+  /** Standard 14 BaseFont when fontName is only a resource name */
+  baseFont?: string;
 }
 
 export interface ImageWatermark extends WatermarkBase {
@@ -161,7 +165,7 @@ export function buildTextWatermarkContent(
 
   lines.push(`/${wm.fontName} ${wm.fontSize} Tf`);
 
-  const wmWidth = wm.text.length * wm.fontSize * 0.5;
+  const wmWidth = wm.textWidth ?? wm.text.length * wm.fontSize * 0.5;
   const wmHeight = wm.fontSize;
 
   if (wm.tile) {
@@ -533,7 +537,7 @@ export async function applyWatermarkToPage(
   // Build the watermark content operators (positions relative to MediaBox origin)
   switch (watermark.type) {
     case 'text':
-      registerFontInResources(page, objects, watermark.fontName, getNextObjNum);
+      registerFontInResources(page, objects, watermark.fontName, getNextObjNum, watermark.baseFont);
       watermarkContent = buildTextWatermarkContent(watermark, pageWidth, pageHeight, originX, originY);
       break;
     case 'image': {
@@ -707,7 +711,8 @@ function registerFontInResources(
   page: PDFPageInfo,
   objects: Map<string, PDFObject>,
   fontName: string,
-  getNextObjNum: () => number
+  getNextObjNum: () => number,
+  baseFontName?: string,
 ): void {
   const resources = getOrCreateResourcesDict(page, objects);
   let fonts = resources.get('Font');
@@ -724,7 +729,7 @@ function registerFontInResources(
     fontDict.set('Type', new PDFName('Font'));
     fontDict.set('Subtype', new PDFName('Type1'));
     
-    let baseFont = fontName;
+    let baseFont = baseFontName ?? fontName;
     if (fontName === 'Arial') baseFont = 'Helvetica';
     else if (fontName === 'Times New Roman') baseFont = 'Times-Roman';
     

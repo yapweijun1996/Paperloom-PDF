@@ -2,7 +2,7 @@
 
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Replace, X } from 'lucide-react';
-import type { ImageItem } from '@/engine/browser-core';
+import type { ImageItem, PathItem } from '@/engine/browser-core';
 import type { PDFDict, PDFObject, PDFPageInfo } from '@/engine/types';
 import { renderImagePreviewLayers, type ImagePreviewLayers } from '@/engine/render/renderer';
 import type { ImageBox } from './imageBoxEdit';
@@ -16,7 +16,8 @@ import {
 } from './imageToolbarPlacement';
 
 interface EmbeddedImageOverlayProps {
-  item: ImageItem;
+  /** Images preview their pixels while dragging; drawings show the frame only. */
+  item: ImageItem | PathItem;
   previewBox?: ImageBox | null;
   page: PDFPageInfo;
   objects: Map<string, PDFObject>;
@@ -30,7 +31,8 @@ interface EmbeddedImageOverlayProps {
   onCommitMove: (pdfDx: number, pdfDy: number) => Promise<void>;
   /** Commit the new PDF bbox, keeping the opposite edge or corner fixed. */
   onCommitResize: (box: { x: number; y: number; width: number; height: number }) => Promise<void>;
-  onReplace: () => void;
+  /** Images only. */
+  onReplace?: () => void;
   onDeselect: () => void;
 }
 
@@ -70,6 +72,7 @@ export function EmbeddedImageOverlay(props: EmbeddedImageOverlayProps) {
   useEffect(() => () => cleanupDragRef.current(), [item]);
 
   useEffect(() => {
+    if (item.type !== 'image') return;
     let cancelled = false;
     void renderImagePreviewLayers(page, objects, item, scale, catalog).then(result => {
       if (!cancelled) {
@@ -266,7 +269,7 @@ export function EmbeddedImageOverlay(props: EmbeddedImageOverlayProps) {
           ...(toolbarPlacement.side === 'inside' && { top: toolbarPlacement.offsetY, marginLeft: IMAGE_TOOLBAR_MARGIN }),
         }}
       >
-        <button
+        {onReplace && <button
           type="button"
           title="Replace image (keep size)"
           className="flex items-center gap-1 px-2 py-1 bg-[#3b82f6] text-white text-[11px] font-medium rounded border border-[#2563eb] hover:bg-[#2563eb] shadow"
@@ -277,11 +280,11 @@ export function EmbeddedImageOverlay(props: EmbeddedImageOverlayProps) {
           }}
         >
           <Replace size={12} /> Replace
-        </button>
+        </button>}
         <button
           type="button"
           title="Deselect"
-          aria-label="Deselect image"
+          aria-label={item.type === 'image' ? 'Deselect image' : 'Deselect drawing'}
           className="p-1 bg-white text-[#3b82f6] rounded border border-[#3b82f6]/60 hover:bg-[#eff6ff] shadow"
           onPointerDown={(e) => e.stopPropagation()}
           onClick={(e) => {

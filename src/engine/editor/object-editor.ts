@@ -230,6 +230,40 @@ export async function duplicateObject(
   await updatePageContent(page.contentRefs, compileInstructions(instructions), doc.objects);
 }
 
+/**
+ * Move or resize a drawing in place by `pageMatrix`, a page-space transform.
+ * The path's construction and paint operators are wrapped in q…Q with a local
+ * `cm`, so its colour and line state and its paint order are unchanged.
+ * Returns the new paint operator index.
+ */
+export async function transformPath(
+  doc: PDFDocumentData,
+  pageIndex: number,
+  obj: EditableObject,
+  pageMatrix: number[],
+): Promise<number> {
+  if (obj.kind !== 'path') throw new Error('Only drawings can be transformed in place');
+  const page = doc.pages[pageIndex];
+  const instructions = parseContentStream(getPageContentBytes(page, doc.objects));
+  const targetIndex = findObjectInstructionIndex(instructions, obj);
+  if (targetIndex < 0) throw new Error('Could not locate object in content stream — refuse to transform');
+  let start = targetIndex;
+  while (start > 0 && ['m', 'l', 'c', 'v', 'y', 'h', 're', 'W', 'W*'].includes(instructions[start - 1].operator)) start--;
+  // A clipping path would lose its clip once wrapped in q…Q.
+  if (instructions.slice(start, targetIndex).some(inst => inst.operator === 'W' || inst.operator === 'W*')) {
+    throw new Error('Clipping paths cannot be moved');
+  }
+  // cm L before a path drawn under C gives p·L·C = p·C·M, so L = C·M·C⁻¹.
+  const before = ctmBefore(instructions, start);
+  const inverse = invertMatrix(before);
+  if (!inverse) throw new Error('The drawing has a degenerate transform');
+  const local = mulMatrix(mulMatrix(before, pageMatrix), inverse);
+  instructions.splice(targetIndex + 1, 0, op('Q'));
+  instructions.splice(start, 0, op('q'), op('cm', local.map(n => new PDFNumber(n))));
+  await updatePageContent(page.contentRefs, compileInstructions(instructions), doc.objects);
+  return targetIndex + 2;
+}
+
 /** Delete an object from the page content stream. */
 export async function deleteObject(
   doc: PDFDocumentData,

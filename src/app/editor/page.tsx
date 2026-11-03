@@ -29,7 +29,7 @@ import {
   hitTestTextLine, findNearestTextLine, caretIndexFromLineX,
   getLineBounds, getOverlayFontFamily, getOverlayFontStyle, getDisplayFontFamily,
 } from './utils';
-import { buildDisplayListIndex, hitTestDisplayList, isSelectableDisplayItem, captureHistoryEntry, restoreAnnotSnapshot, restoreDocumentStructure, parseOverlaySnapshot, deleteObject, duplicateObject, visualFontSize, resolveRunStyleFlags, transformObject, applyObjectTransform, distributeTextChangeToSegments, segmentAtIndex, createVisualSignature, hitTestSignature, moveSignature, rotateSignature, setSignatureOpacity, deleteSignature, updateSignature, getSignatureLibrary, DEFAULT_SIGNATURE_SIZE, detectSignatureFieldsOnPage, hitTestSignatureField, applySignatureFieldAppearanceAsync, getCertificateManager, validateDocumentSignatures, enableLongTermValidation, getLtvStatus, listManagedSignatures, buildRevisionViewer, lockSignaturesAfterSigning, pushRecentSignatureId, SIGNATURE_SHORTCUTS } from '@/engine/browser-core';
+import { buildDisplayListIndex, hitTestDisplayList, isSelectableDisplayItem, captureHistoryEntry, restoreAnnotSnapshot, restoreDocumentStructure, parseOverlaySnapshot, deleteObject, duplicateObject, transformPath, visualFontSize, resolveRunStyleFlags, transformObject, applyObjectTransform, distributeTextChangeToSegments, segmentAtIndex, createVisualSignature, hitTestSignature, moveSignature, rotateSignature, setSignatureOpacity, deleteSignature, updateSignature, getSignatureLibrary, DEFAULT_SIGNATURE_SIZE, detectSignatureFieldsOnPage, hitTestSignatureField, applySignatureFieldAppearanceAsync, getCertificateManager, validateDocumentSignatures, enableLongTermValidation, getLtvStatus, listManagedSignatures, buildRevisionViewer, lockSignaturesAfterSigning, pushRecentSignatureId, SIGNATURE_SHORTCUTS } from '@/engine/browser-core';
 import type { Annotation, QuadTree, SelectableItem, EditableObject, EditorHistoryEntry, PDFRef } from '@/engine/browser-core';
 import { UnsupportedGlyphsError, SessionDocumentEditor } from '@/engine/browser-core';
 import { SessionEditorHistory } from '@/engine/session/editor-history';
@@ -39,6 +39,10 @@ import { assertVisualSignatureAppearancePresent, findVisualSignatureRefs, placeV
 import { PDFDict, PDFString } from '@/engine/types';
 import { annotationSubtype } from '@/engine/content/annotation-subtype';
 import { renderFieldSignaturePreviews } from './field-signature-previews';
+import { printPdfBytes } from './print-pdf';
+import { buildHeaderFooterWatermarks, type HeaderFooterOptions } from '@/engine/watermark/header-footer';
+import { buildDiagnosticReport, listenForUncaughtErrors } from './diagnostic-report';
+import { DiagnosticReportButton } from './components/DiagnosticReportButton';
 import { signatureBoxOnPage, signatureFieldBoxOnPage, signaturePagePoint, signaturePageRotation } from './signature-page-geometry';
 import { resizeSignatureByStep, rotateSignatureByStep, type SignatureResizeStep } from './signature-touch-steps';
 import { findMatchingFlowLine } from './flowLineMatch';
@@ -101,7 +105,7 @@ import { floatingTextPdfDelta, shouldStartFloatingTextDrag } from './components/
 import { initialFloatingTextSelection } from './components/floatingTextSelection';
 import { resizeBox } from './components/resizeGeometry';
 import { findImagePlacement, sameImagePlacement } from './components/imageSelection';
-import { findOffsetCopy, matchingObjects, resolveSelectedObject } from './components/selectedObject';
+import { drawingBoxMatrix, drawingBoxResult, findOffsetCopy, matchingObjects, resolveSelectedObject, sameBox } from './components/selectedObject';
 import type { ImageBox } from './components/imageBoxEdit';
 import { DocumentSearchIndex, SearchChangedError, SearchPageError, assertCurrentReplaceSupported, replaceSearchMatches, searchLatestDocument, type SearchMatch } from './search-index';
 import { searchHighlightBounds } from './search-highlight';
@@ -235,6 +239,7 @@ export default function EditorPage() {
   const editingLineRef = useRef<TextLine | null>(null);
   const editingLine = editingLineState;
   const [mobileKeyboardInset, setMobileKeyboardInset] = useState(0);
+  useEffect(() => listenForUncaughtErrors(), []);
   useEffect(() => {
     if (!isMobile || !editingLine || !window.visualViewport) return;
     const viewport = window.visualViewport;
@@ -5015,6 +5020,42 @@ export default function EditorPage() {
     setWatermarkImageDims(null);
   }, []);
 
+  // Writes watermarks into the page content as one undoable edit.
+  const commitWatermarks = useCallback(async (watermarks: Watermark[], lease: { isCurrent: () => boolean }): Promise<boolean> => {
+    const engine = engineRef.current;
+    if (!doc || !engine) return false;
+    await sessionEditorRef.current.edit(doc, 'watermark', async staged => {
+      const results = await engine.applyWatermarks(staged, watermarks, () => engine.getNextObjNum(staged));
+      const updatePromises: Promise<void>[] = [];
+      results.forEach((newBytes, pageIdx) => {
+        const page = staged.pages[pageIdx];
+        updatePromises.push(engine.updatePageContent(page.contentRefs, newBytes, staged.objects));
+      });
+      await Promise.all(updatePromises);
+    }, { isCurrent: lease.isCurrent });
+    if (!lease.isCurrent()) return false;
+    pushEditorHistory('watermark', undefined, undefined, false, sessionEditorRef.current);
+    sessionEditorRef.current = new SessionDocumentEditor();
+    setIsDirty(true);
+    setThumbnailKey(k => k + 1);
+    setDoc({ ...doc });
+    setRenderKey(k => k + 1);
+    return true;
+  }, [doc, setDoc, pushEditorHistory, setThumbnailKey, setIsDirty]);
+
+  const handleApplyHeaderFooter = useCallback(async (options: HeaderFooterOptions) => {
+    if (!doc) return;
+    const lease = documentOwnerRef.current.lease(doc);
+    try {
+      const watermarks = buildHeaderFooterWatermarks(options, doc.pages, new Date());
+      if (watermarks.length === 0) return;
+      await commitWatermarks(watermarks, lease);
+    } catch (e) {
+      console.error('[Editor] Apply header and footer failed:', e);
+      setError(`Failed to add header and footer: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }, [doc, commitWatermarks]);
+
   const handleApplyWatermark = useCallback(async () => {
     if (!doc || !engineRef.current) return;
     const lease = documentOwnerRef.current.lease(doc);
@@ -5113,30 +5154,14 @@ export default function EditorPage() {
         };
       }
 
-      const engine = engineRef.current;
-      await sessionEditorRef.current.edit(doc, 'watermark', async staged => {
-        const results = await engine.applyWatermarks(staged, [wm], () => engine.getNextObjNum(staged));
-        const updatePromises: Promise<void>[] = [];
-        results.forEach((newBytes, pageIdx) => {
-          const page = staged.pages[pageIdx];
-          updatePromises.push(engine.updatePageContent(page.contentRefs, newBytes, staged.objects));
-        });
-        await Promise.all(updatePromises);
-      }, { isCurrent: lease.isCurrent });
-      if (!lease.isCurrent()) return;
-      pushEditorHistory('watermark', undefined, undefined, false, sessionEditorRef.current);
-      sessionEditorRef.current = new SessionDocumentEditor();
-      setIsDirty(true);
-      setThumbnailKey(k => k + 1);
-      setDoc({ ...doc });
-      setRenderKey(k => k + 1);
+      if (!await commitWatermarks([wm], lease)) return;
       setWatermarkLivePreview(false);
       setShowWatermarkAppliedNotice(true);
     } catch (e) {
       console.error('[Editor] Apply watermark failed:', e);
       setError(`Failed to apply watermark: ${e instanceof Error ? e.message : String(e)}`);
     }
-  }, [doc, setDoc, pushEditorHistory, watermarkType, watermarkText, watermarkFontName, watermarkOpacity, watermarkRotation, watermarkSize, watermarkPosition, watermarkMosaic, watermarkPageFrom, watermarkPageTo, watermarkLayer, watermarkColor, watermarkShapeColor, watermarkShapeType, watermarkImageBytes, watermarkImageDims, watermarkImageFile, watermarkBlendMode, setThumbnailKey]);
+  }, [doc, commitWatermarks, watermarkType, watermarkText, watermarkFontName, watermarkOpacity, watermarkRotation, watermarkSize, watermarkPosition, watermarkMosaic, watermarkPageFrom, watermarkPageTo, watermarkLayer, watermarkColor, watermarkShapeColor, watermarkShapeType, watermarkImageBytes, watermarkImageDims, watermarkImageFile, watermarkBlendMode]);
 
   // ── Signature handlers ──
   const resolveSignatureImage = useCallback((sig: VisualSignature): string | null => {
@@ -5277,11 +5302,16 @@ export default function EditorPage() {
     setDetectedWatermarks(null);
   }, []);
 
-  // ── Download / Save ──
-  const handleDownload = useCallback(async (): Promise<boolean> => {
+  // ── Download / Save / Print ──
+  // Exports the edited PDF once and hands the bytes to `deliver`.
+  const runExport = useCallback(async (
+    action: 'Download' | 'Print',
+    deliver: (bytes: Uint8Array, lease: { isCurrent: () => boolean }) => Promise<void>,
+  ): Promise<boolean> => {
+    const verb = action === 'Print' ? 'printing' : 'downloading';
     if (!doc || !engineRef.current || downloadOperationRef.current) return false;
     if (securityBusyRef.current || searchBusy || cryptoSignBusy) {
-      setError('Wait for the current operation to finish before downloading.');
+      setError(`Wait for the current operation to finish before ${verb}.`);
       return false;
     }
     downloadOperationRef.current = true;
@@ -5295,7 +5325,7 @@ export default function EditorPage() {
       await documentOwnerRef.current.whenIdle();
       if (formDraftControllerRef.current.get() || linkPopoverMode ||
           floatingTextEditStartRef.current || isDrawing || currentDrawPath.current.length > 0) {
-        throw new Error('Finish or cancel the current edit before downloading.');
+        throw new Error(`Finish or cancel the current edit before ${verb}.`);
       }
       const result = await engineRef.current.exportDocument(doc, {
         mode: saveMode,
@@ -5312,24 +5342,15 @@ export default function EditorPage() {
           throw new Error('The protected PDF could not be saved with its encryption.');
         }
       }
-      const stored = await commitDownloadedPdf(new Uint8Array(bytes).buffer, fileName || 'edited.pdf', lease.isCurrent);
-      if (!stored || !lease.isCurrent()) throw new Error('The document changed before the download could be saved.');
-      const blob = new Blob([bytes as unknown as BlobPart], { type: 'application/pdf' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = fileName || 'edited.pdf';
-      a.click();
-      URL.revokeObjectURL(url);
-      setIsDirty(false);
+      await deliver(new Uint8Array(bytes), lease);
       return true;
     } catch (e) {
       if (closeOperationRef.current) {
-        setCloseError(e instanceof Error ? e.message : 'Download failed. Your document remains open.');
+        setCloseError(e instanceof Error ? e.message : `${action} failed. Your document remains open.`);
       }
       if (!showUnsupportedGlyphWarning(e)) {
-        console.error('[Editor] Download failed:', e);
-        setError(`Download failed: ${e instanceof Error ? e.message : String(e)}`);
+        console.error(`[Editor] ${action} failed:`, e);
+        setError(`${action} failed: ${e instanceof Error ? e.message : String(e)}`);
       }
       return false;
     } finally {
@@ -5337,7 +5358,25 @@ export default function EditorPage() {
       setIsDownloading(false);
       setIsSaving(false);
     }
-  }, [doc, fileName, saveMode, commitDrawingsToPdf, handleEditSubmit, showUnsupportedGlyphWarning, prepareOverlayText, selectedFormField, formFieldDraft, linkPopoverMode, isDrawing, searchBusy, cryptoSignBusy, commitFormFieldDraft]);
+  }, [doc, saveMode, commitDrawingsToPdf, handleEditSubmit, showUnsupportedGlyphWarning, prepareOverlayText, selectedFormField, formFieldDraft, linkPopoverMode, isDrawing, searchBusy, cryptoSignBusy, commitFormFieldDraft]);
+
+  const handleDownload = useCallback(() => runExport('Download', async (bytes, lease) => {
+    const stored = await commitDownloadedPdf(bytes.slice().buffer, fileName || 'edited.pdf', lease.isCurrent);
+    if (!stored || !lease.isCurrent()) throw new Error('The document changed before the download could be saved.');
+    const blob = new Blob([bytes as unknown as BlobPart], { type: 'application/pdf' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = fileName || 'edited.pdf';
+    a.click();
+    URL.revokeObjectURL(url);
+    setIsDirty(false);
+  }), [runExport, fileName]);
+
+  // Printing does not save, so the document stays dirty.
+  const handlePrint = useCallback(() => runExport('Print', async bytes => {
+    await printPdfBytes(bytes);
+  }), [runExport]);
 
   // ── Compressed Download ──
   const handleCompressedDownload = useCallback(async (opts: CompressedDownloadOptions) => {
@@ -5813,6 +5852,58 @@ export default function EditorPage() {
     }
   }, [doc, currentPage, selectedDisplayItem, pushEditorHistory, queueNativeEdit, setThumbnailKey, setIsDirty]);
 
+  // Move (same size) or resize a selected drawing to `box`, in page space.
+  const handleDrawingTransform = useCallback(async (box: { x: number; y: number; width: number; height: number }) => {
+    if (!doc || !engineRef.current || selectedDisplayItem?.type !== 'path') return;
+    const engine = engineRef.current;
+    const page = doc.pages[currentPage];
+    const item = selectedDisplayItem;
+    const pageKey = page.ref.toKey();
+    const lease = documentOwnerRef.current.lease(doc);
+    let moved: PathItem | null = null;
+    try {
+      await queueNativeEdit(doc, async isCurrent => {
+        const editor = new SessionDocumentEditor();
+        await editor.edit(doc, 'transform-drawing', async staged => {
+          const stagedPage = staged.pages[currentPage];
+          if (!stagedPage || stagedPage.ref.toKey() !== pageKey) {
+            throw new Error('The selected page changed before the drawing could be moved.');
+          }
+          const display = () => engine.interpretPage(engine.getPageContentBytes(stagedPage, staged.objects), stagedPage, staged.objects,
+            new engine.OptionalContentVisibility(staged.catalog, staged.objects)).displayList;
+          const target = resolveSelectedObject(display(), item);
+          if (!target || target.type !== 'path') throw new Error('The selected drawing changed or is ambiguous. Select it again.');
+          const matrix = drawingBoxMatrix(target, box);
+          // Browser-printed PDFs paint a shape several times; move every copy, latest first so earlier indices stay valid.
+          const copies = (matchingObjects(display(), target) as PathItem[])
+            .sort((a, b) => (b.sourceInstructionIndex ?? 0) - (a.sourceInstructionIndex ?? 0));
+          for (const copy of copies) await transformPath(staged, currentPage, editableFor(copy), matrix);
+          const expected = drawingBoxResult(target, matrix);
+          const results = display().filter((candidate): candidate is PathItem => candidate.type === 'path' &&
+            candidate.paintType === target.paintType && sameBox(candidate, expected, 1));
+          if (results.length < copies.length) throw new Error('The drawing could not be safely moved.');
+          moved = results[results.length - 1];
+        }, { isCurrent });
+        if (!isCurrent()) throw new Error('The document was replaced before the edit completed.');
+        pushEditorHistory('transform-drawing', undefined, currentPage, false, editor);
+      });
+      if (!lease.isCurrent()) return;
+      setSelectedDisplayItem(moved);
+      setIsDirty(true);
+      setRenderKey(k => k + 1);
+      setThumbnailKey(k => k + 1);
+    } catch (e) {
+      console.error('[Editor] Move drawing failed:', e);
+      if (lease.isCurrent()) setError(`Move drawing failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }, [doc, currentPage, selectedDisplayItem, pushEditorHistory, queueNativeEdit, setThumbnailKey, setIsDirty]);
+
+  const handleDrawingMove = useCallback(async (dx: number, dy: number) => {
+    if (selectedDisplayItem?.type !== 'path') return;
+    const { x, y, width, height } = selectedDisplayItem;
+    await handleDrawingTransform({ x: x + dx, y: y + dy, width, height });
+  }, [selectedDisplayItem, handleDrawingTransform]);
+
   const handleDuplicateFloatingImage = useCallback((id: string) => {
     const source = floatingImagesRef.current.find(item => item.id === id);
     const page = doc?.pages[currentPage];
@@ -5957,6 +6048,7 @@ export default function EditorPage() {
       // a page whose latest render failed or is still pending.
       if (!renderReadyRef.current && (action.type === 'nudge' || action.type === 'delete' || action.type === 'duplicate')) return;
       if (action.type === 'search') { e.preventDefault(); setIsSearchOpen(v => !v);
+      } else if (action.type === 'print') { e.preventDefault(); void handlePrint();
       } else if (action.type === 'navigate-prev') { e.preventDefault(); goToPrev();
       } else if (action.type === 'navigate-next') { e.preventDefault(); goToNext();
       } else if (action.type === 'zoom-in') { e.preventDefault(); zoomIn();
@@ -5966,6 +6058,7 @@ export default function EditorPage() {
       } else if (action.type === 'nudge') {
         e.preventDefault();
         if (action.target === 'embedded-image') void handleEmbeddedImageMove(action.dx, action.dy, true);
+        else if (action.target === 'drawing') void handleDrawingMove(action.dx, action.dy);
         else if (action.target === 'floating-image') handleFloatingImageNudge(action.dx, action.dy);
         else handleFloatingTextNudge(action.dx, action.dy);
       } else if (action.type === 'delete' && action.target === 'signature') {
@@ -5995,7 +6088,7 @@ export default function EditorPage() {
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [goToPrev, goToNext, zoomIn, zoomOut, editingLine, selectedDisplayItem, activeFloatingImageId, activeFloatingTextId, selectedSignatureId, handleSignatureDelete, activeTool, handleValidateSignatures, handleEmbeddedImageMove, handleFloatingImageNudge, handleFloatingTextNudge, handleDeleteSelectedDisplayItem, handleDuplicateSelectedDisplayItem, handleDuplicateFloatingImage, handleDuplicateFloatingText, pushEditorHistory, closeDialogOpen]);
+  }, [goToPrev, goToNext, zoomIn, zoomOut, editingLine, selectedDisplayItem, activeFloatingImageId, activeFloatingTextId, selectedSignatureId, handleSignatureDelete, activeTool, handleValidateSignatures, handleEmbeddedImageMove, handleDrawingMove, handleFloatingImageNudge, handleFloatingTextNudge, handleDeleteSelectedDisplayItem, handleDuplicateSelectedDisplayItem, handleDuplicateFloatingImage, handleDuplicateFloatingText, handlePrint, pushEditorHistory, closeDialogOpen]);
 
   // Clean, Minimalist 3D Tilted Pink Square Rubber Block Eraser Cursor
   const eraser3dSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32"><defs><filter id="er-pinksq-shadow" x="-30%" y="-30%" width="160%" height="160%"><feDropShadow dx="1" dy="1.4" stdDeviation="1.2" flood-color="#000000" flood-opacity="0.45"/></filter><linearGradient id="er-pink-top" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#FFA8E0"/><stop offset="60%" stop-color="#FF65C8"/><stop offset="100%" stop-color="#E840A8"/></linearGradient><linearGradient id="er-pink-left" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#FF52B7"/><stop offset="100%" stop-color="#D6208A"/></linearGradient><linearGradient id="er-pink-right" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#BF157A"/><stop offset="100%" stop-color="#80094F"/></linearGradient></defs><g filter="url(#er-pinksq-shadow)"><path d="M 4 16 L 16 4 L 28 16 L 28 19 L 16 31 L 4 19 Z" fill="none" stroke="#FFFFFF" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round"/><path d="M 4 16 L 16 4 L 28 16 L 16 28 Z" fill="url(#er-pink-top)" stroke="#80094F" stroke-width="0.6"/><path d="M 4 16 L 16 28 L 16 31 L 4 19 Z" fill="url(#er-pink-left)" stroke="#80094F" stroke-width="0.6"/><path d="M 16 28 L 28 16 L 28 19 L 16 31 Z" fill="url(#er-pink-right)" stroke="#80094F" stroke-width="0.6"/><path d="M 4 16 L 16 4 L 22 10 L 10 22 Z" fill="#FFFFFF" fill-opacity="0.45"/><circle cx="4" cy="28" r="0.8" fill="#FFFFFF" stroke="#80094F" stroke-width="0.4"/></g></svg>`;
@@ -6165,12 +6258,17 @@ export default function EditorPage() {
   }
 
   // ── Error state ──
+  const diagnosticReport = () => buildDiagnosticReport({
+    error, doc, pageIndex: currentPage, userAgent: navigator.userAgent, now: new Date(),
+  });
+
   if (error && !doc) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center font-sans bg-surface text-app">
         <p role="alert" className="text-danger text-sm max-w-[400px] text-center leading-relaxed">
           {error}
         </p>
+        <DiagnosticReportButton getReport={diagnosticReport} className="mt-3 text-app-muted" />
         <button
           onClick={handleClose}
           className="mt-6 px-4 py-2 rounded-lg border border-app text-app-muted hover:bg-panel-elevated transition-colors flex items-center gap-2"
@@ -6238,6 +6336,7 @@ export default function EditorPage() {
           }
         }}
         onDownload={handleDownload}
+        onPrint={handlePrint}
         saveMode={saveMode}
         onSaveModeChange={setSaveMode}
         isSearchOpen={isSearchOpen}
@@ -6512,6 +6611,8 @@ export default function EditorPage() {
           watermarkLivePreview={watermarkLivePreview}
           setWatermarkLivePreview={setWatermarkLivePreview}
           onApplyWatermark={handleApplyWatermark}
+          onApplyHeaderFooter={handleApplyHeaderFooter}
+          totalPages={totalPages}
           hasScannedWatermarks={detectedWatermarks !== null}
           detectedWatermarksCount={detectedWatermarks?.length}
           onScanWatermarks={handleScanWatermarks}
@@ -6846,8 +6947,8 @@ export default function EditorPage() {
             )}
 
             {/* Interactive overlay for selected embedded PDF image */}
-            {activeTool === 'select' && selectedDisplayItem?.type === 'image' && renderResult && doc && (() => {
-              const item = selectedDisplayItem as ImageItem;
+            {activeTool === 'select' && selectedDisplayItem && renderResult && doc && (() => {
+              const item = selectedDisplayItem;
               const page = doc.pages[currentPage];
               const { mediaBox } = page;
               return (
@@ -6874,9 +6975,9 @@ export default function EditorPage() {
                       height: Math.abs(br.cssY - tl.cssY),
                     };
                   }}
-                  onCommitMove={handleEmbeddedImageMove}
-                  onCommitResize={handleEmbeddedImageResize}
-                  onReplace={handleReplaceEmbeddedImage}
+                  onCommitMove={item.type === 'image' ? handleEmbeddedImageMove : handleDrawingMove}
+                  onCommitResize={item.type === 'image' ? handleEmbeddedImageResize : handleDrawingTransform}
+                  onReplace={item.type === 'image' ? handleReplaceEmbeddedImage : undefined}
                   onDeselect={() => setSelectedDisplayItem(null)}
                 />
               );
@@ -7003,6 +7104,7 @@ export default function EditorPage() {
                   )}
                   <textarea
                     value={ft.text}
+                    spellCheck
                     autoFocus={isActive && activeFloatingTextId === ft.id}
                     onChange={(e) => {
                       setIsDirty(true);
@@ -7701,6 +7803,8 @@ export default function EditorPage() {
               <X size={16} aria-hidden="true" />
             </button>
           </div>
+          {/* Outside the message element so its text stays exact. */}
+          <DiagnosticReportButton getReport={diagnosticReport} className="mt-1" />
         </Notice>
       )}
       {confirmDialog}

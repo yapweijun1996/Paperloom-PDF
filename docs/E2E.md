@@ -38,6 +38,7 @@ layout. Screenshots and the downloaded PDF land in `test-results/tool-sweep/`.
 | Select | Select and delete a drawing (stacked copies, scaled `cm`), undo | ✅ `drawing-delete` 🔁 |
 | Select | Click empty page / background band selects nothing | ✅ `drawing-delete` 🔁 |
 | Select | Duplicate a drawing (button, Ctrl/Cmd+D) and an image, undo | ✅ `drawing-delete` 🔁 |
+| Select | Drag and resize a drawing (curve under a scaled `cm`), undo | ✅ `quick-wins` |
 | Edit Text | Duplicate text box | ✅ `drawing-delete` |
 | Edit Text | Edit a line, Enter to commit, undo / redo | ✅ `mobile-line-edit` 🔁 |
 | Edit Text | Drag a line in a browser-printed PDF (one glyph per Tj, kerned runs, list markers in their own block) | ✅ `text-drag-printed` |
@@ -52,6 +53,7 @@ layout. Screenshots and the downloaded PDF land in `test-results/tool-sweep/`.
 | Watermark | Add watermark | 🔁 |
 | Watermark | Scan for Watermarks | ✅ `mobile-options-sheet` 🔁 |
 | Watermark | Remove Selected, Image and Shape tabs | ✋ |
+| Watermark | Header, footer, page numbers and Bates on a normal and a rotated page | ✅ `quick-wins` |
 | Sign | Create (Type tab), save, place, move, rotate, lock, delete | ✅ `signature-placement`, `signature-touch-targets`, `signature-locked-page` 🔁 |
 | Sign | Place into a PDF signature field | ✅ `signature-placement` |
 | Sign | Certificates, Digitally sign document | ✅ `push-button-field`, `static-export`, `signature-widget-appearance` |
@@ -66,6 +68,8 @@ layout. Screenshots and the downloaded PDF land in `test-results/tool-sweep/`.
 | Header | Theme toggle | ✅ `theme-system` 🔁 |
 | Header | Focus mode | ✅ `mobile-form-reveal` 🔁 |
 | Header | Pages panel toggle, Clear | ✋ |
+| Header | Print (print frame gets the edited PDF) | ✅ `quick-wins` (the browser print dialog itself is ✋) |
+| Errors | Copy report (no file name in the report) | ✅ `quick-wins` |
 | Header | Close file (unsaved dialog: Discard changes) | ✅ `mobile-line-edit` |
 | Find & Replace | Search, Replace | ✅ `rotated-cross-run-search`, `multistream-edit-safety` 🔁 |
 | Find & Replace | Replace All, Match case | ✋ |

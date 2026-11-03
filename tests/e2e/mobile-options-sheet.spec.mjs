@@ -80,7 +80,9 @@ for (const [width, height] of [[390, 844], [320, 568], [568, 320]]) {
         expect(button.width).toBeGreaterThanOrEqual(44);
         expect(button.height).toBeGreaterThanOrEqual(44);
         if (tool === 'Watermark') {
+          // Header and footer controls follow the watermark actions, so scroll back to Scan.
           const scan = panel.getByRole('button', { name: 'Scan for Watermarks' });
+          await scan.scrollIntoViewIfNeeded();
           await expect(scan).toBeInViewport();
           await scan.tap();
           await expect(panel.getByText('no watermark found in scan process')).toBeVisible();

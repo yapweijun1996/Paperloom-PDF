@@ -1,7 +1,7 @@
 export type EditorKeyboardAction =
-  | { type: 'undo' | 'redo' | 'search' | 'zoom-in' | 'zoom-out' | 'navigate-prev' | 'navigate-next' | 'validate-signatures' }
+  | { type: 'undo' | 'redo' | 'search' | 'zoom-in' | 'zoom-out' | 'navigate-prev' | 'navigate-next' | 'validate-signatures' | 'print' }
   | { type: 'tool'; tool: 'select' | 'text' | 'addtext' | 'highlight' | 'draw' | 'erase' | 'sign' | 'watermark' | 'security' }
-  | { type: 'nudge'; target: 'embedded-image' | 'floating-image' | 'floating-text'; dx: number; dy: number }
+  | { type: 'nudge'; target: 'embedded-image' | 'drawing' | 'floating-image' | 'floating-text'; dx: number; dy: number }
   | { type: 'delete'; target: 'embedded-image' | 'floating-image' | 'floating-text' | 'signature' }
   | { type: 'escape-floating-text' }
   | { type: 'duplicate'; target: 'display-item' | 'floating-image' | 'floating-text' }
@@ -35,6 +35,7 @@ export function editorKeyboardAction(
     if (key === 'z' && !event.shiftKey) return { type: 'undo' };
     if (key === 'y' || (key === 'z' && !!event.shiftKey)) return { type: 'redo' };
     if (key === 'f') return { type: 'search' };
+    if (key === 'p' && !event.shiftKey) return { type: 'print' };
     if ((key === '+' || key === '=') && !event.shiftKey) return { type: 'zoom-in' };
     if (key === '-') return { type: 'zoom-out' };
     if (key === 'd' && !event.shiftKey) {
@@ -52,6 +53,7 @@ export function editorKeyboardAction(
     const dx = key === 'ArrowLeft' ? -step : key === 'ArrowRight' ? step : 0;
     const dy = key === 'ArrowUp' ? step : key === 'ArrowDown' ? -step : 0;
     if (context.selectedDisplayItem === 'image') return { type: 'nudge', target: 'embedded-image', dx, dy };
+    if (context.selectedDisplayItem === 'path') return { type: 'nudge', target: 'drawing', dx, dy };
     if (context.activeFloatingImage) return { type: 'nudge', target: 'floating-image', dx, dy };
     if (context.activeFloatingText) return { type: 'nudge', target: 'floating-text', dx, dy };
     return { type: key === 'ArrowLeft' || key === 'ArrowUp' ? 'navigate-prev' : 'navigate-next' };

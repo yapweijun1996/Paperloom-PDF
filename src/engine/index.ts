@@ -226,6 +226,7 @@ export {
   applyObjectTransform,
   deleteObject,
   duplicateObject,
+  transformPath,
 } from './editor/object-editor';
 export { markRedaction, applyRedactions, unionRects, rectsOverlap } from './editor/redaction';
 export type { Rect as RedactionRect, ApplyRedactionsResult } from './editor/redaction';

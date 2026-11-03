@@ -1,14 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { interpretPage, type ImageItem, type PathItem } from '@/engine/content/interpreter';
 import { captureHistoryEntry, restoreDocumentStructure } from '@/engine/editing/editor-history';
-import { applyObjectTransform, deleteObject, duplicateObject } from '@/engine/editor/object-editor';
+import { applyObjectTransform, deleteObject, duplicateObject, transformPath } from '@/engine/editor/object-editor';
 import { transformObject } from '@/engine/editing/transform-editor';
 import { updatePageContent } from '@/engine/editor/stream-compiler';
 import { getPageContentBytes, parsePDF } from '@/engine/parser/parser';
 import { SessionDocumentEditor } from '@/engine/session/document-edit';
 import { SessionEditorHistory } from '@/engine/session/editor-history';
 import { rawPDF } from '@/engine/__tests__/audit-p1-fixtures';
-import { matchingObjects, resolveSelectedObject } from './selectedObject';
+import { drawingBoxMatrix, drawingBoxResult, matchingObjects, resolveSelectedObject, sameBox } from './selectedObject';
 import { findImagePlacement } from './imageSelection';
 
 async function documentWithObjects() {
@@ -219,5 +219,52 @@ describe('queued object selection', () => {
     expect(after.map(item => [item.x, item.y])).toEqual([[10, 20], [100, 20], [112, 8]]);
     expect(after[2].clipPaths).toHaveLength(0);
   });
-});
 
+  it('moves and resizes a curved drawing under a scaling transform in place', async () => {
+    const content = 'q 0.75 0 0 0.75 0 0 cm 0.2 0.5 0.3 rg 2 w 40 40 m 120 40 l 120 120 80 140 40 120 c h B 0.9 0.1 0.1 rg 200 200 20 20 re f Q';
+    const doc = await parsePDF(rawPDF([
+      '<< /Type /Catalog /Pages 2 0 R >>',
+      '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+      '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 240 240] /Contents 4 0 R >>',
+      `<< /Length ${content.length} >>\nstream\n${content}\nendstream`,
+    ]));
+    const page = doc.pages[0];
+    const paths = () => interpretPage(getPageContentBytes(page, doc.objects), page, doc.objects).displayList
+      .filter((item): item is PathItem => item.type === 'path');
+    const original = paths()[0];
+    const editable = (item: PathItem) => ({ id: 'shape', kind: 'path' as const, bbox: item, ctm: [1, 0, 0, 1, 0, 0], source: item });
+
+    const target = { x: original.x + 30, y: original.y - 10, width: original.width * 1.5, height: original.height / 2 };
+    const matrix = drawingBoxMatrix(original, target);
+    const paintIndex = await transformPath(doc, 0, editable(original), matrix);
+    const after = paths();
+    expect(after).toHaveLength(2);
+    expect(after[0].sourceInstructionIndex).toBe(paintIndex);
+    expect(sameBox(after[0], drawingBoxResult(original, matrix), 0.01)).toBe(true);
+    expect(sameBox(after[0], target, 0.01)).toBe(true);
+    expect(after[0].fillColor).toEqual([0.2, 0.5, 0.3]);
+    expect(after[0].paintType).toBe('both');
+    // The later shape keeps its place and colour, and paint order is unchanged.
+    expect(after[1].x).toBeCloseTo(150, 3);
+    expect(after[1].fillColor).toEqual([0.9, 0.1, 0.1]);
+  });
+
+  it('moves a shape drawn inside a clip without dropping the clip', async () => {
+    const content = 'q 10 10 50 50 re W n 0 0 1 rg 20 20 30 30 re f Q';
+    const doc = await parsePDF(rawPDF([
+      '<< /Type /Catalog /Pages 2 0 R >>',
+      '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+      '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 240 240] /Contents 4 0 R >>',
+      `<< /Length ${content.length} >>\nstream\n${content}\nendstream`,
+    ]));
+    const page = doc.pages[0];
+    const display = interpretPage(getPageContentBytes(page, doc.objects), page, doc.objects).displayList;
+    const filled = display.find((item): item is PathItem => item.type === 'path' && item.paintType === 'fill')!;
+    // The filled square moves; its clip stays outside the wrapper.
+    const paintIndex = await transformPath(doc, 0, { id: 'f', kind: 'path', bbox: filled, ctm: [1, 0, 0, 1, 0, 0], source: filled }, [1, 0, 0, 1, 5, 5]);
+    const moved = interpretPage(getPageContentBytes(page, doc.objects), page, doc.objects).displayList
+      .find((item): item is PathItem => item.type === 'path' && item.sourceInstructionIndex === paintIndex)!;
+    expect(moved.x).toBeCloseTo(25, 3);
+    expect(moved.clipPaths.length).toBeGreaterThan(0);
+  });
+});

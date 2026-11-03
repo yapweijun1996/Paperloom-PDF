@@ -1,7 +1,7 @@
 import React from 'react';
 import Image from 'next/image';
 import Link from 'next/link';
-import { ChevronLeft, ChevronRight, ZoomOut, ZoomIn, X, Undo2, Redo2, Search, FileOutput, Sun, Moon, Focus, PanelRight } from 'lucide-react';
+import { ChevronLeft, ChevronRight, ZoomOut, ZoomIn, X, Undo2, Redo2, Search, FileOutput, Sun, Moon, Focus, PanelRight, Printer } from 'lucide-react';
 import type { DrawnPath } from '../types';
 import type { PDFDocumentData } from '@/engine/browser-core';
 import { DownloadDropdown } from './DownloadDropdown';
@@ -32,6 +32,8 @@ interface ToolbarProps {
   onRedo: () => void;
   onClearPaths: () => void;
   onDownload: () => void;
+  /** Print the edited PDF; omit to hide the control. */
+  onPrint?: () => void;
   saveMode?: 'quick' | 'optimized';
   onSaveModeChange?: (mode: 'quick' | 'optimized') => void;
   onToggleSearch?: () => void;
@@ -69,6 +71,7 @@ export function Toolbar({
   onRedo,
   onClearPaths,
   onDownload,
+  onPrint,
   saveMode,
   onSaveModeChange,
   onToggleSearch,
@@ -237,6 +240,18 @@ export function Toolbar({
               <span className="hidden sm:inline">Export</span>
             </button>
           </>
+        )}
+
+        {onPrint && (
+          <button
+            onClick={onPrint}
+            disabled={isSaving}
+            aria-label="Print"
+            className="hidden md:inline-flex items-center justify-center pointer-coarse:min-h-11 pointer-coarse:min-w-11 p-1.5 md:p-2 rounded-lg transition-colors border bg-panel-elevated text-app-muted hover:text-app border-app disabled:opacity-40"
+            title="Print (Ctrl/Cmd+P)"
+          >
+            <Printer size={16} />
+          </button>
         )}
 
         <div className="w-[1px] h-6 bg-[var(--border)] hidden sm:block" />

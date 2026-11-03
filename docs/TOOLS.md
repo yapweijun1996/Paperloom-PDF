@@ -59,6 +59,7 @@ Rail footer buttons:
 | Toggle Find & Replace | Ctrl/Cmd+F | Opens search |
 | Clear | — | Removes all drawn paths; shown only while there are some |
 | **Export** | — | Opens the Export Document panel |
+| Print | Ctrl/Cmd+P | Desktop and tablet only. Prints the edited PDF through the browser's PDF viewer (vector quality); does not count as a download, so the Unsaved badge stays |
 | **Download** | — | Saves the edited PDF without recompressing it |
 | Download options (chevron) | Esc closes | Save Mode, Resolution and Compression for the download |
 
@@ -74,6 +75,9 @@ drawings were detected on the page.
   asks for confirmation first.
 - **Drawing / Signature** (a vector shape such as a card, box or drawn mark):
   read-only Type, Position and Size; **Duplicate**, **Deselect** and **Delete**.
+  - Drag the dashed frame to move the drawing, drag one of the eight handles to
+    resize it (Shift keeps it free-form), or use the arrow keys. The drawing keeps
+    its colour, line style and layer; a thick line gets thicker when enlarged.
   - If the PDF paints the same shape several times on top of itself (common in
     PDFs printed from a browser), Delete removes all the copies in one undoable
     step, so the shape actually disappears.
@@ -125,6 +129,12 @@ Push-button actions are not supported.
 - **Add watermark** applies it ("Watermark applied.").
 - **Scan for Watermarks** finds existing ones; tick them and use **Remove Selected**
   (asks for confirmation) or **Cancel**.
+- **Header, footer & page numbers** (bottom of the panel): six text fields
+  (header and footer, left / centre / right) with the tokens `{page}`, `{total}`,
+  `{date}` (YYYY-MM-DD) and `{bates}` (Bates prefix plus a six-digit number);
+  font size, margin, page range and start number. **Add header & footer** writes
+  Helvetica text on every page in the range, upright even on rotated pages; undo
+  removes it. Only English letters, digits and punctuation are supported.
 
 ### Signature (Sign)
 
@@ -191,8 +201,9 @@ Shortcuts are ignored while typing in a field, editing text, or while a dialog i
 | V T A H L D E S W X | Select, Edit Text, Add Text Box, Highlight, Edit Text, Draw, Erase, Sign, Watermark, Security |
 | Ctrl/Cmd+Z, Ctrl/Cmd+Shift+Z or Ctrl+Y | Undo, Redo |
 | Ctrl/Cmd+F | Find & Replace |
+| Ctrl/Cmd+P | Print the edited PDF |
 | Ctrl/Cmd+= / Ctrl/Cmd+− | Zoom in / out |
-| Arrow keys | Move the selected image, text box or signature by 1pt (Shift: 10pt); otherwise change page |
+| Arrow keys | Move the selected image, drawing, text box or signature by 1pt (Shift: 10pt); otherwise change page |
 | Ctrl/Cmd+D | Duplicate the selected image, drawing, text box or floating image |
 | Delete / Backspace | Delete the selected signature, image or text box |
 | Escape | Leave the text box; close menus |

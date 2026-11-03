@@ -19,6 +19,7 @@ describe('editor keyboard actions', () => {
     expect(editorKeyboardAction({ key: 'ArrowRight', shiftKey: true }, { ...base, selectedDisplayItem: 'image' })).toEqual({ type: 'nudge', target: 'embedded-image', dx: 10, dy: 0 });
     expect(editorKeyboardAction({ key: 'ArrowUp' }, { ...base, activeFloatingImage: true })).toEqual({ type: 'nudge', target: 'floating-image', dx: 0, dy: 1 });
     expect(editorKeyboardAction({ key: 'ArrowLeft' }, { ...base, activeFloatingText: true })).toEqual({ type: 'nudge', target: 'floating-text', dx: -1, dy: 0 });
+    expect(editorKeyboardAction({ key: 'ArrowDown' }, { ...base, selectedDisplayItem: 'path' })).toEqual({ type: 'nudge', target: 'drawing', dx: 0, dy: -1 });
   });
 
   it('deletes selected images and floating images', () => {
@@ -46,5 +47,13 @@ describe('IME composition keys', () => {
     expect(isCompositionKey({ key: 'Process' })).toBe(true);
     expect(isCompositionKey({ key: 'Enter', isComposing: false, keyCode: 13 })).toBe(false);
     expect(isCompositionKey({ key: 'Escape', isComposing: false, keyCode: 27 })).toBe(false);
+  });
+});
+
+describe('print shortcut', () => {
+  it('prints the edited PDF with Ctrl/Cmd+P instead of the editor page', () => {
+    expect(editorKeyboardAction({ key: 'p', metaKey: true }, base)).toEqual({ type: 'print' });
+    expect(editorKeyboardAction({ key: 'P', ctrlKey: true }, base)).toEqual({ type: 'print' });
+    expect(editorKeyboardAction({ key: 'p', ctrlKey: true, shiftKey: true }, base)).toBeNull();
   });
 });

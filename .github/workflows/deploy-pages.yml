@@ -37,6 +37,7 @@ jobs:
       - name: Build and verify static export
         env:
           NEXT_PUBLIC_BASE_PATH: ${{ steps.pages.outputs.base_path }}
+          NEXT_PUBLIC_BUILD_SHA: ${{ github.sha }}
         run: |
           npm run build
           npm run verify:pdf-worker

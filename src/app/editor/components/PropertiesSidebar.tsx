@@ -13,6 +13,8 @@ import { FormDraftInput } from './FormDraftInput';
 import { decodeMultiChoiceDraft, encodeMultiChoiceDraft } from '../multi-choice-draft';
 import type { ImageBox } from './imageBoxEdit';
 import type { WatermarkPosition } from '@/engine/watermark/watermark-engine';
+import { HeaderFooterPanel } from './HeaderFooterPanel';
+import type { HeaderFooterOptions } from '@/engine/watermark/header-footer';
 
 /** Plain names for the preset swatches, used as accessible labels. */
 const SWATCH_NAMES: Record<string, string> = {
@@ -161,6 +163,9 @@ interface PropertiesSidebarProps {
   detectedWatermarksCount?: number;
   onScanWatermarks?: () => void;
   onApplyWatermark?: () => void;
+  /** Adds headers, footers and page numbers; shown in the watermark panel. */
+  onApplyHeaderFooter?: (options: HeaderFooterOptions) => Promise<void> | void;
+  totalPages?: number;
   onRemoveWatermarks?: () => void;
   onCancelScan?: () => void;
   watermarkLivePreview?: boolean;
@@ -253,6 +258,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
     watermarkColor = '#000000', setWatermarkColor,
     hasScannedWatermarks, detectedWatermarksCount = 0, onScanWatermarks,
     onApplyWatermark, onRemoveWatermarks, onCancelScan,
+    onApplyHeaderFooter, totalPages = 1,
     watermarkLivePreview = true, setWatermarkLivePreview,
     watermarkBlendMode = 'Normal', setWatermarkBlendMode,
     signatureLibraryEntries = [],
@@ -1545,6 +1551,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                 </div>
               )}
             </div>
+            {onApplyHeaderFooter && <HeaderFooterPanel totalPages={totalPages} onApply={onApplyHeaderFooter} />}
           </div>
         </div>
       )}

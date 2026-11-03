@@ -26,10 +26,10 @@ Legend: ✅ comparable · 🟡 partial · ❌ missing · ⚙️ engine exists, n
 | Add / replace / move / resize images | ✅ | |
 | Crop, flip, rotate an image | ❌ | |
 | Select and delete vector drawings | ✅ | Fixed for browser-printed PDFs on 2026-11-03 |
-| Move / resize drawings | 🟡 | Engine transform exists; no handles in UI |
+| Move / resize drawings | ✅ | Drag, eight resize handles and arrow keys (2026-11-03) |
 | Duplicate objects | ✅ | Images, drawings, text boxes, text lines (Ctrl/Cmd+D) |
 | Find and replace | ✅ | Match case, Replace All |
-| Spell check | ❌ | |
+| Spell check | 🟡 | Browser spell check in text boxes; line editing uses a hidden input, so it shows no underlines |
 | Links (add, edit, remove) | ✅ | |
 | Bookmarks (view, add, edit) | ❌ | No outline support |
 
@@ -41,7 +41,7 @@ Legend: ✅ comparable · 🟡 partial · ❌ missing · ⚙️ engine exists, n
 | Merge / insert from another PDF | ✅ | |
 | Extract / split pages | ✅ | Current page or every page |
 | Crop pages | ❌ | |
-| Headers, footers, page numbers | ❌ | |
+| Headers, footers, page numbers | ✅ | Six slots, `{page}` `{total}` `{date}` `{bates}`, page range, rotated pages (2026-11-03). Latin text only |
 | Bates numbering | ❌ | |
 | Page labels | ❌ | |
 | Watermark and background | ✅ | Text, image, shape, over or under; detect and remove |
@@ -91,7 +91,7 @@ Legend: ✅ comparable · 🟡 partial · ❌ missing · ⚙️ engine exists, n
 | Password encryption and permissions | ✅ | AES-256, AES-128, RC4 |
 | Certificate (public-key) encryption | ⚙️ | Engine module; no UI |
 | Redact region, page, marks | ✅ | Removes content from the file |
-| Search-and-redact by pattern (phone, email) | ❌ | |
+| Search-and-redact by pattern (phone, email) | ❌ | Blocked: secure redaction only removes whole text objects, so a match inside a sentence is refused |
 | Sanitize, remove JavaScript / attachments / metadata | ✅ | |
 
 ### Accessibility and productivity
@@ -102,7 +102,7 @@ Legend: ✅ comparable · 🟡 partial · ❌ missing · ⚙️ engine exists, n
 | Read aloud | ❌ | |
 | Action wizard / batch processing | ❌ | |
 | AI assistant (summarize, ask) | ❌ | |
-| Print dialog | ❌ | Download and print from the browser |
+| Print dialog | ✅ | Print button and Ctrl/Cmd+P print the edited PDF through the browser's viewer (2026-11-03) |
 | Interface languages | ❌ | English only |
 | Desktop, web, mobile apps | 🟡 | Web PWA with a phone layout; works offline |
 
@@ -117,7 +117,7 @@ edits almost any PDF correctly.
 | Browser coverage | Chromium only in CI | Chrome, Safari (desktop and iOS), Firefox, Edge |
 | Large documents | Not benchmarked | Smooth on 500+ pages and 100 MB files |
 | Code structure | `src/app/editor/page.tsx` is 7,631 lines | Split into feature modules so changes stay safe |
-| Crash reporting | None | Opt-in, privacy-preserving error reports |
+| Crash reporting | "Copy report" on every error: browser, build, PDF structure, recent uncaught errors; no file name or content | Opt-in, privacy-preserving error reports |
 | Manual-only checks | Listed in [E2E.md](E2E.md) | Automated |
 | App accessibility (WCAG 2.2 AA) | Partial | Audited and fixed |
 | Help and onboarding | [TOOLS.md](TOOLS.md) only | In-app help and first-run tips |
@@ -184,7 +184,7 @@ listed only for completeness.
 | Comments | A. Build the UI on the existing annotation engine: sticky notes (`/Text`), underline and strikeout (same path as highlight), and a comment list panel. B. Overlay-only comments that are not saved as annotations. | ★ A, so comments open in Acrobat |
 | Drawing move and resize | A. Reuse the image handles and the path branch of `applyObjectTransform`, located by `sourceInstructionIndex`. B. Delete and redraw. | ★ A |
 | Image crop | A. Wrap the placement in a clip rectangle. B. Re-encode the cropped pixels. | ★ A (lossless, undoable) |
-| Search-and-redact | A. Pattern presets (email, phone, NRIC, card numbers, custom regex) on the existing search index, producing redaction marks to review. B. Auto-apply. | ★ A; the user reviews before applying |
+| Search-and-redact | A. Pattern presets (email, phone, NRIC, card numbers, custom regex) on the existing search index, producing redaction marks to review. B. Auto-apply. | ★ A; the user reviews before applying. **Blocked first by glyph-level secure redaction:** `isolated-text-redaction` refuses a mark that covers part of a text object, and accepts only standard fonts, ASCII and identity text matrices, so most real matches cannot be applied. Build partial-run removal (split the show operator, drop the covered glyphs, keep the advance) before the presets |
 | Print | A. Open the saved PDF blob in a new tab and let the browser's PDF viewer print it. B. Print rendered canvases through an iframe. | ★ A (vector quality) |
 | Interface languages | A. A small typed dictionary per language with a language switch, starting with Simplified Chinese. B. A full i18n framework. | ★ A; fits the static export |
 | Spell check | A. Turn on the browser's built-in spellcheck in text boxes and line editing (currently `spellCheck={false}` in `EditableLineBox`). B. Bundle a dictionary. | ★ A; check first that it does not disturb the caret overlay |
@@ -203,8 +203,9 @@ listed only for completeness.
 
 ### Suggested order
 
-1. **Quick wins (days):** Print, headers / footers / page numbers, search-and-redact
-   presets, spell check, drawing move and resize, diagnostic report button.
+1. **Quick wins (days):** ~~Print~~, ~~headers / footers / page numbers~~, ~~spell check
+   in text boxes~~, ~~drawing move and resize~~, ~~diagnostic report button~~ (done
+   2026-11-03). Search-and-redact presets moved behind glyph-level secure redaction (M).
 2. **Robustness (weeks, in parallel):** producer corpus and render diff in CI,
    WebKit and Firefox projects, performance budgets, `page.tsx` extraction.
 3. **User-visible features:** comments, bookmarks, crop pages, Chinese interface.

@@ -56,3 +56,26 @@ export function findOffsetCopy(
       : item.paintType === (source as PathItem).paintType));
   return copies.length === 1 ? copies[0] : null;
 }
+
+type Box = { x: number; y: number; width: number; height: number };
+
+/** Page-space matrix taking `source` onto `box`; a flat side keeps its scale. */
+export function drawingBoxMatrix(source: Box, box: Box): number[] {
+  const sx = source.width > 0.5 ? box.width / source.width : 1;
+  const sy = source.height > 0.5 ? box.height / source.height : 1;
+  return [sx, 0, 0, sy, box.x - sx * source.x, box.y - sy * source.y];
+}
+
+export function drawingBoxResult(source: Box, matrix: number[]): Box {
+  return {
+    x: matrix[0] * source.x + matrix[4],
+    y: matrix[3] * source.y + matrix[5],
+    width: matrix[0] * source.width,
+    height: matrix[3] * source.height,
+  };
+}
+
+export function sameBox(a: Box, b: Box, tolerance: number): boolean {
+  return Math.abs(a.x - b.x) <= tolerance && Math.abs(a.y - b.y) <= tolerance &&
+    Math.abs(a.width - b.width) <= tolerance && Math.abs(a.height - b.height) <= tolerance;
+}
